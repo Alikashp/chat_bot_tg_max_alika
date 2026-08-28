@@ -71,7 +71,7 @@ query-параметр больше не работает, только заго
 
 ```python
 # maxapi/webhook/aiohttp.py
-event_json: dict[str, Any] = await request.json()   # ОДИН объект, не список
+event_json: dict[str, Any] = await request.json()  # ОДИН объект, не список
 ```
 
 - **MAX присылает одно обновление на HTTP-запрос**, Telegram — тоже одно, но со
@@ -107,7 +107,7 @@ class BotStarted(BaseUpdate):
     chat_id: int
     user: User
     user_locale: str | None = None
-    payload: str | None = None       # <-- вот это
+    payload: str | None = None  # <-- вот это
 ```
 
 Поле `payload` — прямой аналог телеграмного `/start ref_XXXX`. Значит реферальная
@@ -237,14 +237,14 @@ polling» она не закрывает в принципе.
 ```python
 Bot(
     token=...,
-    auto_requests=False,          # иначе на каждое событие библиотека делает
-                                  # скрытые доп. запросы к API — лишняя латентность
-                                  # и лишний расход лимитов
+    auto_requests=False,  # иначе на каждое событие библиотека делает
+    # скрытые доп. запросы к API — лишняя латентность
+    # и лишний расход лимитов
     default_connection=DefaultConnectionProperties(
-        timeout=20,               # по умолчанию 150 с — недопустимо много
+        timeout=20,  # по умолчанию 150 с — недопустимо много
         sock_connect=5,
-        max_retries=0,            # ретраи и circuit breaker — наши, из infra/;
-                                  # два независимых слоя ретраев множат нагрузку
+        max_retries=0,  # ретраи и circuit breaker — наши, из infra/;
+        # два независимых слоя ретраев множат нагрузку
     ),
 )
 ```

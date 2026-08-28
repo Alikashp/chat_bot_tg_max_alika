@@ -1,0 +1,200 @@
+"""Хранилище в памяти процесса.
+
+Используется в тестах и на фазе 1, пока в проекте нет ни лимитов, ни денег.
+Для прода не годится: Railway при каждой выкатке поднимает новый контейнер,
+и всё содержимое памяти теряется вместе с оплаченными подписками
+(docs/research.md §5). С фазы 3 прод работает на PostgreSQL.
+
+Об атомарности. Все операции здесь выполняются без единого await внутри
+критической секции, поэтому в однопоточном event loop они атомарны по
+построению: другая корутина не может вклиниться в середину. Именно это
+проверяют параллельные тесты в tests/contract/test_storage.py — они же
+поймают потерю атомарности в реализации на PostgreSQL.
+"""
+
+from __future__ import annotations
+
+from dataclasses import replace
+from datetime import UTC, date, datetime
+from itertools import count
+
+from app.core.models import (
+    DialogState,
+    MessengerKind,
+    TariffId,
+    Usage,
+    User,
+    UserId,
+)
+
+
+class InMemoryStorage:
+    """Реализация порта Storage поверх обычных словарей."""
+
+    def __init__(self) -> None:
+        self._ids = count(1)
+        self._users: dict[UserId, User] = {}
+        self._by_external: dict[tuple[MessengerKind, str], UserId] = {}
+        self._by_referral_code: dict[str, UserId] = {}
+        self._usage: dict[tuple[UserId, date], Usage] = {}
+        self._dialogs: dict[UserId, DialogState] = {}
+        #: Приглашённый -> (пригласивший, когда). Ключ по приглашённому,
+        #: потому что награда полагается только за нового пользователя и
+        #: только одному пригласившему.
+        self._referrals: dict[UserId, tuple[UserId, datetime]] = {}
+
+    # --- Пользователи --------------------------------------------------
+
+    async def get_user(self, messenger: MessengerKind, external_id: str) -> User | None:
+        user_id = self._by_external.get((messenger, external_id))
+        return None if user_id is None else self._users[user_id]
+
+    async def get_user_by_id(self, user_id: UserId) -> User | None:
+        return self._users.get(user_id)
+
+    async def get_user_by_referral_code(self, code: str) -> User | None:
+        user_id = self._by_referral_code.get(code)
+        return None if user_id is None else self._users[user_id]
+
+    async def create_user(
+        self,
+        *,
+        messenger: MessengerKind,
+        external_id: str,
+        referral_code: str,
+        daily_image_quota: int,
+        referred_by: UserId | None = None,
+    ) -> User:
+        if (messenger, external_id) in self._by_external:
+            raise ValueError(
+                f"пользователь {messenger.value}:{external_id} уже существует"
+            )
+        if referral_code in self._by_referral_code:
+            raise ValueError(f"реферальный код {referral_code} уже занят")
+
+        user = User(
+            id=UserId(next(self._ids)),
+            messenger=messenger,
+            external_id=external_id,
+            tariff=TariffId.FREE,
+            referral_code=referral_code,
+            created_at=datetime.now(UTC),
+            daily_image_quota=daily_image_quota,
+            referred_by=referred_by,
+        )
+        self._users[user.id] = user
+        self._by_external[(messenger, external_id)] = user.id
+        self._by_referral_code[referral_code] = user.id
+        return user
+
+    async def set_tariff(
+        self,
+        user_id: UserId,
+        tariff: TariffId,
+        expires_at: datetime | None,
+    ) -> None:
+        user = self._require_user(user_id)
+        self._users[user_id] = replace(
+            user, tariff=tariff, tariff_expires_at=expires_at
+        )
+
+    # --- Дневной расход ------------------------------------------------
+
+    async def get_usage(self, user_id: UserId, day: date) -> Usage:
+        self._require_user(user_id)
+        return self._usage.get((user_id, day), Usage(day=day))
+
+    async def add_usage(
+        self,
+        user_id: UserId,
+        day: date,
+        *,
+        messages: int = 0,
+        images: int = 0,
+    ) -> Usage:
+        self._require_user(user_id)
+        current = self._usage.get((user_id, day), Usage(day=day))
+        updated = Usage(
+            day=day,
+            messages_used=current.messages_used + messages,
+            images_used=current.images_used + images,
+        )
+        self._usage[(user_id, day)] = updated
+        return updated
+
+    async def spend_bonus(
+        self,
+        user_id: UserId,
+        *,
+        messages: int = 0,
+        images: int = 0,
+    ) -> bool:
+        user = self._require_user(user_id)
+        if user.bonus_messages < messages or user.bonus_images < images:
+            return False
+        self._users[user_id] = replace(
+            user,
+            bonus_messages=user.bonus_messages - messages,
+            bonus_images=user.bonus_images - images,
+        )
+        return True
+
+    async def add_bonus(
+        self,
+        user_id: UserId,
+        *,
+        messages: int = 0,
+        images: int = 0,
+    ) -> None:
+        user = self._require_user(user_id)
+        self._users[user_id] = replace(
+            user,
+            bonus_messages=user.bonus_messages + messages,
+            bonus_images=user.bonus_images + images,
+        )
+
+    # --- Диалог --------------------------------------------------------
+
+    async def get_dialog(self, user_id: UserId) -> DialogState:
+        self._require_user(user_id)
+        return self._dialogs.get(user_id, DialogState())
+
+    async def save_dialog(self, user_id: UserId, dialog: DialogState) -> None:
+        self._require_user(user_id)
+        self._dialogs[user_id] = dialog
+
+    async def reset_dialog(self, user_id: UserId) -> None:
+        self._require_user(user_id)
+        self._dialogs.pop(user_id, None)
+
+    # --- Рефералы ------------------------------------------------------
+
+    async def record_referral(self, referrer_id: UserId, referee_id: UserId) -> bool:
+        if referrer_id == referee_id:
+            return False
+        self._require_user(referrer_id)
+        self._require_user(referee_id)
+        if referee_id in self._referrals:
+            return False
+        self._referrals[referee_id] = (referrer_id, datetime.now(UTC))
+        return True
+
+    async def count_referrals(self, referrer_id: UserId) -> int:
+        return sum(
+            1 for referrer, _ in self._referrals.values() if referrer == referrer_id
+        )
+
+    async def count_referrals_since(self, referrer_id: UserId, since: datetime) -> int:
+        return sum(
+            1
+            for referrer, recorded_at in self._referrals.values()
+            if referrer == referrer_id and recorded_at >= since
+        )
+
+    # --- Внутреннее ----------------------------------------------------
+
+    def _require_user(self, user_id: UserId) -> User:
+        user = self._users.get(user_id)
+        if user is None:
+            raise KeyError(f"нет пользователя с id={user_id}")
+        return user

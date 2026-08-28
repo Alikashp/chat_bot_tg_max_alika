@@ -1,0 +1,54 @@
+"""Порты провайдеров ИИ.
+
+Ядро не знает ни имени провайдера, ни названия модели: модель приходит
+параметром из конфига (§2.2 задания — модель не выбирается пользователем и
+нигде не упоминается).
+"""
+
+from __future__ import annotations
+
+from collections.abc import Sequence
+from enum import StrEnum
+from typing import Protocol
+
+from app.core.models import ChatTurn, Photo
+
+
+class ImageQuality(StrEnum):
+    """Качество отрисовки.
+
+    Пользователю не показывается и им не выбирается — это параметр тарифа
+    в конфиге. Разница в цене между LOW и MEDIUM почти на порядок
+    (docs/research.md §4.3), поэтому бесплатный тариф рисует в LOW.
+    """
+
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+
+
+class LLMProvider(Protocol):
+    """Провайдер текстовых ответов."""
+
+    async def complete(self, turns: Sequence[ChatTurn], *, model: str) -> str:
+        """Возвращает ответ на диалог.
+
+        Реализация обязана задать явный таймаут (§3.4.6). Исключения не
+        глотает: решение «показать ошибку и не списать лимит» принимает
+        вызывающий сценарий.
+        """
+        ...
+
+
+class ImageProvider(Protocol):
+    """Провайдер картинок."""
+
+    async def generate(self, prompt: str, *, quality: ImageQuality) -> Photo:
+        """Рисует картинку по текстовому описанию (§2.3)."""
+        ...
+
+    async def edit(
+        self, source: Photo, instruction: str, *, quality: ImageQuality
+    ) -> Photo:
+        """Переделывает присланное фото по инструкции (пресеты, §2.4)."""
+        ...

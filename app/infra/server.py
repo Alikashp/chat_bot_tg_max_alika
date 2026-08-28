@@ -1,14 +1,15 @@
 """HTTP-сервер: приём вебхуков и health-check.
 
 Ключевое требование §3.4.1: обработчик вебхука только валидирует запрос,
-передаёт обновление дальше и отвечает 200 OK. Никакой работы с ИИ внутри
+ставит обновление в очередь и отвечает. Никакой работы с ИИ внутри
 HTTP-запроса — иначе мессенджер отвалится по таймауту и начнёт ретраить,
 а картинка рисуется 15 секунд.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable, Coroutine
+from collections.abc import Callable
+from enum import StrEnum
 from http import HTTPStatus
 from secrets import compare_digest
 from typing import Any
@@ -16,7 +17,6 @@ from typing import Any
 from aiohttp import web
 
 from app.infra.logging import get_logger
-from app.infra.tasks import BackgroundTasks
 
 logger = get_logger(__name__)
 
@@ -29,12 +29,26 @@ TELEGRAM_SECRET_HEADER = "X-Telegram-Bot-Api-Secret-Token"  # noqa: S105
 #: небольшой JSON; всё, что заметно больше, к нам отношения не имеет.
 MAX_WEBHOOK_BODY_BYTES = 1024 * 1024
 
-#: Тип функции, которой отдаётся сырое обновление. Именно Coroutine, а не
-#: Awaitable: BackgroundTasks.spawn обязан уметь закрыть корутину, если
-#: приложение уже останавливается.
-UpdateHandler = Callable[[dict[str, Any]], Coroutine[Any, Any, None]]
 
-#: Тип функции, возвращающей данные для /health.
+class Outcome(StrEnum):
+    """Что произошло с обновлением на входе."""
+
+    #: Принято в очередь.
+    ACCEPTED = "accepted"
+    #: Уже видели — повторная доставка.
+    DUPLICATE = "duplicate"
+    #: Очередь переполнена.
+    OVERLOADED = "overloaded"
+    #: Сервис останавливается.
+    STOPPING = "stopping"
+    #: Обновление не похоже на настоящее.
+    MALFORMED = "malformed"
+
+
+#: Функция, которая забирает сырое обновление и говорит, что с ним стало.
+UpdateSubmitter = Callable[[dict[str, Any]], Outcome]
+
+#: Функция, возвращающая данные для /health.
 HealthProvider = Callable[[], dict[str, Any]]
 
 
@@ -59,8 +73,7 @@ def create_app(
     *,
     telegram_secret: str,
     telegram_webhook_path: str,
-    handle_update: UpdateHandler,
-    tasks: BackgroundTasks,
+    submit: UpdateSubmitter,
     health: HealthProvider,
 ) -> web.Application:
     """Собирает aiohttp-приложение."""
@@ -82,15 +95,8 @@ def create_app(
             logger.warning("webhook_bad_payload", messenger="telegram")
             return web.Response(status=HTTPStatus.BAD_REQUEST)
 
-        # Задача уходит в фон. Мессенджеру отвечаем сразу: он не должен
-        # ждать, пока мы сходим к провайдеру ИИ.
-        accepted = tasks.spawn(handle_update(update))
-        if not accepted:
-            # Идёт остановка сервиса. 503 честнее, чем 200: обновление
-            # не потеряется, мессенджер повторит его позже.
-            return web.Response(status=HTTPStatus.SERVICE_UNAVAILABLE)
-
-        return web.Response(status=HTTPStatus.OK)
+        outcome = submit(update)
+        return web.Response(status=_status_for(outcome))
 
     async def health_check(_request: web.Request) -> web.Response:
         payload = health()
@@ -104,3 +110,24 @@ def create_app(
     app.router.add_post(telegram_webhook_path, telegram_webhook)
     app.router.add_get("/health", health_check)
     return app
+
+
+def _status_for(outcome: Outcome) -> HTTPStatus:
+    """Переводит исход в HTTP-код.
+
+    Повтору отвечаем 200: работа по нему уже сделана или делается, и
+    заставлять мессенджер присылать его снова незачем.
+
+    Переполнению и остановке — 503. Это осознанный выбор в пользу 503 против
+    «200 и молча выбросить»: мессенджер повторит доставку через несколько
+    секунд, и пользователь получит настоящий ответ с небольшой задержкой
+    вместо бесследно пропавшего сообщения. Лимит при этом не списывается —
+    списание происходит только по факту доставленного результата.
+    """
+    match outcome:
+        case Outcome.ACCEPTED | Outcome.DUPLICATE:
+            return HTTPStatus.OK
+        case Outcome.MALFORMED:
+            return HTTPStatus.BAD_REQUEST
+        case Outcome.OVERLOADED | Outcome.STOPPING:
+            return HTTPStatus.SERVICE_UNAVAILABLE

@@ -16,11 +16,13 @@ from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.types import Message
 from aiohttp import web
 
+from app.adapters.telegram.intake import dedup_key
 from app.config import Settings, get_settings
 from app.core import texts
+from app.infra.dedup import Deduplicator
 from app.infra.logging import configure_logging, get_logger
-from app.infra.server import create_app
-from app.infra.tasks import BackgroundTasks
+from app.infra.queue import JobQueue
+from app.infra.server import Outcome, create_app
 
 logger = get_logger(__name__)
 
@@ -30,6 +32,8 @@ TELEGRAM_API_TIMEOUT = 15.0
 
 #: На фазе 1 боту нужны только сообщения. Список расширяется вместе со
 #: сценариями: чем он уже, тем меньше мусорного трафика на вебхук.
+#: На фазе 4 сюда добавляется callback_query, иначе нажатия кнопок просто
+#: не будут доходить.
 ALLOWED_UPDATES = ["message"]
 
 
@@ -38,7 +42,7 @@ def build_dispatcher() -> Dispatcher:
 
     Фаза 1: сквозная проверка контура. Бот отвечает «понг» на любое
     сообщение — этого достаточно, чтобы убедиться, что путь
-    «Railway → вебхук → фоновая задача → ответ» работает целиком.
+    «Railway → вебхук → очередь → воркер → ответ» работает целиком.
     Реальные сценарии приходят на фазе 4.
     """
     dispatcher = Dispatcher()
@@ -48,6 +52,35 @@ def build_dispatcher() -> Dispatcher:
         await message.answer(texts.PONG)
 
     return dispatcher
+
+
+def build_intake(queue: JobQueue[dict[str, Any]], dedup: Deduplicator) -> Any:
+    """Собирает функцию приёма обновления для HTTP-обработчика.
+
+    Порядок проверок важен. Сначала дедупликация, потом очередь: повтор не
+    должен занимать место в очереди, иначе при ретраях мессенджера ёмкость
+    выедается копиями одного и того же обновления.
+    """
+
+    def submit(raw_update: dict[str, Any]) -> Outcome:
+        key = dedup_key(raw_update)
+        if key is None:
+            logger.warning("update_without_id", messenger="telegram")
+            return Outcome.MALFORMED
+
+        if not dedup.is_new(key):
+            logger.info("update_duplicate", messenger="telegram")
+            return Outcome.DUPLICATE
+
+        if not queue.accepting:
+            return Outcome.STOPPING
+
+        if not queue.submit(raw_update):
+            return Outcome.OVERLOADED
+
+        return Outcome.ACCEPTED
+
+    return submit
 
 
 async def _register_webhook(bot: Bot, settings: Settings) -> None:
@@ -76,33 +109,61 @@ async def run() -> None:
         session=AiohttpSession(timeout=TELEGRAM_API_TIMEOUT),
     )
     dispatcher = build_dispatcher()
-    tasks = BackgroundTasks()
 
     async def handle_update(raw_update: dict[str, Any]) -> None:
         """Обрабатывает одно обновление вне HTTP-запроса."""
         await dispatcher.feed_raw_update(bot, raw_update)
 
+    queue: JobQueue[dict[str, Any]] = JobQueue(
+        "telegram-updates",
+        handle_update,
+        capacity=settings.queue_capacity,
+        workers=settings.queue_workers,
+    )
+    dedup = Deduplicator(
+        ttl_seconds=settings.dedup_ttl_seconds,
+        max_keys=settings.dedup_max_keys,
+    )
+
     def health() -> dict[str, Any]:
+        stats = queue.stats()
         return {
-            "status": "ok" if tasks.accepting else "shutting_down",
-            "in_flight": tasks.running,
+            "status": "ok" if queue.accepting else "shutting_down",
+            "queues": [
+                {
+                    "name": stats.name,
+                    "capacity": stats.capacity,
+                    "workers": stats.workers,
+                    "pending": stats.pending,
+                    "in_flight": stats.in_flight,
+                    "accepted": stats.accepted,
+                    "rejected": stats.rejected,
+                    "failed": stats.failed,
+                }
+            ],
+            "dedup_keys": len(dedup),
         }
 
     app = create_app(
         telegram_secret=settings.telegram_webhook_secret,
         telegram_webhook_path=settings.telegram_webhook_path,
-        handle_update=handle_update,
-        tasks=tasks,
+        submit=build_intake(queue, dedup),
         health=health,
     )
 
+    queue.start()
     runner = web.AppRunner(app, access_log=None)
     await runner.setup()
     site = web.TCPSite(runner, host="0.0.0.0", port=settings.port)  # noqa: S104
 
     try:
         await site.start()
-        logger.info("server_started", port=settings.port)
+        logger.info(
+            "server_started",
+            port=settings.port,
+            capacity=settings.queue_capacity,
+            workers=settings.queue_workers,
+        )
 
         # Порядок именно такой: сокет уже слушает, когда мы говорим Telegram
         # присылать сюда обновления. Наоборот — значит некоторое время
@@ -110,8 +171,7 @@ async def run() -> None:
         #
         # Если регистрация не удалась, поднимать сервис бессмысленно: бот не
         # получит ни одного сообщения. Падаем, и Railway перезапускает нас по
-        # restartPolicy из railway.json. Осмысленные повторы появятся на
-        # фазе 2 вместе с остальной инфраструктурой надёжности.
+        # restartPolicy из railway.json.
         await _register_webhook(bot, settings)
 
         stop = asyncio.Event()
@@ -126,9 +186,9 @@ async def run() -> None:
         # приём соединений, и только потом ждём текущие задачи. Если сделать
         # наоборот, между остановкой сокета и запретом на задачи успеет
         # проскочить новое обновление.
-        tasks.stop_accepting()
+        queue.stop_accepting()
         await site.stop()
-        abandoned = await tasks.drain(settings.shutdown_timeout_seconds)
+        abandoned = await queue.drain(settings.shutdown_timeout_seconds)
         await runner.cleanup()
         await bot.session.close()
 

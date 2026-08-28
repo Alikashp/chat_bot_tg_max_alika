@@ -1,100 +1,86 @@
-"""Тесты обработчика вебхука.
+"""Тесты HTTP-обработчика вебхука.
 
-Главное, что здесь проверяется, — §3.4.1: обработчик валидирует запрос,
-отдаёт работу в фон и отвечает 200 OK, не дожидаясь результата.
+Проверяется §3.4.1: обработчик валидирует запрос, отдаёт обновление приёмнику
+и отвечает кодом, соответствующим исходу, — не дожидаясь самой работы.
 """
 
 from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
+from dataclasses import dataclass, field
 from typing import Any
 
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from app.infra.server import TELEGRAM_SECRET_HEADER, create_app
-from app.infra.tasks import BackgroundTasks
+from app.infra.server import TELEGRAM_SECRET_HEADER, Outcome, create_app
 
 SECRET = "test-webhook-secret-value"
 PATH = "/webhook/telegram"
-
-
-class Harness:
-    """Приложение под тестом вместе с записанными обновлениями."""
-
-    def __init__(self) -> None:
-        self.received: list[dict[str, Any]] = []
-        self.tasks = BackgroundTasks()
-        self.release = asyncio.Event()
-        self.release.set()
-
-    async def handle(self, update: dict[str, Any]) -> None:
-        await self.release.wait()
-        self.received.append(update)
-
-    def health(self) -> dict[str, Any]:
-        return {
-            "status": "ok" if self.tasks.accepting else "shutting_down",
-            "in_flight": self.tasks.running,
-        }
-
-    def app(self) -> web.Application:
-        return create_app(
-            telegram_secret=SECRET,
-            telegram_webhook_path=PATH,
-            handle_update=self.handle,
-            tasks=self.tasks,
-            health=self.health,
-        )
-
-
-@pytest.fixture
-async def harness() -> Harness:
-    return Harness()
-
-
-#: TestClient параметризован типами запроса и приложения.
 WebClient = TestClient[web.Request, web.Application]
 
 
+@dataclass
+class Recorder:
+    """Приёмник обновлений с заранее заданным исходом."""
+
+    outcome: Outcome = Outcome.ACCEPTED
+    received: list[dict[str, Any]] = field(default_factory=list)
+    health_payload: dict[str, Any] = field(default_factory=lambda: {"status": "ok"})
+
+    def submit(self, update: dict[str, Any]) -> Outcome:
+        self.received.append(update)
+        return self.outcome
+
+    def health(self) -> dict[str, Any]:
+        return self.health_payload
+
+
 @pytest.fixture
-async def client(harness: Harness) -> AsyncIterator[WebClient]:
-    client: WebClient = TestClient(TestServer(harness.app()))
-    await client.start_server()
-    yield client
-    await client.close()
+async def recorder() -> Recorder:
+    return Recorder()
 
 
-async def test_valid_update_is_accepted(client: WebClient, harness: Harness) -> None:
-    response = await client.post(
-        PATH, json={"update_id": 1}, headers={TELEGRAM_SECRET_HEADER: SECRET}
+@pytest.fixture
+async def client(recorder: Recorder) -> AsyncIterator[WebClient]:
+    app = create_app(
+        telegram_secret=SECRET,
+        telegram_webhook_path=PATH,
+        submit=recorder.submit,
+        health=recorder.health,
     )
+    test_client: WebClient = TestClient(TestServer(app))
+    await test_client.start_server()
+    yield test_client
+    await test_client.close()
 
-    assert response.status == 200
-    await harness.tasks.drain(timeout=1.0)
-    assert harness.received == [{"update_id": 1}]
+
+async def _post(client: WebClient, payload: Any, *, secret: str | None = SECRET) -> int:
+    headers = {} if secret is None else {TELEGRAM_SECRET_HEADER: secret}
+    response = await client.post(PATH, json=payload, headers=headers)
+    return response.status
+
+
+async def test_valid_update_is_accepted(client: WebClient, recorder: Recorder) -> None:
+    assert await _post(client, {"update_id": 1}) == 200
+    assert recorder.received == [{"update_id": 1}]
 
 
 async def test_request_without_secret_is_rejected(
-    client: WebClient, harness: Harness
+    client: WebClient, recorder: Recorder
 ) -> None:
-    response = await client.post(PATH, json={"update_id": 1})
-
-    assert response.status == 403
-    assert harness.received == []
+    assert await _post(client, {"update_id": 1}, secret=None) == 403
+    assert recorder.received == []
 
 
 async def test_request_with_wrong_secret_is_rejected(
-    client: WebClient, harness: Harness
+    client: WebClient, recorder: Recorder
 ) -> None:
-    response = await client.post(
-        PATH, json={"update_id": 1}, headers={TELEGRAM_SECRET_HEADER: "не тот"}
-    )
-
-    assert response.status == 403
-    assert harness.received == []
+    """Кириллица в заголовке не должна превращать отказ в 500."""
+    assert await _post(client, {"update_id": 1}, secret="не тот") == 403
+    assert recorder.received == []
 
 
 async def test_malformed_json_is_rejected(client: WebClient) -> None:
@@ -111,23 +97,43 @@ async def test_malformed_json_is_rejected(client: WebClient) -> None:
 
 
 async def test_non_object_payload_is_rejected(client: WebClient) -> None:
-    response = await client.post(
-        PATH, json=[1, 2, 3], headers={TELEGRAM_SECRET_HEADER: SECRET}
-    )
-
-    assert response.status == 400
+    assert await _post(client, [1, 2, 3]) == 400
 
 
-async def test_response_does_not_wait_for_the_work(
-    client: WebClient, harness: Harness
+async def test_duplicate_gets_ok(client: WebClient, recorder: Recorder) -> None:
+    """Повтору отвечаем 200: работа по нему уже сделана или делается."""
+    recorder.outcome = Outcome.DUPLICATE
+
+    assert await _post(client, {"update_id": 1}) == 200
+
+
+async def test_overload_gets_service_unavailable(
+    client: WebClient, recorder: Recorder
 ) -> None:
-    """Главный тест фазы: 200 OK приходит до того, как работа сделана.
+    """503 честнее, чем «200 и молча выбросить»: мессенджер повторит."""
+    recorder.outcome = Outcome.OVERLOADED
 
-    Обработчик держится на невзведённом событии; если бы ответ ждал его,
-    запрос завис бы, а не вернулся мгновенно.
-    """
-    harness.release.clear()
+    assert await _post(client, {"update_id": 1}) == 503
 
+
+async def test_shutdown_gets_service_unavailable(
+    client: WebClient, recorder: Recorder
+) -> None:
+    recorder.outcome = Outcome.STOPPING
+
+    assert await _post(client, {"update_id": 1}) == 503
+
+
+async def test_update_without_id_gets_bad_request(
+    client: WebClient, recorder: Recorder
+) -> None:
+    recorder.outcome = Outcome.MALFORMED
+
+    assert await _post(client, {"нет": "id"}) == 400
+
+
+async def test_response_does_not_wait_for_the_work(client: WebClient) -> None:
+    """Ответ приходит мгновенно: сама работа делается вне HTTP-запроса."""
     response = await asyncio.wait_for(
         client.post(
             PATH, json={"update_id": 7}, headers={TELEGRAM_SECRET_HEADER: SECRET}
@@ -136,51 +142,25 @@ async def test_response_does_not_wait_for_the_work(
     )
 
     assert response.status == 200
-    assert harness.received == []
-
-    harness.release.set()
-    await harness.tasks.drain(timeout=1.0)
-    assert harness.received == [{"update_id": 7}]
 
 
-async def test_health_reports_ok_and_in_flight(
-    client: WebClient, harness: Harness
+async def test_health_reports_the_payload(
+    client: WebClient, recorder: Recorder
 ) -> None:
-    harness.release.clear()
-    await client.post(
-        PATH, json={"update_id": 1}, headers={TELEGRAM_SECRET_HEADER: SECRET}
-    )
+    recorder.health_payload = {"status": "ok", "dedup_keys": 3}
 
     response = await client.get("/health")
 
     assert response.status == 200
-    assert await response.json() == {"status": "ok", "in_flight": 1}
-
-    harness.release.set()
-    await harness.tasks.drain(timeout=1.0)
+    assert await response.json() == {"status": "ok", "dedup_keys": 3}
 
 
 async def test_health_is_unhealthy_while_shutting_down(
-    client: WebClient, harness: Harness
+    client: WebClient, recorder: Recorder
 ) -> None:
     """Во время остановки Railway должен уводить трафик с этого экземпляра."""
-    harness.tasks.stop_accepting()
+    recorder.health_payload = {"status": "shutting_down"}
 
     response = await client.get("/health")
 
     assert response.status == 503
-    assert (await response.json())["status"] == "shutting_down"
-
-
-async def test_updates_are_refused_while_shutting_down(
-    client: WebClient, harness: Harness
-) -> None:
-    """503 честнее, чем 200: мессенджер повторит обновление позже."""
-    harness.tasks.stop_accepting()
-
-    response = await client.post(
-        PATH, json={"update_id": 1}, headers={TELEGRAM_SECRET_HEADER: SECRET}
-    )
-
-    assert response.status == 503
-    assert harness.received == []

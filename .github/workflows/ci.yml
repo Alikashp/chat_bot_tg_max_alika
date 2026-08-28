@@ -8,6 +8,28 @@ on:
 jobs:
   check:
     runs-on: ubuntu-latest
+
+    # Контрактные тесты хранилища гоняются по настоящему PostgreSQL, а не по
+    # его подобию: в памяти атомарность получается сама собой, а здесь её
+    # обеспечивают ограничения схемы и блокировки строк — это и надо проверять.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: bot
+          POSTGRES_PASSWORD: bot
+          POSTGRES_DB: botdb
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U bot"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      TEST_DATABASE_URL: postgresql://bot:bot@127.0.0.1:5432/botdb
+
     steps:
       - uses: actions/checkout@v4
 
@@ -28,6 +50,9 @@ jobs:
 
       - name: Types
         run: mypy
+
+      - name: Interface texts
+        run: python scripts/check_texts.py
 
       - name: Tests
         run: pytest -q

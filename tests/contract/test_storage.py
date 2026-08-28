@@ -11,12 +11,17 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from collections.abc import AsyncIterator
 from datetime import UTC, date, datetime, timedelta
 
 import pytest
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncEngine
 
 from app.adapters.storage.memory import InMemoryStorage
+from app.adapters.storage.postgres import PostgresStorage, create_engine
+from app.adapters.storage.schema import metadata
 from app.core.models import (
     ChatTurn,
     DialogState,
@@ -31,15 +36,60 @@ DAY = date(2026, 8, 28)
 NEXT_DAY = date(2026, 8, 29)
 
 
-@pytest.fixture(params=["memory"])
-async def storage(request: pytest.FixtureRequest) -> AsyncIterator[Storage]:
+#: Куда ходить за настоящей базой. Без переменной тесты по PostgreSQL
+#: пропускаются: у разработчика может не быть под рукой сервера, а вот в CI
+#: он поднимается сервисом, и там пропусков быть не должно.
+TEST_DSN = os.environ.get("TEST_DATABASE_URL")
+
+
+@pytest.fixture
+async def postgres_engine() -> AsyncIterator[AsyncEngine | None]:
+    """Движок и таблицы для тестов по настоящей базе.
+
+    Движок создаётся на каждый тест, а не один на прогон: соединения asyncpg
+    привязаны к своей петле событий, а у каждого теста она своя. Общий движок
+    падал бы на втором тесте с невнятной ошибкой про закрытую петлю.
+    """
+    if TEST_DSN is None:
+        # Не skip: эту фикстуру запрашивают все параметры, включая память,
+        # и пропуск здесь унёс бы с собой и её тесты.
+        yield None
+        return
+    engine = create_engine(TEST_DSN)
+    async with engine.begin() as connection:
+        await connection.run_sync(metadata.create_all)
+        # Чистим перед тестом, а не после: если предыдущий упал, его мусор не
+        # должен утащить за собой следующий.
+        await connection.execute(
+            text("TRUNCATE referrals, dialogs, usage, users RESTART IDENTITY CASCADE")
+        )
+    try:
+        yield engine
+    finally:
+        await engine.dispose()
+
+
+@pytest.fixture(params=["memory", "postgres"])
+async def storage(
+    request: pytest.FixtureRequest, postgres_engine: AsyncEngine | None
+) -> AsyncIterator[Storage]:
     """Хранилище под тестом.
 
-    На фазе 3 сюда добавляется параметр "postgres" — тела тестов не меняются.
+    Один и тот же набор тестов гоняется по обеим реализациям. В памяти
+    атомарность получается сама собой — внутри операции нет ни одного await.
+    В PostgreSQL её обеспечивают ограничения схемы и блокировки строк, и
+    именно поэтому параллельные тесты здесь не формальность.
     """
     if request.param == "memory":
         yield InMemoryStorage()
         return
+
+    if request.param == "postgres":
+        if postgres_engine is None:
+            pytest.skip("TEST_DATABASE_URL не задан")
+        yield PostgresStorage(postgres_engine)
+        return
+
     raise AssertionError(f"неизвестная реализация хранилища: {request.param}")
 
 

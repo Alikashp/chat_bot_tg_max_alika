@@ -108,21 +108,6 @@ class DialogState:
         )
 
 
-class MenuAction(StrEnum):
-    """Кнопки постоянного меню (§2.1).
-
-    Это абстракция: в Telegram меню рисуется reply-клавиатурой и кнопка
-    возвращается текстом, в MAX — inline-клавиатурой и кнопка возвращается
-    payload'ом (постоянных клавиатур в MAX нет, см. docs/research.md §1.6).
-    Ядро знает только про действие, способ доставки — забота адаптера.
-    """
-
-    IMAGES = "menu:images"
-    PRESETS = "menu:presets"
-    PROFILE = "menu:profile"
-    TARIFFS = "menu:tariffs"
-
-
 @dataclass(frozen=True, slots=True)
 class Button:
     """Кнопка под сообщением.

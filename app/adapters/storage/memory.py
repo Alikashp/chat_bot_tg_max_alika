@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, date, datetime
 from itertools import count
@@ -31,7 +32,15 @@ from app.core.models import (
 class InMemoryStorage:
     """Реализация порта Storage поверх обычных словарей."""
 
-    def __init__(self) -> None:
+    def __init__(self, clock: Callable[[], datetime] | None = None) -> None:
+        """
+        Args:
+            clock: Источник времени. Нужен тестам про суточные окна: без него
+                хранилище писало бы отметки по настоящим часам, пока
+                сценарий живёт по подставным, и проверка «потолок наград
+                сбрасывается назавтра» молча ничего бы не проверяла.
+        """
+        self._now = clock if clock is not None else _utc_now
         self._ids = count(1)
         self._users: dict[UserId, User] = {}
         self._by_external: dict[tuple[MessengerKind, str], UserId] = {}
@@ -78,7 +87,7 @@ class InMemoryStorage:
             external_id=external_id,
             tariff=TariffId.FREE,
             referral_code=referral_code,
-            created_at=datetime.now(UTC),
+            created_at=self._now(),
             daily_image_quota=daily_image_quota,
             referred_by=referred_by,
         )
@@ -176,7 +185,7 @@ class InMemoryStorage:
         self._require_user(referee_id)
         if referee_id in self._referrals:
             return False
-        self._referrals[referee_id] = (referrer_id, datetime.now(UTC))
+        self._referrals[referee_id] = (referrer_id, self._now())
         return True
 
     async def count_referrals(self, referrer_id: UserId) -> int:
@@ -198,3 +207,8 @@ class InMemoryStorage:
         if user is None:
             raise KeyError(f"нет пользователя с id={user_id}")
         return user
+
+
+def _utc_now() -> datetime:
+    """Настоящие часы — значение по умолчанию."""
+    return datetime.now(UTC)

@@ -15,7 +15,11 @@ from aiogram import Bot, Dispatcher
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.types import Message
 from aiohttp import web
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncEngine
 
+from app.adapters.storage.migrations import upgrade_to_head_async
+from app.adapters.storage.postgres import create_engine
 from app.adapters.telegram.intake import dedup_key
 from app.config import Settings, get_settings
 from app.core import texts
@@ -99,10 +103,37 @@ async def _register_webhook(bot: Bot, settings: Settings) -> None:
     logger.info("webhook_registered", messenger="telegram")
 
 
+async def _prepare_database(settings: Settings) -> AsyncEngine | None:
+    """Готовит базу, если она настроена.
+
+    Возвращает None, пока DATABASE_URL не задан: до фазы 4 продуктовые
+    сценарии к боту не подключены, и хранилище ему не нужно. С фазы 4
+    переменная станет обязательной — подписки и лимиты обязаны переживать
+    выкатку, а без базы они не переживают даже перезапуск.
+    """
+    if settings.database_url is None:
+        logger.warning("database_not_configured")
+        return None
+
+    if settings.run_migrations_on_start:
+        await upgrade_to_head_async(settings.database_url)
+        logger.info("migrations_applied")
+
+    engine = create_engine(settings.database_url)
+    # Проверяем связь сразу: узнать о неверном адресе на старте лучше, чем
+    # у первого же пользователя.
+    async with engine.connect() as connection:
+        await connection.execute(text("SELECT 1"))
+    logger.info("database_ready")
+    return engine
+
+
 async def run() -> None:
     """Поднимает сервис и работает до SIGTERM."""
     settings = get_settings()
     configure_logging(settings.log_level, json_output=settings.app_env == "production")
+
+    engine = await _prepare_database(settings)
 
     bot = Bot(
         token=settings.telegram_bot_token,
@@ -142,6 +173,7 @@ async def run() -> None:
                 }
             ],
             "dedup_keys": len(dedup),
+            "database": "ready" if engine is not None else "not_configured",
         }
 
     app = create_app(
@@ -191,6 +223,8 @@ async def run() -> None:
         abandoned = await queue.drain(settings.shutdown_timeout_seconds)
         await runner.cleanup()
         await bot.session.close()
+        if engine is not None:
+            await engine.dispose()
 
         logger.info("shutdown_complete", abandoned=abandoned)
 

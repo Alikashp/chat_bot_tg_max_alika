@@ -107,6 +107,14 @@ class InMemoryStorage:
             user, tariff=tariff, tariff_expires_at=expires_at
         )
 
+    async def set_pending(self, user_id: UserId, pending: str | None) -> None:
+        user = self._require_user(user_id)
+        self._users[user_id] = replace(user, pending=pending)
+
+    async def set_retry_context(self, user_id: UserId, context: str | None) -> None:
+        user = self._require_user(user_id)
+        self._users[user_id] = replace(user, retry_context=context)
+
     # --- Дневной расход ------------------------------------------------
 
     async def get_usage(self, user_id: UserId, day: date) -> Usage:

@@ -44,6 +44,14 @@ class SentPhoto:
 
 
 @dataclass
+class SentPhotoRef:
+    chat: Chat
+    photo_ref: str
+    caption: str | None
+    keyboard: Keyboard | None
+
+
+@dataclass
 class EditedText:
     ref: MessageRef
     text: str
@@ -64,15 +72,22 @@ class FakeMessenger:
     def __init__(self) -> None:
         self.texts: list[SentText] = []
         self.photos: list[SentPhoto] = []
+        self.photo_refs: list[SentPhotoRef] = []
         self.text_edits: list[EditedText] = []
         self.photo_edits: list[EditedToPhoto] = []
         self.typing: list[Chat] = []
+        self.downloaded: list[str] = []
         self.answered_callbacks: list[str] = []
         #: Если задано, отправка текста падает. Нужно для проверки инварианта:
         #: лимит не списывается, когда результат до пользователя не доехал.
         self.fail_send: Exception | None = None
         #: То же для замены сообщения картинкой.
         self.fail_edit_to_photo: Exception | None = None
+        #: Ссылка, которую мессенджер возвращает на доставленную картинку.
+        #: None означает «мессенджер ссылки не даёт» — такое тоже надо уметь.
+        self.delivered_photo_ref: str | None = "photo-ref"
+        #: Чем падает скачивание присланного фото.
+        self.fail_download: Exception | None = None
         self._next_id = 0
 
     def _new_ref(self, chat: Chat) -> MessageRef:
@@ -120,15 +135,31 @@ class FakeMessenger:
         *,
         caption: str | None = None,
         keyboard: Keyboard | None = None,
-    ) -> None:
+    ) -> str | None:
         if self.fail_edit_to_photo is not None:
             raise self.fail_edit_to_photo
         self.photo_edits.append(EditedToPhoto(ref, photo, caption, keyboard))
+        return self.delivered_photo_ref
+
+    async def send_photo_by_ref(
+        self,
+        chat: Chat,
+        photo_ref: str,
+        *,
+        caption: str | None = None,
+        keyboard: Keyboard | None = None,
+        show_menu: bool = True,
+    ) -> MessageRef:
+        self.photo_refs.append(SentPhotoRef(chat, photo_ref, caption, keyboard))
+        return self._new_ref(chat)
 
     async def send_typing(self, chat: Chat) -> None:
         self.typing.append(chat)
 
     async def download_photo(self, file_id: str, *, max_bytes: int) -> Photo:
+        if self.fail_download is not None:
+            raise self.fail_download
+        self.downloaded.append(file_id)
         return Photo(data=PNG_BYTES)
 
     async def answer_callback(
@@ -225,3 +256,30 @@ class FrozenClock:
         from datetime import timedelta
 
         self.now += timedelta(**kwargs)
+
+
+class FakeGuard:
+    """Ограничитель одновременных задач, за которым видно, что он сработал."""
+
+    def __init__(self, *, limit: int = 1) -> None:
+        self._limit = limit
+        self._active: dict[str, int] = {}
+        self.refused: list[str] = []
+
+    def try_acquire(self, key: str) -> bool:
+        current = self._active.get(key, 0)
+        if current >= self._limit:
+            self.refused.append(key)
+            return False
+        self._active[key] = current + 1
+        return True
+
+    def release(self, key: str) -> None:
+        current = self._active.get(key, 0)
+        if current <= 1:
+            self._active.pop(key, None)
+            return
+        self._active[key] = current - 1
+
+    def active(self, key: str) -> int:
+        return self._active.get(key, 0)

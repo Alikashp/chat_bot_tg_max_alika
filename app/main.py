@@ -1,7 +1,8 @@
 """Точка входа: сборка зависимостей и запуск сервиса.
 
 Здесь и только здесь конкретные реализации соединяются с портами. Всё, что
-выше по стеку, знает лишь протоколы.
+выше по стеку, знает лишь протоколы: сценарии не подозревают ни про aiogram,
+ни про httpx, ни про PostgreSQL.
 """
 
 from __future__ import annotations
@@ -9,23 +10,34 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import signal
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 
+import httpx
 from aiogram import Bot, Dispatcher
 from aiogram.client.session.aiohttp import AiohttpSession
-from aiogram.types import Message
 from aiohttp import web
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from app.adapters.ai.http import create_client
+from app.adapters.ai.images import OpenAIImages
+from app.adapters.ai.resilience import ProviderPolicy, ResilientCaller
+from app.adapters.ai.text import OpenAICompatibleLLM
 from app.adapters.storage.migrations import upgrade_to_head_async
-from app.adapters.storage.postgres import create_engine
+from app.adapters.storage.postgres import PostgresStorage, create_engine
+from app.adapters.telegram import router as telegram_router
 from app.adapters.telegram.intake import dedup_key
+from app.adapters.telegram.messenger import TelegramMessenger
 from app.config import Settings, get_settings
-from app.core import texts
+from app.core.scenarios.deps import Deps
+from app.core.settings import CoreSettings
+from app.infra.antiflood import FloodGuard
 from app.infra.dedup import Deduplicator
 from app.infra.logging import configure_logging, get_logger
 from app.infra.queue import JobQueue
+from app.infra.retry import RetryPolicy
 from app.infra.server import Outcome, create_app
 
 logger = get_logger(__name__)
@@ -34,28 +46,25 @@ logger = get_logger(__name__)
 #: (§3.4.6 требует явный таймаут на каждый HTTP-вызов).
 TELEGRAM_API_TIMEOUT = 15.0
 
-#: На фазе 1 боту нужны только сообщения. Список расширяется вместе со
-#: сценариями: чем он уже, тем меньше мусорного трафика на вебхук.
-#: На фазе 4 сюда добавляется callback_query, иначе нажатия кнопок просто
-#: не будут доходить.
-ALLOWED_UPDATES = ["message"]
+#: Что бот получает на вебхук. Чем уже список, тем меньше мусорного трафика.
+#: callback_query здесь обязателен: без него нажатия inline-кнопок просто не
+#: доходят, и это выглядит как «кнопки не работают».
+ALLOWED_UPDATES = ["message", "callback_query"]
 
 
-def build_dispatcher() -> Dispatcher:
-    """Собирает диспетчер aiogram.
+@dataclass(slots=True)
+class Wiring:
+    """Собранное приложение и всё, что при остановке нужно закрыть."""
 
-    Фаза 1: сквозная проверка контура. Бот отвечает «понг» на любое
-    сообщение — этого достаточно, чтобы убедиться, что путь
-    «Railway → вебхук → очередь → воркер → ответ» работает целиком.
-    Реальные сценарии приходят на фазе 4.
-    """
-    dispatcher = Dispatcher()
+    bot: Bot
+    dispatcher: Dispatcher
+    engine: AsyncEngine
+    http_clients: tuple[httpx.AsyncClient, ...]
 
-    @dispatcher.message()
-    async def reply_pong(message: Message) -> None:
-        await message.answer(texts.PONG)
 
-    return dispatcher
+def _utc_now() -> datetime:
+    """Часы приложения. Всегда с зоной: наивное время ломает счёт суток."""
+    return datetime.now(UTC)
 
 
 def build_intake(queue: JobQueue[dict[str, Any]], dedup: Deduplicator) -> Any:
@@ -87,6 +96,105 @@ def build_intake(queue: JobQueue[dict[str, Any]], dedup: Deduplicator) -> Any:
     return submit
 
 
+def build_providers(
+    settings: Settings,
+) -> tuple[OpenAICompatibleLLM, OpenAIImages, tuple[httpx.AsyncClient, ...]]:
+    """Создаёт провайдеров ИИ вместе с их обвязкой.
+
+    Клиентов два, а не один: у текста и картинок разные таймауты, и общий
+    клиент означал бы либо минуту ожидания текста, либо обрыв картинки на
+    середине.
+    """
+    llm_client = create_client(settings.llm_timeout_seconds)
+    image_client = create_client(settings.image_timeout_seconds)
+
+    llm = OpenAICompatibleLLM(
+        llm_client,
+        base_url=settings.llm_base_url,
+        api_key=settings.llm_api_key,
+        caller=ResilientCaller(
+            "llm",
+            ProviderPolicy(
+                rate=settings.llm_rate_per_second,
+                burst=settings.llm_burst,
+                concurrency=settings.llm_concurrency,
+            ),
+        ),
+        system_prompt=settings.llm_system_prompt,
+        max_tokens=settings.llm_max_tokens,
+    )
+
+    images = OpenAIImages(
+        image_client,
+        base_url=settings.image_base_url,
+        api_key=settings.images_api_key,
+        caller=ResilientCaller(
+            "images",
+            ProviderPolicy(
+                rate=settings.image_rate_per_second,
+                burst=settings.image_burst,
+                concurrency=settings.image_concurrency,
+                retry=RetryPolicy(attempts=settings.image_retry_attempts),
+                # Таймаут не значит, что на той стороне ничего не нарисовали.
+                # Повтор рискует оплатить одну картинку дважды, а пользователь
+                # от отказа не теряет ничего: лимит списывается только за
+                # доставленный результат.
+                retry_on_timeout=False,
+            ),
+        ),
+        model=settings.image_model,
+        size=settings.image_size,
+    )
+    return llm, images, (llm_client, image_client)
+
+
+def build_core_settings(settings: Settings, bot_username: str) -> CoreSettings:
+    """Продуктовые настройки ядра из настроек приложения."""
+    return CoreSettings(
+        bot_username=bot_username,
+        model_economy=settings.model_economy,
+        model_standard=settings.model_standard,
+        max_photo_bytes=settings.max_photo_bytes,
+    )
+
+
+async def build_wiring(settings: Settings) -> Wiring:
+    """Соединяет реализации с портами и собирает диспетчер бота."""
+    engine = await _prepare_database(settings)
+
+    bot = Bot(
+        token=settings.telegram_bot_token,
+        session=AiohttpSession(timeout=TELEGRAM_API_TIMEOUT),
+    )
+    # Имя бота спрашиваем у самого Telegram, а не заводим переменную
+    # окружения: лишняя переменная — это лишний способ разойтись с
+    # действительностью, а в ней собираются реферальные ссылки.
+    me = await bot.get_me()
+    if me.username is None:
+        raise RuntimeError("у бота нет username — реферальные ссылки не собрать")
+    logger.info("bot_identified", bot_id=me.id)
+
+    llm, images, http_clients = build_providers(settings)
+
+    deps = Deps(
+        storage=PostgresStorage(engine),
+        messenger=TelegramMessenger(bot),
+        llm=llm,
+        images=images,
+        settings=build_core_settings(settings, me.username),
+        logger=get_logger("scenarios"),
+        guard=FloodGuard(limit=settings.flood_limit_per_user),
+        now=_utc_now,
+    )
+
+    return Wiring(
+        bot=bot,
+        dispatcher=telegram_router.build_dispatcher(deps),
+        engine=engine,
+        http_clients=http_clients,
+    )
+
+
 async def _register_webhook(bot: Bot, settings: Settings) -> None:
     """Регистрирует вебхук при старте.
 
@@ -103,25 +211,17 @@ async def _register_webhook(bot: Bot, settings: Settings) -> None:
     logger.info("webhook_registered", messenger="telegram")
 
 
-async def _prepare_database(settings: Settings) -> AsyncEngine | None:
-    """Готовит базу, если она настроена.
+async def _prepare_database(settings: Settings) -> AsyncEngine:
+    """Накатывает миграции и проверяет связь.
 
-    Возвращает None, пока DATABASE_URL не задан: до фазы 4 продуктовые
-    сценарии к боту не подключены, и хранилище ему не нужно. С фазы 4
-    переменная станет обязательной — подписки и лимиты обязаны переживать
-    выкатку, а без базы они не переживают даже перезапуск.
+    Проверка сразу, а не у первого пользователя: неверный адрес базы должен
+    валить старт, а не превращаться в поток ошибок в чате.
     """
-    if settings.database_url is None:
-        logger.warning("database_not_configured")
-        return None
-
     if settings.run_migrations_on_start:
         await upgrade_to_head_async(settings.database_url)
         logger.info("migrations_applied")
 
     engine = create_engine(settings.database_url)
-    # Проверяем связь сразу: узнать о неверном адресе на старте лучше, чем
-    # у первого же пользователя.
     async with engine.connect() as connection:
         await connection.execute(text("SELECT 1"))
     logger.info("database_ready")
@@ -133,17 +233,11 @@ async def run() -> None:
     settings = get_settings()
     configure_logging(settings.log_level, json_output=settings.app_env == "production")
 
-    engine = await _prepare_database(settings)
-
-    bot = Bot(
-        token=settings.telegram_bot_token,
-        session=AiohttpSession(timeout=TELEGRAM_API_TIMEOUT),
-    )
-    dispatcher = build_dispatcher()
+    wiring = await build_wiring(settings)
 
     async def handle_update(raw_update: dict[str, Any]) -> None:
         """Обрабатывает одно обновление вне HTTP-запроса."""
-        await dispatcher.feed_raw_update(bot, raw_update)
+        await wiring.dispatcher.feed_raw_update(wiring.bot, raw_update)
 
     queue: JobQueue[dict[str, Any]] = JobQueue(
         "telegram-updates",
@@ -173,7 +267,7 @@ async def run() -> None:
                 }
             ],
             "dedup_keys": len(dedup),
-            "database": "ready" if engine is not None else "not_configured",
+            "database": "ready",
         }
 
     app = create_app(
@@ -204,7 +298,7 @@ async def run() -> None:
         # Если регистрация не удалась, поднимать сервис бессмысленно: бот не
         # получит ни одного сообщения. Падаем, и Railway перезапускает нас по
         # restartPolicy из railway.json.
-        await _register_webhook(bot, settings)
+        await _register_webhook(wiring.bot, settings)
 
         stop = asyncio.Event()
         loop = asyncio.get_running_loop()
@@ -222,9 +316,10 @@ async def run() -> None:
         await site.stop()
         abandoned = await queue.drain(settings.shutdown_timeout_seconds)
         await runner.cleanup()
-        await bot.session.close()
-        if engine is not None:
-            await engine.dispose()
+        await wiring.bot.session.close()
+        for client in wiring.http_clients:
+            await client.aclose()
+        await wiring.engine.dispose()
 
         logger.info("shutdown_complete", abandoned=abandoned)
 

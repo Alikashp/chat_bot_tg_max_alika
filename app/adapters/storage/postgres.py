@@ -49,6 +49,11 @@ def create_engine(dsn: str, *, echo: bool = False) -> AsyncEngine:
         pool_pre_ping=True,
         pool_size=10,
         max_overflow=10,
+        # Без этого текст ошибки SQLAlchemy содержит запрос вместе с
+        # параметрами, а среди параметров — переписка пользователя. В логах
+        # содержимого сообщений быть не должно (§3.5), а ошибка базы рано или
+        # поздно окажется в логе.
+        hide_parameters=True,
     )
 
 
@@ -142,6 +147,16 @@ class PostgresStorage:
             .where(users.c.id == user_id)
             .values(tariff=tariff.value, tariff_expires_at=expires_at)
         )
+        async with self._session() as session, session.begin():
+            await session.execute(query)
+
+    async def set_pending(self, user_id: UserId, pending: str | None) -> None:
+        query = update(users).where(users.c.id == user_id).values(pending=pending)
+        async with self._session() as session, session.begin():
+            await session.execute(query)
+
+    async def set_retry_context(self, user_id: UserId, context: str | None) -> None:
+        query = update(users).where(users.c.id == user_id).values(retry_context=context)
         async with self._session() as session, session.begin():
             await session.execute(query)
 
@@ -340,6 +355,8 @@ def _to_user(row: Any) -> User:
         bonus_messages=row["bonus_messages"],
         bonus_images=row["bonus_images"],
         tariff_expires_at=row["tariff_expires_at"],
+        pending=row["pending"],
+        retry_context=row["retry_context"],
     )
 
 

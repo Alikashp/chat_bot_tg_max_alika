@@ -15,7 +15,6 @@ from datetime import timedelta
 
 from app.core import referral, texts
 from app.core.models import Chat, MessengerKind, User
-from app.core.scenarios import keyboards
 from app.core.scenarios.deps import Deps, Session
 
 #: Сколько попыток подобрать незанятый реферальный код. Коллизия на 10^12
@@ -145,7 +144,7 @@ async def _notify_referrer(deps: Deps, referrer: User) -> None:
         await deps.messenger.send_text(
             Chat(messenger=referrer.messenger, chat_id=referrer.external_id),
             screen.text,
-            keyboard=keyboards.main_menu(),
+            show_menu=True,
         )
     except Exception as error:
         deps.logger.warning(
@@ -164,6 +163,4 @@ async def _greet(
         from_presentations=from_presentations,
         referral_gift=gifted,
     )
-    await deps.messenger.send_text(
-        session.chat, screen.text, keyboard=keyboards.main_menu()
-    )
+    await deps.messenger.send_text(session.chat, screen.text, show_menu=True)

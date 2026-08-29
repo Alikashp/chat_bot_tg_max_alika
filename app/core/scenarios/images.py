@@ -12,8 +12,8 @@ from __future__ import annotations
 from app.core import texts
 from app.core.actions import Action
 from app.core.limits import LimitKind
-from app.core.models import Photo
 from app.core.referral import referral_url
+from app.core.retry_context import RetryContext, RetryKind
 from app.core.scenarios import keyboards, paywall, spending
 from app.core.scenarios.deps import Deps, Session
 
@@ -43,6 +43,10 @@ async def draw(deps: Deps, session: Session, description: str) -> None:
         deps.logger.warning(
             "image_failed", user_id=int(session.user.id), error=repr(error)
         )
+        await deps.storage.set_retry_context(
+            session.user.id,
+            RetryContext(kind=RetryKind.IMAGE, prompt=description).encode(),
+        )
         await deps.messenger.edit_text(
             waiting,
             texts.image_error().text,
@@ -50,20 +54,35 @@ async def draw(deps: Deps, session: Session, description: str) -> None:
         )
         return
 
-    await deps.messenger.edit_to_photo(
+    delivered = await deps.messenger.edit_to_photo(
         waiting, photo, keyboard=keyboards.image_result()
     )
 
     # Картинка доставлена — только теперь списываем.
+    await deps.storage.set_retry_context(
+        session.user.id,
+        RetryContext(
+            kind=RetryKind.IMAGE, prompt=description, result_photo=delivered
+        ).encode(),
+    )
     await spending.charge(deps, session, LimitKind.IMAGES)
 
 
-async def share(deps: Deps, session: Session, photo: Photo) -> None:
-    """«📤 Поделиться»: картинка с подписью и персональной ссылкой (§2.3).
+async def share_by_ref(deps: Deps, session: Session, photo_ref: str) -> None:
+    """Отправляет картинку с подписью и персональной ссылкой (§2.3).
 
     Ссылка здесь не украшение: это единственный виральный канал, встроенный
     прямо в результат, которым и так хочется похвастаться.
+
+    Пересылаем по ссылке мессенджера, а не байтами: картинка у него уже
+    лежит, и заливать её повторно ради подписи было бы лишними секундами
+    ожидания на ровном месте.
     """
+    await deps.messenger.send_photo_by_ref(
+        session.chat, photo_ref, caption=_share_caption(deps, session)
+    )
+
+
+def _share_caption(deps: Deps, session: Session) -> str:
     url = referral_url(deps.settings.bot_username, session.user.referral_code)
-    screen = texts.share_caption(deps.settings.bot_username, url)
-    await deps.messenger.send_photo(session.chat, photo, caption=screen.text)
+    return texts.share_caption(deps.settings.bot_username, url).text

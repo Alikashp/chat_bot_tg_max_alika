@@ -17,7 +17,7 @@ from datetime import UTC, datetime
 
 import pytest
 from sqlalchemy import text
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from app.adapters.storage.postgres import create_engine
@@ -149,3 +149,25 @@ async def test_the_same_id_in_another_messenger_is_a_different_person(
         total = await connection.execute(text("SELECT count(*) FROM users"))
 
     assert total.scalar_one() == 2
+
+
+async def test_database_errors_never_carry_the_conversation(
+    engine: AsyncEngine,
+) -> None:
+    """§3.5: в логах не должно быть содержимого сообщений.
+
+    Текст ошибки SQLAlchemy по умолчанию включает запрос вместе с
+    параметрами, а среди параметров — переписка. Ошибка базы рано или поздно
+    попадает в лог, поэтому параметры отключены на уровне движка.
+    """
+    secret = "совершенно личная переписка"
+
+    with pytest.raises(SQLAlchemyError) as failure:
+        async with engine.begin() as connection:
+            await connection.execute(
+                text("INSERT INTO dialogs (user_id, turns) VALUES (:id, :turns)"),
+                {"id": 10**9, "turns": secret},
+            )
+
+    assert secret not in str(failure.value)
+    assert secret not in repr(failure.value)

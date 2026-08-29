@@ -13,6 +13,7 @@ from app.core import texts
 from app.core.actions import Action
 from app.core.limits import LimitKind
 from app.core.models import ChatTurn, Role
+from app.core.retry_context import RetryContext, RetryKind
 from app.core.scenarios import keyboards, paywall, spending
 from app.core.scenarios.deps import Deps, Session
 
@@ -41,6 +42,12 @@ async def handle_message(deps: Deps, session: Session, text: str) -> None:
         deps.logger.warning(
             "llm_failed", user_id=int(session.user.id), error=repr(error)
         )
+        # Запоминаем сообщение, чтобы «Повторить» повторяло именно его, а не
+        # просило человека набрать всё заново.
+        await deps.storage.set_retry_context(
+            session.user.id,
+            RetryContext(kind=RetryKind.CHAT, prompt=text).encode(),
+        )
         screen = texts.chat_error()
         await deps.messenger.send_text(
             session.chat,
@@ -57,6 +64,7 @@ async def handle_message(deps: Deps, session: Session, text: str) -> None:
     )
 
     # Сюда попадаем только после доставки — теперь можно списывать.
+    await deps.storage.set_retry_context(session.user.id, None)
     await deps.storage.save_dialog(
         session.user.id,
         asked.appended(
@@ -71,6 +79,4 @@ async def start_new_dialog(deps: Deps, session: Session) -> None:
     """«🔄 Новый диалог»: забываем контекст и говорим об этом."""
     await deps.storage.reset_dialog(session.user.id)
     screen = texts.new_dialog_started()
-    await deps.messenger.send_text(
-        session.chat, screen.text, keyboard=keyboards.main_menu()
-    )
+    await deps.messenger.send_text(session.chat, screen.text, show_menu=True)

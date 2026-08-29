@@ -50,18 +50,18 @@ async def test_onboarding_is_three_lines_verbatim(
 
 
 async def test_onboarding_shows_the_menu(deps: Deps, messenger: FakeMessenger) -> None:
-    """§2.1: сразу под первым экраном — постоянная клавиатура."""
+    """§2.1: сразу под первым экраном — постоянное меню.
+
+    Ядро просит меню флагом show_menu, а не клавиатурой под сообщением:
+    у сообщения в Telegram может быть только одна клавиатура, и передай сюда
+    ядро четыре кнопки — постоянное меню превратилось бы в кнопки под одним
+    сообщением и исчезло со следующим. Из каких кнопок меню состоит,
+    проверяется на адаптере (tests/integration/test_telegram_flow.py).
+    """
     await start(deps)
 
-    keyboard = messenger.last_text.keyboard
-    assert keyboard is not None
-    labels = [button.text for row in keyboard.rows for button in row]
-    assert labels == [
-        texts.MENU_IMAGES,
-        texts.MENU_PRESETS,
-        texts.MENU_PROFILE,
-        texts.MENU_TARIFFS,
-    ]
+    assert messenger.last_text.show_menu is True
+    assert messenger.last_text.keyboard is None
 
 
 async def test_new_user_gets_a_referral_code(

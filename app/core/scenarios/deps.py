@@ -16,6 +16,7 @@ from app.core.models import Chat, User
 from app.core.settings import CoreSettings
 from app.core.tariffs import ModelTier, Tariff, tariff_of
 from app.ports.ai import ImageProvider, LLMProvider
+from app.ports.concurrency import Concurrency
 from app.ports.messenger import Messenger
 from app.ports.observability import Logger
 from app.ports.storage import Storage
@@ -31,6 +32,8 @@ class Deps:
     images: ImageProvider
     settings: CoreSettings
     logger: Logger
+    #: Ограничитель одновременных задач на пользователя (§3.4.8).
+    guard: Concurrency
     #: Часы. Передаются отдельно, чтобы тесты про сброс суток не зависели от
     #: того, в какое время их запустили.
     now: Callable[[], datetime]

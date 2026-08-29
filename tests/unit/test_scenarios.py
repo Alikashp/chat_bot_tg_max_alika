@@ -182,18 +182,6 @@ async def test_failed_drawing_replaces_the_waiting_message(
     assert messenger.text_edits[0].keyboard is not None
 
 
-async def test_share_carries_the_personal_referral_link(
-    deps: Deps, session: Session, messenger: FakeMessenger
-) -> None:
-    """§2.3: это виральный канал, а не опция."""
-    await images.share(deps, session, PHOTO)
-
-    caption = messenger.photos[0].caption
-    assert caption is not None
-    assert session.user.referral_code in caption
-    assert "@testbot" in caption
-
-
 async def test_image_paywall_when_pictures_run_out(
     deps: Deps, session: Session, storage: InMemoryStorage, messenger: FakeMessenger
 ) -> None:

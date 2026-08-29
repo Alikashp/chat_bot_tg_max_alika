@@ -23,6 +23,7 @@ from sqlalchemy import (
     MetaData,
     String,
     Table,
+    Text,
     UniqueConstraint,
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -43,6 +44,12 @@ users = Table(
     Column("bonus_messages", Integer, nullable=False, server_default="0"),
     Column("bonus_images", Integer, nullable=False, server_default="0"),
     Column("tariff_expires_at", DateTime(timezone=True), nullable=True),
+    # Чего бот ждёт от пользователя следующим сообщением (см. core/pending.py).
+    Column("pending", String(64), nullable=True),
+    # Что повторить по кнопке «Ещё раз» (см. core/retry_context.py).
+    # Text, а не String: внутри лежит описание картинки, а оно бывает
+    # длиной в абзац.
+    Column("retry_context", Text, nullable=True),
     # Один и тот же числовой id в Telegram и в MAX — разные люди.
     UniqueConstraint("messenger", "external_id", name="uq_users_messenger_external"),
     UniqueConstraint("referral_code", name="uq_users_referral_code"),

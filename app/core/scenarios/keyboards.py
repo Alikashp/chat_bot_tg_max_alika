@@ -114,3 +114,20 @@ def payments_soon() -> Keyboard:
         Button(text=texts.BUTTON_MY_LINK, action=Action.MY_LINK),
         Button(text=texts.MENU_PROFILE, action=Action.MENU_PROFILE),
     )
+
+
+#: Подпись кнопки постоянного меню → действие.
+#:
+#: Нужно там, где мессенджер возвращает нажатие текстом, а не данными кнопки:
+#: в Telegram постоянная клавиатура присылает ровно подпись. Собирается из
+#: MENU_ACTIONS, поэтому расходиться с самой клавиатурой не может.
+_MENU_BY_LABEL: dict[str, Action] = {
+    label: action for row in MENU_ACTIONS for label, action in row
+}
+
+
+def action_for_label(label: str | None) -> str | None:
+    """Действие по подписи кнопки меню; None — если это обычный текст."""
+    if label is None:
+        return None
+    return _MENU_BY_LABEL.get(label.strip())

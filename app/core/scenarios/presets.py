@@ -15,6 +15,7 @@ from app.core.actions import Action
 from app.core.limits import LimitKind
 from app.core.models import Photo
 from app.core.photos import PhotoProblem, check_photo
+from app.core.retry_context import RetryContext, RetryKind
 from app.core.scenarios import keyboards, paywall, spending
 from app.core.scenarios.deps import Deps, Session
 from config import presets as registry
@@ -45,8 +46,19 @@ async def ask_for_photo(deps: Deps, session: Session, preset: Preset) -> None:
     await deps.messenger.send_text(session.chat, screen.text)
 
 
-async def apply(deps: Deps, session: Session, preset: Preset, photo: Photo) -> None:
-    """Обрабатывает присланное фото выбранным пресетом."""
+async def apply(
+    deps: Deps,
+    session: Session,
+    preset: Preset,
+    photo: Photo,
+    source_ref: str | None = None,
+) -> None:
+    """Обрабатывает присланное фото выбранным пресетом.
+
+    ``source_ref`` — ссылка на исходное фото у мессенджера. Нужна кнопке
+    «🔄 Ещё раз»: чтобы применить прикол заново, надо знать, к чему его
+    применяли, а сами байты хранить у себя незачем — они уже лежат там.
+    """
     check = check_photo(photo, max_bytes=deps.settings.max_photo_bytes)
     if check.problem is not None:
         # Отказываем до обращения к провайдеру (§3.5): и деньги целее, и
@@ -75,6 +87,14 @@ async def apply(deps: Deps, session: Session, preset: Preset, photo: Photo) -> N
             preset=preset.id,
             error=repr(error),
         )
+        await deps.storage.set_retry_context(
+            session.user.id,
+            RetryContext(
+                kind=RetryKind.PRESET,
+                preset_id=preset.id,
+                source_photo=source_ref,
+            ).encode(),
+        )
         await deps.messenger.edit_text(
             waiting,
             texts.preset_error().text,
@@ -82,7 +102,16 @@ async def apply(deps: Deps, session: Session, preset: Preset, photo: Photo) -> N
         )
         return
 
-    await deps.messenger.edit_to_photo(
+    delivered = await deps.messenger.edit_to_photo(
         waiting, result, keyboard=keyboards.preset_result()
+    )
+    await deps.storage.set_retry_context(
+        session.user.id,
+        RetryContext(
+            kind=RetryKind.PRESET,
+            preset_id=preset.id,
+            source_photo=source_ref,
+            result_photo=delivered,
+        ).encode(),
     )
     await spending.charge(deps, session, LimitKind.IMAGES)

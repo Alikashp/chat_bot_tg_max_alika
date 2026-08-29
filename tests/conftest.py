@@ -8,7 +8,14 @@ from app.adapters.storage.memory import InMemoryStorage
 from app.core.models import Chat, MessengerKind, User
 from app.core.scenarios.deps import Deps, Session
 from app.core.settings import CoreSettings
-from tests.fakes import FakeImages, FakeLLM, FakeLogger, FakeMessenger, FrozenClock
+from tests.fakes import (
+    FakeGuard,
+    FakeImages,
+    FakeLLM,
+    FakeLogger,
+    FakeMessenger,
+    FrozenClock,
+)
 
 
 @pytest.fixture
@@ -43,6 +50,12 @@ def logger() -> FakeLogger:
 
 
 @pytest.fixture
+def guard() -> FakeGuard:
+    """По умолчанию одна задача на ключ — как в бою (§3.4.8)."""
+    return FakeGuard(limit=1)
+
+
+@pytest.fixture
 def clock() -> FrozenClock:
     return FrozenClock()
 
@@ -60,6 +73,7 @@ def deps(
     images_: FakeImages,
     settings: CoreSettings,
     logger: FakeLogger,
+    guard: FakeGuard,
     clock: FrozenClock,
 ) -> Deps:
     return Deps(
@@ -69,6 +83,7 @@ def deps(
         images=images_,
         settings=settings,
         logger=logger,
+        guard=guard,
         now=clock,
     )
 

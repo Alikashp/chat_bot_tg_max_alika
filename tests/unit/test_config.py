@@ -13,6 +13,8 @@ VALID_ENV: dict[str, Any] = {
     "public_url": "https://bot.example.com",
     "telegram_bot_token": "123456:token",
     "telegram_webhook_secret": "a" * 32,
+    "database_url": "postgresql://bot:bot@localhost:5432/botdb",
+    "llm_api_key": "sk-test",
 }
 
 

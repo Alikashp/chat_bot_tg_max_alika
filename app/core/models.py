@@ -7,7 +7,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from datetime import date, datetime
 from enum import StrEnum
 from typing import NewType
@@ -69,6 +69,11 @@ class User:
     bonus_messages: int = 0
     bonus_images: int = 0
     tariff_expires_at: datetime | None = None
+    #: Чего бот ждёт следующим сообщением — описание картинки или фото под
+    #: прикол. См. core/pending.py. None — обычный чат.
+    pending: str | None = None
+    #: Что повторить по кнопке «Ещё раз». См. core/retry_context.py.
+    retry_context: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,12 +171,11 @@ class Photo:
 class IncomingMessage:
     """Входящее сообщение, приведённое к общему виду обоими адаптерами.
 
-    ``dedup_key`` вычисляет адаптер: в Telegram это ``update_id``, в MAX
-    сквозного идентификатора обновления нет, поэтому ключ составной
-    (см. docs/research.md §1.4).
+    Дедупликации здесь нет намеренно: повтор отсеивается ещё до очереди, в
+    интейке адаптера (app/adapters/telegram/intake.py), — иначе копия заняла
+    бы место в очереди и доехала бы до разбора.
     """
 
-    dedup_key: str
     chat: Chat
     external_user_id: str
     text: str | None = None
@@ -179,5 +183,3 @@ class IncomingMessage:
     action: str | None = None
     start_payload: str | None = None
     callback_id: str | None = None
-    message_ref: MessageRef | None = None
-    extra: dict[str, str] = field(default_factory=dict)

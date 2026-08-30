@@ -24,6 +24,12 @@ CODE_LENGTH = 8
 REFERRAL_PREFIX = "ref_"
 PRESENTATION_PREFIX = "pres_"
 
+#: Где живёт бот. Форма ссылки у Telegram и MAX совпадает до буквы —
+#: «<хост>/<имя бота>?start=<payload>», — различается только хост
+#: (docs/research.md §1.5). Поэтому хост приходит параметром, а не зашит.
+TELEGRAM_HOST = "https://t.me"
+MAX_HOST = "https://max.ru"
+
 
 def generate_code() -> str:
     """Новый реферальный код."""
@@ -35,9 +41,13 @@ def referral_payload(code: str) -> str:
     return f"{REFERRAL_PREFIX}{code}"
 
 
-def referral_url(bot_username: str, code: str) -> str:
-    """Персональная ссылка пользователя."""
-    return f"https://t.me/{bot_username}?start={referral_payload(code)}"
+def referral_url(host: str, bot_username: str, code: str) -> str:
+    """Персональная ссылка пользователя.
+
+    Хост приходит снаружи: у пользователя MAX ссылка обязана вести в MAX, а
+    не в Telegram, иначе приглашение просто не откроется.
+    """
+    return f"{host.rstrip('/')}/{bot_username}?start={referral_payload(code)}"
 
 
 def parse_referral_payload(payload: str) -> str | None:

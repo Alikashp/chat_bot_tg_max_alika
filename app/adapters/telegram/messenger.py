@@ -152,7 +152,7 @@ class TelegramMessenger:
             callback_query_id=callback_id, text=notification
         )
 
-    async def download_photo(self, file_id: str, *, max_bytes: int) -> Photo:
+    async def download_photo(self, photo_ref: str, *, max_bytes: int) -> Photo:
         """Скачивает присланное фото, не давая ему переполнить память.
 
         Проверок размера две, и обе нужны. Первая — по заявленному размеру из
@@ -160,9 +160,9 @@ class TelegramMessenger:
         по фактически прочитанному: заявленный размер приходит снаружи, а на
         такие числа полагаться нельзя (§3.5).
         """
-        file = await self._bot.get_file(file_id)
+        file = await self._bot.get_file(photo_ref)
         if file.file_size is not None and file.file_size > max_bytes:
-            raise PhotoTooLargeError(file_id)
+            raise PhotoTooLargeError(photo_ref)
         if file.file_path is None:
             raise RuntimeError("Telegram не вернул путь к файлу")
 
@@ -181,7 +181,7 @@ class TelegramMessenger:
                 # Обрываем чтение, а не проверяем в конце: иначе достаточно
                 # прислать файл с заниженным размером, чтобы занять память.
                 await stream.aclose()
-                raise PhotoTooLargeError(file_id)
+                raise PhotoTooLargeError(photo_ref)
             chunks.append(chunk)
 
         data = b"".join(chunks)

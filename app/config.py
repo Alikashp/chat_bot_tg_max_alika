@@ -170,6 +170,26 @@ class Settings(BaseSettings):
     #: пролезть.
     flood_limit_per_user: Annotated[int, Field(ge=1, le=10)] = 1
 
+    # --- MAX -----------------------------------------------------------
+
+    #: Токен бота MAX от @MasterBot. Пустой означает «MAX выключен»: сервис
+    #: поднимается только с Telegram.
+    #:
+    #: Необязательность здесь осознанная. Публиковать бота в MAX с августа
+    #: 2025 могут только верифицированные российские юрлица
+    #: (docs/research.md §1.8), и требовать токен на старте значило бы
+    #: уронить работающий Telegram из-за организационной задержки.
+    max_bot_token: str = ""
+
+    #: Секрет вебхука MAX. Пустой означает «тот же, что у Telegram» —
+    #: алфавит у них общий, и второй секрет заводить незачем.
+    max_webhook_secret: str = ""
+
+    #: Таймаут вызовов к MAX. Больше телеграмного: отправка картинки там
+    #: двухшаговая, с загрузкой файла и паузой на готовность вложения
+    #: (docs/research.md §1.7).
+    max_api_timeout_seconds: Annotated[float, Field(gt=0, le=120)] = 30.0
+
     @field_validator("public_url")
     @classmethod
     def _require_https(cls, value: HttpUrl) -> HttpUrl:
@@ -197,6 +217,38 @@ class Settings(BaseSettings):
                 "TELEGRAM_WEBHOOK_SECRET допускает только символы A-Z, a-z, 0-9 и дефис"
             )
         return value
+
+    @field_validator("max_webhook_secret")
+    @classmethod
+    def _validate_max_secret(cls, value: str) -> str:
+        """Тот же алфавит, что у телеграмного (docs/research.md §1.3)."""
+        if value and not set(value) <= _MAX_SECRET_ALPHABET:
+            raise ValueError(
+                "MAX_WEBHOOK_SECRET допускает только символы A-Z, a-z, 0-9 и дефис"
+            )
+        return value
+
+    @property
+    def max_enabled(self) -> bool:
+        """Поднимать ли MAX. Без токена — нет."""
+        return bool(self.max_bot_token)
+
+    @property
+    def max_secret(self) -> str:
+        """Секрет вебхука MAX с откатом на телеграмный.
+
+        Алфавиты совпадают, и заводить две переменные с одним смыслом —
+        верный способ однажды поменять только одну.
+        """
+        return self.max_webhook_secret or self.telegram_webhook_secret
+
+    @property
+    def max_webhook_path(self) -> str:
+        return "/webhook/max"
+
+    @property
+    def max_webhook_url(self) -> str:
+        return f"{str(self.public_url).rstrip('/')}{self.max_webhook_path}"
 
     @property
     def images_api_key(self) -> str:

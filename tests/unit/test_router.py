@@ -173,8 +173,8 @@ async def test_a_photo_keeps_the_chosen_preset(
 ) -> None:
     """Несколько фото подряд под тем же приколом — без переспрашивания."""
     await handle(deps, incoming(action=preset_action("lego")))
-    await handle(deps, incoming(photo_file_id="p1"))
-    await handle(deps, incoming(photo_file_id="p2"))
+    await handle(deps, incoming(photo_ref="p1"))
+    await handle(deps, incoming(photo_ref="p2"))
 
     assert len(images_.edited) == 2
 
@@ -182,7 +182,7 @@ async def test_a_photo_keeps_the_chosen_preset(
 async def test_a_photo_without_a_preset_offers_the_menu(
     deps: Deps, user: User, messenger: FakeMessenger, images_: FakeImages
 ) -> None:
-    await handle(deps, incoming(photo_file_id="p1"))
+    await handle(deps, incoming(photo_ref="p1"))
 
     assert messenger.texts_said() == [texts.PRESETS_ASK]
     assert images_.edited == []

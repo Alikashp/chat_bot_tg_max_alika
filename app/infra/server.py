@@ -8,7 +8,8 @@ HTTP-запроса — иначе мессенджер отвалится по 
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from enum import StrEnum
 from http import HTTPStatus
 from secrets import compare_digest
@@ -20,10 +21,11 @@ from app.infra.logging import get_logger
 
 logger = get_logger(__name__)
 
-#: Заголовок, которым Telegram подписывает каждый запрос вебхука.
-#: noqa ниже — ruff видит слово "secret" в имени и считает это захардкоженным
-#: паролем; здесь это имя HTTP-заголовка, а не значение секрета.
+#: Заголовки, которыми мессенджеры подписывают каждый запрос вебхука.
+#: noqa ниже — ruff видит слово "secret" в именах и считает это захардкоженным
+#: паролем; здесь это имена HTTP-заголовков, а не значения секретов.
 TELEGRAM_SECRET_HEADER = "X-Telegram-Bot-Api-Secret-Token"  # noqa: S105
+MAX_SECRET_HEADER = "X-Max-Bot-Api-Secret"  # noqa: S105
 
 #: Ограничение на размер тела запроса вебхука. Обновление мессенджера — это
 #: небольшой JSON; всё, что заметно больше, к нам отношения не имеет.
@@ -69,34 +71,52 @@ def _is_authorized(request: web.Request, header: str, secret: str) -> bool:
     return compare_digest(incoming.encode("utf-8"), secret.encode("utf-8"))
 
 
+@dataclass(frozen=True, slots=True)
+class Webhook:
+    """Один вебхук: куда стучатся, чем подписано, кому отдавать."""
+
+    #: Имя мессенджера — только для логов.
+    messenger: str
+    path: str
+    #: Заголовок, в котором приходит секрет. У каждого мессенджера свой.
+    secret_header: str
+    secret: str
+    submit: UpdateSubmitter
+
+
 def create_app(
     *,
-    telegram_secret: str,
-    telegram_webhook_path: str,
-    submit: UpdateSubmitter,
+    webhooks: Sequence[Webhook],
     health: HealthProvider,
 ) -> web.Application:
-    """Собирает aiohttp-приложение."""
+    """Собирает aiohttp-приложение.
+
+    Вебхуков может быть несколько: один сервис обслуживает и Telegram, и MAX.
+    Общий у них только этот обработчик — проверить подпись, разобрать JSON,
+    поставить в очередь; всё различие спрятано в submit конкретного адаптера.
+    """
     app = web.Application(client_max_size=MAX_WEBHOOK_BODY_BYTES)
 
-    async def telegram_webhook(request: web.Request) -> web.Response:
-        if not _is_authorized(request, TELEGRAM_SECRET_HEADER, telegram_secret):
-            # Не подсказываем, что именно не так: это чужой запрос.
-            logger.warning("webhook_rejected", messenger="telegram")
-            return web.Response(status=HTTPStatus.FORBIDDEN)
+    def make_handler(webhook: Webhook) -> Callable[[web.Request], Any]:
+        async def handler(request: web.Request) -> web.Response:
+            if not _is_authorized(request, webhook.secret_header, webhook.secret):
+                # Не подсказываем, что именно не так: это чужой запрос.
+                logger.warning("webhook_rejected", messenger=webhook.messenger)
+                return web.Response(status=HTTPStatus.FORBIDDEN)
 
-        try:
-            update = await request.json()
-        except ValueError:
-            logger.warning("webhook_bad_json", messenger="telegram")
-            return web.Response(status=HTTPStatus.BAD_REQUEST)
+            try:
+                update = await request.json()
+            except ValueError:
+                logger.warning("webhook_bad_json", messenger=webhook.messenger)
+                return web.Response(status=HTTPStatus.BAD_REQUEST)
 
-        if not isinstance(update, dict):
-            logger.warning("webhook_bad_payload", messenger="telegram")
-            return web.Response(status=HTTPStatus.BAD_REQUEST)
+            if not isinstance(update, dict):
+                logger.warning("webhook_bad_payload", messenger=webhook.messenger)
+                return web.Response(status=HTTPStatus.BAD_REQUEST)
 
-        outcome = submit(update)
-        return web.Response(status=_status_for(outcome))
+            return web.Response(status=_status_for(webhook.submit(update)))
+
+        return handler
 
     async def health_check(_request: web.Request) -> web.Response:
         payload = health()
@@ -107,7 +127,8 @@ def create_app(
         )
         return web.json_response(payload, status=status)
 
-    app.router.add_post(telegram_webhook_path, telegram_webhook)
+    for webhook in webhooks:
+        app.router.add_post(webhook.path, make_handler(webhook))
     app.router.add_get("/health", health_check)
     return app
 

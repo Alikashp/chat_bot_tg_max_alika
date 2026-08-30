@@ -102,7 +102,7 @@ def test_the_largest_photo_size_is_taken() -> None:
     )
 
     assert incoming is not None
-    assert incoming.photo_file_id == "big"
+    assert incoming.photo_ref == "big"
 
 
 def test_a_caption_counts_as_text() -> None:

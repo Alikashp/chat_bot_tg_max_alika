@@ -15,7 +15,12 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from app.infra.server import TELEGRAM_SECRET_HEADER, Outcome, create_app
+from app.infra.server import (
+    TELEGRAM_SECRET_HEADER,
+    Outcome,
+    Webhook,
+    create_app,
+)
 
 SECRET = "test-webhook-secret-value"
 PATH = "/webhook/telegram"
@@ -46,9 +51,15 @@ async def recorder() -> Recorder:
 @pytest.fixture
 async def client(recorder: Recorder) -> AsyncIterator[WebClient]:
     app = create_app(
-        telegram_secret=SECRET,
-        telegram_webhook_path=PATH,
-        submit=recorder.submit,
+        webhooks=[
+            Webhook(
+                messenger="telegram",
+                path=PATH,
+                secret_header=TELEGRAM_SECRET_HEADER,
+                secret=SECRET,
+                submit=recorder.submit,
+            ),
+        ],
         health=recorder.health,
     )
     test_client: WebClient = TestClient(TestServer(app))

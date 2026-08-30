@@ -35,6 +35,10 @@ async def send_invitation(deps: Deps, session: Session) -> None:
     Отдельным сообщением и без клавиатуры: его пересылают целиком, и всё
     лишнее в нём поедет к другу вместе с текстом.
     """
-    url = referral_url(deps.settings.bot_username, session.user.referral_code)
+    url = referral_url(
+        deps.settings.referral_link_host,
+        deps.settings.bot_username,
+        session.user.referral_code,
+    )
     screen = texts.referral_invite(url)
     await deps.messenger.send_text(session.chat, screen.text, show_menu=False)

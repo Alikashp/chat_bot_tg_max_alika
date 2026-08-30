@@ -94,5 +94,9 @@ async def share_by_ref(deps: Deps, session: Session, photo_ref: str) -> None:
 
 
 def _share_caption(deps: Deps, session: Session) -> str:
-    url = referral_url(deps.settings.bot_username, session.user.referral_code)
+    url = referral_url(
+        deps.settings.referral_link_host,
+        deps.settings.bot_username,
+        session.user.referral_code,
+    )
     return texts.share_caption(deps.settings.bot_username, url).text

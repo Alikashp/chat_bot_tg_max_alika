@@ -12,7 +12,8 @@ from __future__ import annotations
 
 from app.core import texts
 from app.core.actions import Action, buy_action, preset_action
-from app.core.models import Button, Keyboard, TariffId
+from app.core.models import Button, Keyboard
+from app.core.tariffs import PAID_TARIFFS
 
 #: Постоянное меню из четырёх кнопок (§2.1).
 MENU_ACTIONS: tuple[tuple[tuple[str, Action], ...], ...] = (
@@ -107,13 +108,27 @@ def profile() -> Keyboard:
     )
 
 
-def tariff_card(tariff_id: TariffId) -> Keyboard:
-    """Кнопка выбора под карточкой тарифа (§2.8)."""
+def tariffs() -> Keyboard:
+    """Три кнопки выбора под витриной тарифов (§2.8).
+
+    В один ряд: подписи короткие, а выбор из трёх должен читаться как выбор
+    из трёх, а не как три отдельных предложения.
+    """
     return Keyboard.row(
-        Button(
-            text=texts.choose_button(tariff_id),
-            action=buy_action(tariff_id.value),
+        *(
+            Button(
+                text=texts.choose_button(tariff_id),
+                action=buy_action(tariff_id.value),
+            )
+            for tariff_id in PAID_TARIFFS
         )
+    )
+
+
+def referral_offer() -> Keyboard:
+    """Одна кнопка: отправить другу готовое приглашение (§2.7)."""
+    return Keyboard.row(
+        Button(text=texts.BUTTON_SEND_TO_FRIEND, action=Action.REFERRAL_SEND)
     )
 
 

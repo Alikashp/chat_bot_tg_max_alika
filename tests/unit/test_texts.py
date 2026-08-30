@@ -107,8 +107,24 @@ def test_referral_invite_is_a_ready_message_not_a_bare_link() -> None:
 
     assert screen.text == (
         "Тут бесплатный ChatGPT и картинки, "
-        "без VPN и регистрации 👉 https://t.me/bot?start=ref_x"
+        "без регистрации 👉 https://t.me/bot?start=ref_x"
     )
+
+
+def test_the_invitation_does_not_promise_anything_about_vpn() -> None:
+    """Телеграм в России и так открывают через VPN — обещание пустое."""
+    screen = texts.referral_invite("https://t.me/bot?start=ref_x")
+
+    assert "VPN" not in screen.text
+
+
+def test_the_referral_offer_names_the_reward() -> None:
+    """§2.7: сначала выгода, потом ссылка. Иначе непонятно, зачем пересылать."""
+    screen = texts.referral_offer(bonus_messages=50, bonus_images=5)
+
+    assert "+50 сообщений" in screen.text
+    assert "+5 картинок" in screen.text
+    assert screen.buttons == (texts.BUTTON_SEND_TO_FRIEND,)
 
 
 def test_share_caption_carries_the_personal_link() -> None:
@@ -119,12 +135,44 @@ def test_share_caption_carries_the_personal_link() -> None:
     assert "ref_abc" in screen.text
 
 
-def test_pro_card_is_marked_as_popular() -> None:
-    assert "⭐ популярный" in texts.tariff_card(TariffId.PRO).text
+def test_pro_is_marked_as_the_one_people_take() -> None:
+    assert texts.POPULAR_MARK in texts.tariffs_screen().text
+
+
+def test_the_popular_mark_is_not_a_star() -> None:
+    """Звезда в Telegram — валюта, и «⭐ популярный» читается как цена."""
+    assert "⭐" not in texts.POPULAR_MARK
 
 
 def test_max_price_is_formatted_with_a_space() -> None:
-    assert "1 490 ₽/мес" in texts.tariff_card(TariffId.MAX).text
+    assert "1 490 ₽/мес" in texts.tariffs_screen().text
+
+
+def test_all_three_tariffs_fit_one_screen() -> None:
+    """Сравнивают глазами: три отдельных сообщения сравнить нельзя."""
+    screen = texts.tariffs_screen()
+
+    for title in ("Лайт", "Про", "Макс"):
+        assert title in screen.text
+    assert screen.buttons == ("Лайт", "Про", "Макс")
+
+
+def test_every_feature_is_on_its_own_line() -> None:
+    """Перечисление через точки глаз не читает, а пробегает."""
+    lines = texts.tariffs_screen().lines
+
+    assert "· 100 сообщений в день" in lines
+    assert "· голосовой ввод" in lines
+
+
+def test_a_higher_tariff_repeats_what_a_lower_one_gives() -> None:
+    """Иначе Про выглядит так, будто голосовой ввод в нём пропадает."""
+    lite = set(texts.TARIFF_FEATURES[TariffId.LITE])
+    pro = set(texts.TARIFF_FEATURES[TariffId.PRO])
+    biggest = set(texts.TARIFF_FEATURES[TariffId.MAX])
+
+    assert "голосовой ввод" in pro & biggest
+    assert lite - pro == {"40 картинок"}, "различаться должны только числа"
 
 
 # --- Согласование числительных -------------------------------------------
@@ -226,9 +274,23 @@ def test_every_preset_passes_the_linter() -> None:
 
 
 def test_no_screen_is_longer_than_five_lines() -> None:
-    too_long = [screen for screen in texts.SCREENS if len(screen.lines) > 5]
+    too_long = [
+        screen for screen in texts.SCREENS if len(screen.lines) > screen.max_lines
+    ]
 
     assert too_long == []
+
+
+def test_only_the_tariff_screen_raises_the_line_limit() -> None:
+    """Исключение из правила §2.9 должно оставаться ровно одним.
+
+    Потолок в пять строк легко обойти, подняв max_lines «на этот раз».
+    Тест делает такое обход видимым: список исключений один и лежит здесь.
+    """
+    exceptions = [screen for screen in texts.SCREENS if screen.max_lines != 5]
+
+    assert len(exceptions) == 1
+    assert exceptions[0].buttons == ("Лайт", "Про", "Макс")
 
 
 def test_every_screen_has_a_way_out() -> None:

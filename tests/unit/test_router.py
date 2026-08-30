@@ -261,3 +261,19 @@ async def test_a_refused_slot_does_not_eat_the_description_mode(
     stored = await storage.get_user_by_id(user.id)
     assert stored is not None
     assert pending.is_awaiting_image_prompt(stored.pending)
+
+
+async def test_the_referral_button_leads_to_the_offer_then_the_invitation(
+    deps: Deps, user: User, messenger: FakeMessenger
+) -> None:
+    """Обе кнопки — из профиля и с пейволла — ведут в одно и то же место."""
+    await handle(deps, incoming(action=Action.MY_LINK))
+    await handle(deps, incoming(action=Action.INVITE_FRIEND))
+
+    from_profile, from_paywall = messenger.texts_said()
+    assert from_profile == from_paywall
+    assert "+50 сообщений" in from_profile
+
+    await handle(deps, incoming(action=Action.REFERRAL_SEND))
+
+    assert messenger.texts_said()[-1].startswith("Тут бесплатный ChatGPT")

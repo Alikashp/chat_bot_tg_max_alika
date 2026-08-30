@@ -401,10 +401,35 @@ async def test_profile_opens_by_callback(started: Harness) -> None:
     assert started.calls_of(AnswerCallbackQuery)
 
 
-async def test_tariffs_show_three_cards(started: Harness) -> None:
+async def test_tariffs_arrive_as_one_message_with_three_buttons(
+    started: Harness,
+) -> None:
     await started.press(Action.MENU_TARIFFS)
 
-    assert len(started.messages()) == 3
+    sent = started.messages()
+    assert len(sent) == 1
+    markup = sent[0].reply_markup
+    assert isinstance(markup, InlineKeyboardMarkup)
+    assert [button.text for button in markup.inline_keyboard[0]] == [
+        "Лайт",
+        "Про",
+        "Макс",
+    ]
+
+
+async def test_my_link_offers_a_button_that_sends_the_invitation(
+    started: Harness,
+) -> None:
+    """Два шага: сначала за что, потом само приглашение одной кнопкой."""
+    await started.press(Action.MY_LINK)
+    assert "+50 сообщений" in started.texts_said()[0]
+    started.forget()
+
+    await started.press(Action.REFERRAL_SEND)
+
+    said = started.texts_said()[0]
+    assert said.startswith("Тут бесплатный ChatGPT")
+    assert (await started.user()).referral_code in said
 
 
 # --- Картинки ------------------------------------------------------------

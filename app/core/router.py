@@ -164,7 +164,9 @@ async def _route_action(deps: Deps, session: Session, action: str) -> None:
             await _clear_pending(deps, session)
             await chat.start_new_dialog(deps, session)
         case Action.INVITE_FRIEND | Action.MY_LINK:
-            await referral.show_link(deps, session)
+            await referral.show_offer(deps, session)
+        case Action.REFERRAL_SEND:
+            await referral.send_invitation(deps, session)
         case _:
             # Кнопка из версии, которой больше нет. Тупика быть не должно.
             deps.logger.warning("unknown_action", user_id=int(session.user.id))

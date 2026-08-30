@@ -47,6 +47,10 @@ FORMAL_ADDRESS = re.compile(
 )
 
 #: Не длиннее пяти строк (§2.9). Простыни в мессенджере не читают.
+#:
+#: Экран может поднять этот потолок сам (Screen.max_lines) — но только явно и
+#: с объяснением: витрина тарифов существует ради сравнения, а сравнивать
+#: по пять строк нечего. Тест следит, чтобы исключений не стало больше.
 MAX_LINES = 5
 
 
@@ -101,12 +105,12 @@ def check_screen(screen: Screen) -> list[Violation]:
     for button in screen.buttons:
         violations.extend(check_wording(f"{where} → кнопка «{button}»", button))
 
-    if len(screen.lines) > MAX_LINES:
+    if len(screen.lines) > screen.max_lines:
         violations.append(
             Violation(
                 where,
                 "длина",
-                f"{len(screen.lines)} строк, допускается не больше {MAX_LINES}",
+                f"{len(screen.lines)} строк, допускается не больше {screen.max_lines}",
             )
         )
 

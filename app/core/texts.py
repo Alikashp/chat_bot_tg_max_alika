@@ -28,6 +28,10 @@ class Screen:
     #: или сообщение живёт считаные секунды и заменяется результатом.
     #: Пустое значение при пустых кнопках линтер считает ошибкой.
     next_step: str = ""
+    #: Сколько строк допустимо. По умолчанию пять (§2.9): простыни в
+    #: мессенджере не читают. Поднимать это значение можно только там, где
+    #: сравнение и есть смысл экрана, — и каждое такое место видно в тестах.
+    max_lines: int = 5
 
     @property
     def lines(self) -> list[str]:
@@ -101,14 +105,36 @@ TARIFF_TITLES: dict[TariffId, str] = {
     TariffId.MAX: "Макс",
 }
 
-#: Что обещает каждый платный тариф (§2.8), дословно.
-TARIFF_FEATURES: dict[TariffId, str] = {
-    TariffId.LITE: "100 сообщений в день · 40 картинок · голосовой ввод",
-    TariffId.PRO: "100 сообщений в день, отвечает умнее · 60 картинок",
-    TariffId.MAX: "200 сообщений в день · 150 картинок · 2 видео",
+#: Что обещает каждый платный тариф (§2.8).
+#:
+#: Списком, а не строкой через точки: в одну строку человек не читает
+#: перечисление, он его просматривает. И накопительно — старший тариф
+#: перечисляет всё, что умеет младший. В §2.8 голосовой ввод назван только у
+#: Лайта, из-за чего Про выглядел так, будто ввод в нём пропадает.
+TARIFF_FEATURES: dict[TariffId, tuple[str, ...]] = {
+    TariffId.LITE: (
+        "100 сообщений в день",
+        "40 картинок",
+        "голосовой ввод",
+    ),
+    TariffId.PRO: (
+        "100 сообщений в день",
+        "60 картинок",
+        "голосовой ввод",
+        "отвечает умнее",
+    ),
+    TariffId.MAX: (
+        "200 сообщений в день",
+        "150 картинок",
+        "голосовой ввод",
+        "отвечает умнее",
+        "2 видео",
+    ),
 }
 
-POPULAR_MARK = "⭐ популярный"
+#: Отметка самого ходового тарифа. Без звезды: в Telegram звезда — это
+#: валюта, и «⭐ популярный» читается как «купить за звёзды».
+POPULAR_MARK = "берут чаще всего"
 
 
 # --- Онбординг (§2.1) ----------------------------------------------------
@@ -347,6 +373,22 @@ def profile(
 # --- Рефералка (§2.7) ----------------------------------------------------
 
 
+def referral_offer(*, bonus_messages: int, bonus_images: int) -> Screen:
+    """Что человек получит за друга — до того, как он что-то отправит.
+
+    Голая ссылка сама по себе не объясняет, зачем её пересылать. Сначала
+    выгода, потом кнопка: одно действие, и обоим понятно, за что.
+    """
+    return Screen(
+        text=(
+            f"Позови друга — тебе +{_messages(bonus_messages)} "
+            f"и +{_images(bonus_images)}.\n"
+            "Другу столько же в подарок 🎁"
+        ),
+        buttons=(BUTTON_SEND_TO_FRIEND,),
+    )
+
+
 def referral_invite(referral_url: str) -> Screen:
     """Готовое сообщение для пересылки, а не голая ссылка.
 
@@ -355,10 +397,7 @@ def referral_invite(referral_url: str) -> Screen:
     просто не станет.
     """
     return Screen(
-        text=(
-            "Тут бесплатный ChatGPT и картинки, "
-            f"без VPN и регистрации 👉 {referral_url}"
-        ),
+        text=f"Тут бесплатный ChatGPT и картинки, без регистрации 👉 {referral_url}",
         next_step="готовое сообщение, остаётся переслать",
     )
 
@@ -377,20 +416,41 @@ def friends_invited(count: int) -> str:
 PAYMENTS_SOON = "Оплата скоро заработает 🙏 А пока лимиты можно поднять бесплатно:"
 
 
-def tariff_card(tariff_id: TariffId) -> Screen:
-    """Одна карточка тарифа. Три карточки, без сравнительной таблицы."""
-    tariff = TARIFFS[tariff_id]
-    title = f"{TARIFF_TITLES[tariff_id]} — {_rubles(tariff.price_rub)} ₽/мес"
-    if tariff_id is TariffId.PRO:
-        title = f"{title} {POPULAR_MARK}"
+def tariffs_screen() -> Screen:
+    """Все три тарифа одним сообщением (§2.8).
+
+    Одним, а не тремя: тремя сообщениями сравнить их нельзя — пока листаешь
+    до третьего, первое уже за экраном. Возможности идут списком, по одной в
+    строке: перечисление через точки глаз не читает, а пробегает.
+
+    Отсюда и превышение обычного потолка в пять строк. Здесь сравнение и есть
+    смысл экрана, поэтому потолок поднят явно и только для него.
+    """
+    blocks = [_tariff_block(tariff_id) for tariff_id in PAID_TARIFFS]
     return Screen(
-        text=f"{title}\n{TARIFF_FEATURES[tariff_id]}",
-        buttons=(choose_button(tariff_id),),
+        text="\n\n".join(blocks),
+        buttons=tuple(choose_button(tariff_id) for tariff_id in PAID_TARIFFS),
+        max_lines=24,
     )
 
 
+def _tariff_block(tariff_id: TariffId) -> str:
+    tariff = TARIFFS[tariff_id]
+    title = f"{TARIFF_TITLES[tariff_id]} — {_rubles(tariff.price_rub)} ₽/мес"
+    if tariff_id is TariffId.PRO:
+        title = f"{title} · {POPULAR_MARK}"
+    features = "\n".join(f"· {feature}" for feature in TARIFF_FEATURES[tariff_id])
+    return f"{title}\n{features}"
+
+
 def choose_button(tariff_id: TariffId) -> str:
-    return f"Выбрать {TARIFF_TITLES[tariff_id]}"
+    """Подпись кнопки выбора.
+
+    Одно слово, а не «Выбрать Лайт»: три кнопки стоят в ряд, и с длинными
+    подписями ряд обрезается до нечитаемого. Что это выбор тарифа, ясно из
+    сообщения прямо над кнопками.
+    """
+    return TARIFF_TITLES[tariff_id]
 
 
 def payments_soon() -> Screen:
@@ -506,15 +566,16 @@ def _all_screens() -> tuple[Screen, ...]:
             images_left=2,
             friends=3,
         ),
+        referral_offer(bonus_messages=50, bonus_images=5),
         referral_invite("https://t.me/mybot?start=ref_abc123"),
         referral_reward(),
+        tariffs_screen(),
         payments_soon(),
         too_busy(),
         nothing_to_repeat(),
         still_working(),
         unsupported_input(),
         internal_error(),
-        *(tariff_card(tariff_id) for tariff_id in PAID_TARIFFS),
     )
 
 

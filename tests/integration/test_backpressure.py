@@ -18,9 +18,10 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+from app.adapters.telegram.intake import dedup_key
 from app.infra.dedup import Deduplicator
 from app.infra.queue import JobQueue
-from app.infra.server import TELEGRAM_SECRET_HEADER, create_app
+from app.infra.server import TELEGRAM_SECRET_HEADER, Webhook, create_app
 from app.main import build_intake
 
 SECRET = "backpressure-test-secret"
@@ -52,9 +53,20 @@ async def harness() -> AsyncIterator[Harness]:
     queue.start()
 
     app = create_app(
-        telegram_secret=SECRET,
-        telegram_webhook_path=PATH,
-        submit=build_intake(queue, Deduplicator(ttl_seconds=60, max_keys=1000)),
+        webhooks=[
+            Webhook(
+                messenger="telegram",
+                path=PATH,
+                secret_header=TELEGRAM_SECRET_HEADER,
+                secret=SECRET,
+                submit=build_intake(
+                    queue,
+                    Deduplicator(ttl_seconds=60, max_keys=1000),
+                    messenger="telegram",
+                    key_of=dedup_key,
+                ),
+            ),
+        ],
         health=lambda: {
             "status": "ok",
             "queues": [{"pending": queue.stats().pending}],

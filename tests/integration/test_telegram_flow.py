@@ -51,7 +51,7 @@ from app.core.settings import CoreSettings
 from app.infra.antiflood import FloodGuard
 from app.infra.dedup import Deduplicator
 from app.infra.queue import JobQueue
-from app.infra.server import TELEGRAM_SECRET_HEADER, create_app
+from app.infra.server import TELEGRAM_SECRET_HEADER, Webhook, create_app
 from tests.fakes import PNG_BYTES, FakeImages, FakeLLM, FakeLogger, FrozenClock
 
 SECRET = "integration-webhook-secret"
@@ -252,6 +252,7 @@ class Harness:
 
 @pytest.fixture
 async def harness() -> AsyncIterator[Harness]:
+    from app.adapters.telegram.intake import dedup_key
     from app.main import build_intake
 
     session = RecordingSession()
@@ -285,9 +286,17 @@ async def harness() -> AsyncIterator[Harness]:
     dedup = Deduplicator(ttl_seconds=600, max_keys=1000)
 
     app = create_app(
-        telegram_secret=SECRET,
-        telegram_webhook_path=PATH,
-        submit=build_intake(queue, dedup),
+        webhooks=[
+            Webhook(
+                messenger="telegram",
+                path=PATH,
+                secret_header=TELEGRAM_SECRET_HEADER,
+                secret=SECRET,
+                submit=build_intake(
+                    queue, dedup, messenger="telegram", key_of=dedup_key
+                ),
+            ),
+        ],
         health=lambda: {"status": "ok"},
     )
     client: WebClient = TestClient(TestServer(app))

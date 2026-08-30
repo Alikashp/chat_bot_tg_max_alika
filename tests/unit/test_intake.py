@@ -13,6 +13,12 @@ from app.infra.queue import JobQueue
 from app.infra.server import Outcome
 from app.main import build_intake
 
+
+def _intake(queue: JobQueue[Any], dedup: Deduplicator) -> Any:
+    """Приём обновлений Telegram — с ключом его же адаптера."""
+    return build_intake(queue, dedup, messenger="telegram", key_of=dedup_key)
+
+
 # --- Ключ дедупликации ---------------------------------------------------
 
 
@@ -55,7 +61,7 @@ async def _queue(
 
 async def test_new_update_is_accepted() -> None:
     queue, handled, _ = await _queue()
-    submit = build_intake(queue, Deduplicator(ttl_seconds=60, max_keys=100))
+    submit = _intake(queue, Deduplicator(ttl_seconds=60, max_keys=100))
 
     assert submit({"update_id": 1}) is Outcome.ACCEPTED
 
@@ -66,7 +72,7 @@ async def test_new_update_is_accepted() -> None:
 async def test_repeated_update_is_not_processed_twice() -> None:
     """Двойная отрисовка картинки по одному сообщению недопустима."""
     queue, handled, _ = await _queue()
-    submit = build_intake(queue, Deduplicator(ttl_seconds=60, max_keys=100))
+    submit = _intake(queue, Deduplicator(ttl_seconds=60, max_keys=100))
 
     assert submit({"update_id": 1}) is Outcome.ACCEPTED
     assert submit({"update_id": 1}) is Outcome.DUPLICATE
@@ -77,7 +83,7 @@ async def test_repeated_update_is_not_processed_twice() -> None:
 
 async def test_update_without_id_is_malformed() -> None:
     queue, handled, _ = await _queue()
-    submit = build_intake(queue, Deduplicator(ttl_seconds=60, max_keys=100))
+    submit = _intake(queue, Deduplicator(ttl_seconds=60, max_keys=100))
 
     assert submit({"нет": "id"}) is Outcome.MALFORMED
 
@@ -88,7 +94,7 @@ async def test_update_without_id_is_malformed() -> None:
 async def test_overflow_is_reported() -> None:
     queue, _, release = await _queue(capacity=1, workers=1)
     release.clear()
-    submit = build_intake(queue, Deduplicator(ttl_seconds=60, max_keys=100))
+    submit = _intake(queue, Deduplicator(ttl_seconds=60, max_keys=100))
 
     outcomes = [submit({"update_id": index}) for index in range(10)]
 
@@ -102,7 +108,7 @@ async def test_duplicate_does_not_consume_queue_capacity() -> None:
     queue, _, release = await _queue(capacity=2, workers=1)
     release.clear()
     dedup = Deduplicator(ttl_seconds=60, max_keys=100)
-    submit = build_intake(queue, dedup)
+    submit = _intake(queue, dedup)
 
     for _ in range(20):
         submit({"update_id": 1})
@@ -116,7 +122,7 @@ async def test_duplicate_does_not_consume_queue_capacity() -> None:
 
 async def test_stopping_service_refuses_updates() -> None:
     queue, _, _ = await _queue()
-    submit = build_intake(queue, Deduplicator(ttl_seconds=60, max_keys=100))
+    submit = _intake(queue, Deduplicator(ttl_seconds=60, max_keys=100))
     queue.stop_accepting()
 
     assert submit({"update_id": 1}) is Outcome.STOPPING

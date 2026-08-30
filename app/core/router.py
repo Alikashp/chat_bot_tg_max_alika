@@ -100,8 +100,8 @@ async def handle(deps: Deps, incoming: IncomingMessage) -> None:
         await _route_action(deps, session, action)
         return
 
-    if incoming.photo_file_id is not None:
-        await _handle_photo(deps, session, incoming.photo_file_id)
+    if incoming.photo_ref is not None:
+        await _handle_photo(deps, session, incoming.photo_ref)
         return
 
     if incoming.text:
@@ -189,7 +189,7 @@ async def _pick_preset(deps: Deps, session: Session, preset_id: str) -> None:
 # --- Содержимое ----------------------------------------------------------
 
 
-async def _handle_photo(deps: Deps, session: Session, file_id: str) -> None:
+async def _handle_photo(deps: Deps, session: Session, photo_ref: str) -> None:
     """Пришло фото."""
     preset_id = pending.parse_await_preset(session.user.pending)
     preset = registry.PRESETS.get(preset_id) if preset_id is not None else None
@@ -202,14 +202,14 @@ async def _handle_photo(deps: Deps, session: Session, file_id: str) -> None:
     async def download_and_apply(d: Deps, s: Session) -> None:
         try:
             photo = await d.messenger.download_photo(
-                file_id, max_bytes=d.settings.max_photo_bytes
+                photo_ref, max_bytes=d.settings.max_photo_bytes
             )
         except PhotoTooLargeError:
             # Размер известен до загрузки байтов, поэтому отказ бесплатный:
             # ни лимита, ни запроса к провайдеру (§3.5).
             await _say(d, s, texts.PHOTO_TOO_BIG)
             return
-        await presets.apply(d, s, preset, photo, file_id)
+        await presets.apply(d, s, preset, photo, photo_ref)
 
     # Скачивание внутри ограничителя, а не до него: иначе десяток фото
     # подряд означал бы десяток закачек, из которых пригодится одна.

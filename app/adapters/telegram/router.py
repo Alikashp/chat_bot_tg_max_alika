@@ -87,7 +87,7 @@ def to_incoming(message: Message) -> IncomingMessage | None:
         # Саму команду в текст не отдаём: иначе «/start» уехал бы в чат
         # вопросом пользователя и стоил бы ему сообщения.
         text=None if payload is not None else text,
-        photo_file_id=message.photo[-1].file_id if message.photo else None,
+        photo_ref=message.photo[-1].file_id if message.photo else None,
         start_payload=payload,
     )
 

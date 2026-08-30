@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from app.core import referral
+
 
 @dataclass(frozen=True, slots=True)
 class CoreSettings:
@@ -17,6 +19,11 @@ class CoreSettings:
 
     #: Имя бота без «собаки». Нужно для реферальных ссылок и подписи к картинке.
     bot_username: str
+
+    #: Где живёт бот: t.me для Telegram, max.ru для MAX. Каждый адаптер
+    #: получает свои настройки, поэтому ссылка всегда ведёт в тот мессенджер,
+    #: из которого пришёл человек.
+    referral_link_host: str = referral.TELEGRAM_HOST
 
     #: Часовой пояс, по которому наступает «завтра» из текста пейволла.
     #: Аудитория русскоязычная, поэтому сутки считаем по Москве.

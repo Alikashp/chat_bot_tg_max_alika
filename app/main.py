@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import signal
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -18,6 +19,9 @@ import httpx
 from aiogram import Bot, Dispatcher
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiohttp import web
+from maxapi import Bot as MaxBot
+from maxapi.client.default import DefaultConnectionProperties
+from maxapi.enums.update import UpdateType as MaxUpdateType
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
@@ -25,12 +29,16 @@ from app.adapters.ai.http import create_client
 from app.adapters.ai.images import OpenAIImages
 from app.adapters.ai.resilience import ProviderPolicy, ResilientCaller
 from app.adapters.ai.text import OpenAICompatibleLLM
+from app.adapters.max import router as max_router
+from app.adapters.max.intake import dedup_key as max_dedup_key
+from app.adapters.max.messenger import MaxMessenger
 from app.adapters.storage.migrations import upgrade_to_head_async
 from app.adapters.storage.postgres import PostgresStorage, create_engine
 from app.adapters.telegram import router as telegram_router
 from app.adapters.telegram.intake import dedup_key
 from app.adapters.telegram.messenger import TelegramMessenger
 from app.config import Settings, get_settings
+from app.core.referral import MAX_HOST, TELEGRAM_HOST
 from app.core.scenarios.deps import Deps
 from app.core.settings import CoreSettings
 from app.infra.antiflood import FloodGuard
@@ -38,7 +46,13 @@ from app.infra.dedup import Deduplicator
 from app.infra.logging import configure_logging, get_logger
 from app.infra.queue import JobQueue
 from app.infra.retry import RetryPolicy
-from app.infra.server import Outcome, create_app
+from app.infra.server import (
+    MAX_SECRET_HEADER,
+    TELEGRAM_SECRET_HEADER,
+    Outcome,
+    Webhook,
+    create_app,
+)
 
 logger = get_logger(__name__)
 
@@ -51,6 +65,23 @@ TELEGRAM_API_TIMEOUT = 15.0
 #: доходят, и это выглядит как «кнопки не работают».
 ALLOWED_UPDATES = ["message", "callback_query"]
 
+#: То же для MAX. Три типа против четырнадцати возможных
+#: (docs/research.md §1.4): остальные события боту не нужны.
+MAX_UPDATE_TYPES = [
+    MaxUpdateType.MESSAGE_CREATED,
+    MaxUpdateType.MESSAGE_CALLBACK,
+    MaxUpdateType.BOT_STARTED,
+]
+
+
+@dataclass(slots=True)
+class MaxWiring:
+    """Собранный MAX-бот. Отсутствует целиком, если MAX не настроен."""
+
+    bot: MaxBot
+    http: httpx.AsyncClient
+    handle: Callable[[dict[str, Any]], Awaitable[None]]
+
 
 @dataclass(slots=True)
 class Wiring:
@@ -60,6 +91,7 @@ class Wiring:
     dispatcher: Dispatcher
     engine: AsyncEngine
     http_clients: tuple[httpx.AsyncClient, ...]
+    max: MaxWiring | None
 
 
 def _utc_now() -> datetime:
@@ -67,22 +99,31 @@ def _utc_now() -> datetime:
     return datetime.now(UTC)
 
 
-def build_intake(queue: JobQueue[dict[str, Any]], dedup: Deduplicator) -> Any:
+def build_intake(
+    queue: JobQueue[dict[str, Any]],
+    dedup: Deduplicator,
+    *,
+    messenger: str,
+    key_of: Callable[[dict[str, Any]], str | None],
+) -> Callable[[dict[str, Any]], Outcome]:
     """Собирает функцию приёма обновления для HTTP-обработчика.
 
     Порядок проверок важен. Сначала дедупликация, потом очередь: повтор не
     должен занимать место в очереди, иначе при ретраях мессенджера ёмкость
     выедается копиями одного и того же обновления.
+
+    Ключ вычисляет адаптер: у Telegram есть сквозной update_id, у MAX его нет
+    и ключ составной (docs/research.md §1.4).
     """
 
     def submit(raw_update: dict[str, Any]) -> Outcome:
-        key = dedup_key(raw_update)
+        key = key_of(raw_update)
         if key is None:
-            logger.warning("update_without_id", messenger="telegram")
+            logger.warning("update_without_id", messenger=messenger)
             return Outcome.MALFORMED
 
         if not dedup.is_new(key):
-            logger.info("update_duplicate", messenger="telegram")
+            logger.info("update_duplicate", messenger=messenger)
             return Outcome.DUPLICATE
 
         if not queue.accepting:
@@ -148,10 +189,17 @@ def build_providers(
     return llm, images, (llm_client, image_client)
 
 
-def build_core_settings(settings: Settings, bot_username: str) -> CoreSettings:
-    """Продуктовые настройки ядра из настроек приложения."""
+def build_core_settings(
+    settings: Settings, bot_username: str, *, referral_link_host: str
+) -> CoreSettings:
+    """Продуктовые настройки ядра из настроек приложения.
+
+    У каждого мессенджера свой экземпляр: имя бота и хост ссылки у них разные,
+    всё остальное одинаковое.
+    """
     return CoreSettings(
         bot_username=bot_username,
+        referral_link_host=referral_link_host,
         model_economy=settings.model_economy,
         model_standard=settings.model_standard,
         dialog_max_turns=settings.dialog_max_turns,
@@ -176,24 +224,85 @@ async def build_wiring(settings: Settings) -> Wiring:
     logger.info("bot_identified", bot_id=me.id)
 
     llm, images, http_clients = build_providers(settings)
+    storage = PostgresStorage(engine)
+    # Ограничитель одновременных задач общий на оба мессенджера: ключ
+    # содержит внутренний id пользователя, а он у мессенджеров разный.
+    guard = FloodGuard(limit=settings.flood_limit_per_user)
 
-    deps = Deps(
-        storage=PostgresStorage(engine),
-        messenger=TelegramMessenger(bot),
-        llm=llm,
-        images=images,
-        settings=build_core_settings(settings, me.username),
-        logger=get_logger("scenarios"),
-        guard=FloodGuard(limit=settings.flood_limit_per_user),
-        now=_utc_now,
+    def build_deps(messenger: Any, core_settings: CoreSettings) -> Deps:
+        """Одни и те же зависимости, разный мессенджер и его настройки."""
+        return Deps(
+            storage=storage,
+            messenger=messenger,
+            llm=llm,
+            images=images,
+            settings=core_settings,
+            logger=get_logger("scenarios"),
+            guard=guard,
+            now=_utc_now,
+        )
+
+    deps = build_deps(
+        TelegramMessenger(bot),
+        build_core_settings(settings, me.username, referral_link_host=TELEGRAM_HOST),
     )
+
+    max_wiring = await _build_max(settings, build_deps)
 
     return Wiring(
         bot=bot,
         dispatcher=telegram_router.build_dispatcher(deps),
         engine=engine,
         http_clients=http_clients,
+        max=max_wiring,
     )
+
+
+async def _build_max(
+    settings: Settings,
+    build_deps: Callable[[Any, CoreSettings], Deps],
+) -> MaxWiring | None:
+    """Собирает MAX-бота, если он настроен.
+
+    Без токена возвращает None, и сервис работает только с Telegram. Это не
+    заглушка, а выключатель: публиковать бота в MAX могут только
+    верифицированные юрлица (docs/research.md §1.8), и ронять работающий
+    Telegram из-за организационной задержки было бы неправильно.
+    """
+    if not settings.max_enabled:
+        logger.info("max_not_configured")
+        return None
+
+    bot = MaxBot(
+        token=settings.max_bot_token,
+        # Диспетчер и роутеры библиотеки не используем: маршрутизация у нас
+        # одна и живёт в core. Отключаем и то, что библиотека делает сама.
+        auto_requests=False,
+        auto_check_subscriptions=False,
+        default_connection=DefaultConnectionProperties(
+            timeout=settings.max_api_timeout_seconds,
+            sock_connect=5,
+            # Повторы и предохранитель у нас свои, из infra/. Два независимых
+            # слоя повторов множат нагрузку на лежащий сервис.
+            max_retries=0,
+        ),
+    )
+
+    me = await bot.get_me()
+    if me.username is None:
+        raise RuntimeError("у MAX-бота нет username — реферальные ссылки не собрать")
+    logger.info("max_bot_identified", bot_id=me.user_id)
+
+    http = create_client(settings.max_api_timeout_seconds)
+    deps = build_deps(
+        MaxMessenger(bot, http),
+        build_core_settings(settings, me.username, referral_link_host=MAX_HOST),
+    )
+
+    async def handle(raw_update: dict[str, Any]) -> None:
+        await max_router.handle_update(deps, raw_update)
+
+    return MaxWiring(bot=bot, http=http, handle=handle)
 
 
 async def _register_webhook(bot: Bot, settings: Settings) -> None:
@@ -210,6 +319,30 @@ async def _register_webhook(bot: Bot, settings: Settings) -> None:
         drop_pending_updates=False,
     )
     logger.info("webhook_registered", messenger="telegram")
+
+
+async def _subscribe_max(bot: MaxBot, settings: Settings) -> None:
+    """Подписывает вебхук MAX при старте.
+
+    Перед подпиской снимаем чужие: MAX хранит список подписок, и повторные
+    выкатки с новым адресом накапливали бы их. Каждая лишняя подписка — это
+    доставка того же события ещё раз, а значит лишняя картинка за наши деньги.
+    Дедупликация такое поймает, но полагаться на неё, когда причину можно
+    убрать, неправильно.
+    """
+    target = settings.max_webhook_url
+    existing = await bot.get_subscriptions()
+    for subscription in existing.subscriptions:
+        if subscription.url != target:
+            await bot.unsubscribe_webhook(url=subscription.url)
+            logger.info("max_webhook_removed", messenger="max")
+
+    await bot.subscribe_webhook(
+        url=target,
+        update_types=MAX_UPDATE_TYPES,
+        secret=settings.max_secret,
+    )
+    logger.info("webhook_registered", messenger="max")
 
 
 async def _prepare_database(settings: Settings) -> AsyncEngine:
@@ -250,11 +383,44 @@ async def run() -> None:
         ttl_seconds=settings.dedup_ttl_seconds,
         max_keys=settings.dedup_max_keys,
     )
+    queues = [queue]
+    webhooks = [
+        Webhook(
+            messenger="telegram",
+            path=settings.telegram_webhook_path,
+            secret_header=TELEGRAM_SECRET_HEADER,
+            secret=settings.telegram_webhook_secret,
+            submit=build_intake(queue, dedup, messenger="telegram", key_of=dedup_key),
+        )
+    ]
+
+    if wiring.max is not None:
+        # Очередь у MAX своя. Общая была бы проще, но тогда наплыв в одном
+        # мессенджере съедал бы ёмкость у другого — а мессенджеры независимы,
+        # и падать вместе им незачем.
+        max_queue: JobQueue[dict[str, Any]] = JobQueue(
+            "max-updates",
+            wiring.max.handle,
+            capacity=settings.queue_capacity,
+            workers=settings.queue_workers,
+        )
+        queues.append(max_queue)
+        webhooks.append(
+            Webhook(
+                messenger="max",
+                path=settings.max_webhook_path,
+                secret_header=MAX_SECRET_HEADER,
+                secret=settings.max_secret,
+                submit=build_intake(
+                    max_queue, dedup, messenger="max", key_of=max_dedup_key
+                ),
+            )
+        )
 
     def health() -> dict[str, Any]:
-        stats = queue.stats()
+        accepting = all(each.accepting for each in queues)
         return {
-            "status": "ok" if queue.accepting else "shutting_down",
+            "status": "ok" if accepting else "shutting_down",
             "queues": [
                 {
                     "name": stats.name,
@@ -266,19 +432,17 @@ async def run() -> None:
                     "rejected": stats.rejected,
                     "failed": stats.failed,
                 }
+                for stats in (each.stats() for each in queues)
             ],
             "dedup_keys": len(dedup),
             "database": "ready",
+            "max": "ready" if wiring.max is not None else "not_configured",
         }
 
-    app = create_app(
-        telegram_secret=settings.telegram_webhook_secret,
-        telegram_webhook_path=settings.telegram_webhook_path,
-        submit=build_intake(queue, dedup),
-        health=health,
-    )
+    app = create_app(webhooks=webhooks, health=health)
 
-    queue.start()
+    for each in queues:
+        each.start()
     runner = web.AppRunner(app, access_log=None)
     await runner.setup()
     site = web.TCPSite(runner, host="0.0.0.0", port=settings.port)  # noqa: S104
@@ -300,6 +464,8 @@ async def run() -> None:
         # получит ни одного сообщения. Падаем, и Railway перезапускает нас по
         # restartPolicy из railway.json.
         await _register_webhook(wiring.bot, settings)
+        if wiring.max is not None:
+            await _subscribe_max(wiring.max.bot, settings)
 
         stop = asyncio.Event()
         loop = asyncio.get_running_loop()
@@ -313,13 +479,19 @@ async def run() -> None:
         # приём соединений, и только потом ждём текущие задачи. Если сделать
         # наоборот, между остановкой сокета и запретом на задачи успеет
         # проскочить новое обновление.
-        queue.stop_accepting()
+        for each in queues:
+            each.stop_accepting()
         await site.stop()
-        abandoned = await queue.drain(settings.shutdown_timeout_seconds)
+        abandoned = 0
+        for each in queues:
+            abandoned += await each.drain(settings.shutdown_timeout_seconds)
         await runner.cleanup()
         await wiring.bot.session.close()
         for client in wiring.http_clients:
             await client.aclose()
+        if wiring.max is not None:
+            await wiring.max.bot.close_session()
+            await wiring.max.http.aclose()
         await wiring.engine.dispose()
 
         logger.info("shutdown_complete", abandoned=abandoned)

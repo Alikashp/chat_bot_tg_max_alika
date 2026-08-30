@@ -179,7 +179,9 @@ class IncomingMessage:
     chat: Chat
     external_user_id: str
     text: str | None = None
-    photo_file_id: str | None = None
+    #: Ссылка на присланное фото в терминах мессенджера. Ядро её не
+    #: разбирает: отдаёт обратно адаптеру, чтобы тот скачал файл.
+    photo_ref: str | None = None
     action: str | None = None
     start_payload: str | None = None
     callback_id: str | None = None

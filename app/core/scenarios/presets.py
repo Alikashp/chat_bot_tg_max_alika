@@ -18,6 +18,7 @@ from app.core.photos import PhotoProblem, check_photo
 from app.core.retry_context import RetryContext, RetryKind
 from app.core.scenarios import keyboards, paywall, spending
 from app.core.scenarios.deps import Deps, Session
+from app.ports.ai import ContentRefusedError
 from config import presets as registry
 from config.presets import Preset
 
@@ -28,15 +29,23 @@ _REJECTION_TEXTS: dict[PhotoProblem, str] = {
 }
 
 
+def _preset_buttons() -> tuple[str, ...]:
+    """Подписи приколов в порядке реестра."""
+    return tuple(preset.button for preset in registry.PRESETS.values())
+
+
+def _preset_choices() -> tuple[tuple[str, str], ...]:
+    """Пары «подпись, идентификатор» для клавиатуры."""
+    return tuple((preset.button, preset.id) for preset in registry.PRESETS.values())
+
+
 async def show_menu(deps: Deps, session: Session) -> None:
     """Показывает список приколов — прямо из реестра."""
-    screen = texts.presets_menu(tuple(p.button for p in registry.PRESETS.values()))
+    screen = texts.presets_menu(_preset_buttons())
     await deps.messenger.send_text(
         session.chat,
         screen.text,
-        keyboard=keyboards.presets_menu(
-            tuple((preset.button, preset.id) for preset in registry.PRESETS.values())
-        ),
+        keyboard=keyboards.presets_menu(_preset_choices()),
     )
 
 
@@ -80,6 +89,21 @@ async def apply(
         result = await deps.images.edit(
             photo, preset.instruction, quality=session.tariff.image_quality
         )
+    except ContentRefusedError as refusal:
+        # Отказ по содержанию: дело в самом фото, и повтор ничего не изменит.
+        # Выход с экрана — список приколов, чтобы человек не остался ни с чем.
+        deps.logger.info(
+            "preset_refused",
+            user_id=int(session.user.id),
+            preset=preset.id,
+            reason=str(refusal),
+        )
+        await deps.messenger.edit_text(
+            waiting,
+            texts.preset_refused(_preset_buttons()).text,
+            keyboard=keyboards.presets_menu(_preset_choices()),
+        )
+        return
     except Exception as error:
         deps.logger.warning(
             "preset_failed",

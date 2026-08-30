@@ -16,6 +16,7 @@ from app.core.referral import referral_url
 from app.core.retry_context import RetryContext, RetryKind
 from app.core.scenarios import keyboards, paywall, spending
 from app.core.scenarios.deps import Deps, Session
+from app.ports.ai import ContentRefusedError
 
 
 async def ask_for_description(deps: Deps, session: Session) -> None:
@@ -39,6 +40,15 @@ async def draw(deps: Deps, session: Session, description: str) -> None:
         photo = await deps.images.generate(
             description, quality=session.tariff.image_quality
         )
+    except ContentRefusedError as refusal:
+        # Провайдер ответил по существу: такое он рисовать не станет. Это не
+        # сбой, и предлагать «Повторить» нельзя — повтор даст тот же отказ, а
+        # кнопка обещала бы обратное. Контекст повтора тоже не сохраняем.
+        deps.logger.info(
+            "image_refused", user_id=int(session.user.id), reason=str(refusal)
+        )
+        await deps.messenger.edit_text(waiting, texts.image_refused().text)
+        return
     except Exception as error:
         deps.logger.warning(
             "image_failed", user_id=int(session.user.id), error=repr(error)

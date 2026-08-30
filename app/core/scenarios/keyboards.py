@@ -58,11 +58,20 @@ def image_result() -> Keyboard:
 
 
 def preset_result() -> Keyboard:
-    """Кнопки под обработанным фото (§2.4)."""
-    return Keyboard.row(
-        Button(text=texts.BUTTON_DRAW_AGAIN, action=Action.PRESET_AGAIN),
-        Button(text=texts.BUTTON_SEND_TO_FRIEND, action=Action.PRESET_SHARE),
-        Button(text=texts.BUTTON_ANOTHER_PRESET, action=Action.PRESET_ANOTHER),
+    """Кнопки под обработанным фото (§2.4).
+
+    Два ряда, а не один: три подписи в строку на телефоне не помещаются и
+    обрезаются до «Отп…другу» и «Др…рикол». Лишний ряд дешевле обрезанной
+    подписи — по ней не понять, что делает кнопка.
+    """
+    return Keyboard(
+        rows=(
+            (
+                Button(text=texts.BUTTON_DRAW_AGAIN, action=Action.PRESET_AGAIN),
+                Button(text=texts.BUTTON_SEND_TO_FRIEND, action=Action.PRESET_SHARE),
+            ),
+            (Button(text=texts.BUTTON_ANOTHER_PRESET, action=Action.PRESET_ANOTHER),),
+        )
     )
 
 

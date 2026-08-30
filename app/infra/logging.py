@@ -2,6 +2,11 @@
 
 JSON в stdout — Railway собирает stdout как есть (§5 задания).
 
+Событие кладётся в поле ``message``, а не в структлоговское ``event``. Это не
+косметика: Railway разбирает JSON-строку и показывает в ленте именно
+``message``. Со «своим» именем поля лента показывала уровень и пустую строку
+вместо текста — то есть логов в проде фактически не было.
+
 Главное здесь — процессор ``drop_sensitive``. §3.5 запрещает попадание в логи
 содержимого сообщений и токенов. Полагаться на дисциплину «не логируй лишнего»
 нельзя: рано или поздно кто-нибудь передаст в лог весь объект апдейта. Поэтому
@@ -82,6 +87,9 @@ def configure_logging(level: str = "INFO", *, json_output: bool = True) -> None:
             drop_sensitive,
             structlog.processors.StackInfoRenderer(),
             structlog.processors.format_exc_info,
+            # Строго после drop_sensitive: иначе имя события попадёт под
+            # правило «ключ содержит message» и вырежется само себя.
+            structlog.processors.EventRenamer(to="message", replace_by="_message"),
             renderer,
         ],
         wrapper_class=structlog.make_filtering_bound_logger(getattr(logging, level)),

@@ -11,8 +11,14 @@ import pytest
 
 from app.core import texts
 from app.core.models import TariffId
+from app.core.scenarios import keyboards as scenario_keyboards
 from app.core.texts import Screen
 from scripts.check_texts import check_presets, check_screen, collect
+
+#: Сколько символов помещается в ряд кнопок на телефоне.
+#: Число подобрано по живому прогону: ряд из трёх кнопок общей длиной 43
+#: обрезался до «Отп…другу», ряд из двух длиной 28 читается целиком.
+MAX_ROW_CHARS = 30
 
 # --- Тексты соответствуют заданию дословно -------------------------------
 
@@ -234,3 +240,29 @@ def test_every_screen_has_a_way_out() -> None:
     ]
 
     assert stuck == []
+
+
+def test_no_row_of_buttons_is_too_wide_for_a_phone() -> None:
+    """Три подписи в строку на телефоне обрезаются до нечитаемого огрызка.
+
+    Проверка появилась после живого прогона: под обработанным фото выходили
+    «Отп…другу» и «Др…рикол» — по таким подписям не понять, что делает кнопка.
+    """
+    keyboards = {
+        "меню": scenario_keyboards.main_menu(),
+        "картинка": scenario_keyboards.image_result(),
+        "прикол": scenario_keyboards.preset_result(),
+        "пейволл": scenario_keyboards.paywall(texts.BUTTON_INVITE_FOR_IMAGES),
+        "профиль": scenario_keyboards.profile(),
+        "оплата": scenario_keyboards.payments_soon(),
+    }
+
+    for name, keyboard in keyboards.items():
+        for row in keyboard.rows:
+            assert len(row) <= 2, f"{name}: три кнопки в ряду не поместятся"
+            if len(row) < 2:
+                # Одинокая кнопка занимает всю ширину, и её подпись
+                # переносится, а не обрезается.
+                continue
+            width = sum(len(button.text) for button in row)
+            assert width <= MAX_ROW_CHARS, f"{name}: ряд длиной {width} не поместится"

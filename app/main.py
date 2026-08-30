@@ -154,6 +154,7 @@ def build_core_settings(settings: Settings, bot_username: str) -> CoreSettings:
         bot_username=bot_username,
         model_economy=settings.model_economy,
         model_standard=settings.model_standard,
+        dialog_max_turns=settings.dialog_max_turns,
         max_photo_bytes=settings.max_photo_bytes,
     )
 

@@ -28,7 +28,7 @@ from app.adapters.ai.resilience import ProviderPolicy, ResilientCaller
 from app.adapters.ai.text import OpenAICompatibleLLM
 from app.core.models import ChatTurn, Photo, Role
 from app.infra.retry import RetryPolicy
-from app.ports.ai import ImageQuality
+from app.ports.ai import ContentRefusedError, ImageQuality
 from tests.fakes import PNG_BYTES
 
 BASE = "https://api.example.com/v1"
@@ -297,3 +297,74 @@ async def test_an_image_server_error_is_still_retried() -> None:
     await images.generate("кот", quality=ImageQuality.LOW)
 
     assert route.call_count == 2
+
+
+# --- Отказ по содержанию -------------------------------------------------
+
+
+@respx.mock
+async def test_a_moderation_refusal_is_not_a_failure() -> None:
+    """Провайдер жив и ответил по существу: повторять и рвать цепь нечего."""
+    route = respx.post(IMAGE_URL).mock(
+        return_value=httpx.Response(
+            400,
+            json={
+                "error": {
+                    "code": "moderation_blocked",
+                    "message": "Your request was rejected by our safety system",
+                }
+            },
+        )
+    )
+
+    with pytest.raises(ContentRefusedError):
+        await _images().generate("что-нибудь запрещённое", quality=ImageQuality.LOW)
+
+    assert route.call_count == 1
+
+
+@respx.mock
+async def test_a_content_policy_refusal_is_recognised_too() -> None:
+    """Один и тот же отказ разные API называют по-разному."""
+    respx.post(CHAT_URL).mock(
+        return_value=httpx.Response(
+            400, json={"error": {"code": "content_policy_violation"}}
+        )
+    )
+
+    with pytest.raises(ContentRefusedError):
+        await _llm().complete(TURNS, model="gpt-5")
+
+
+@respx.mock
+async def test_the_refusal_never_carries_the_providers_message() -> None:
+    """В сообщении провайдера бывает эхо запроса — ему не место в логах."""
+    respx.post(IMAGE_URL).mock(
+        return_value=httpx.Response(
+            400,
+            json={
+                "error": {
+                    "code": "moderation_blocked",
+                    "message": "rejected prompt: голая женщина",
+                }
+            },
+        )
+    )
+
+    with pytest.raises(ContentRefusedError) as refusal:
+        await _images().generate("голая женщина", quality=ImageQuality.LOW)
+
+    assert "женщина" not in str(refusal.value)
+
+
+@respx.mock
+async def test_an_ordinary_rejection_keeps_its_machine_code() -> None:
+    """Без кода отладка отказа сводится к гаданию по номеру статуса."""
+    respx.post(CHAT_URL).mock(
+        return_value=httpx.Response(404, json={"error": {"code": "model_not_found"}})
+    )
+
+    with pytest.raises(ProviderRequestError) as failure:
+        await _llm().complete(TURNS, model="нет-такой-модели")
+
+    assert "model_not_found" in str(failure.value)

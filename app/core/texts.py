@@ -231,6 +231,16 @@ def share_caption(bot_username: str, referral_url: str) -> Screen:
     )
 
 
+#: Провайдер отказался рисовать по правилам содержания. Кнопки «Повторить»
+#: здесь нет намеренно: сколько ни повторяй, ответ будет тот же — а кнопка
+#: обещала бы обратное.
+IMAGE_REFUSED = "Такое я нарисовать не могу 🙅 Давай что-нибудь другое 👇"
+
+
+def image_refused() -> Screen:
+    return Screen(text=IMAGE_REFUSED, buttons=_menu_buttons())
+
+
 # --- Пресеты (§2.4) ------------------------------------------------------
 
 PRESETS_ASK = "Выбери, что сделаем с фото:"
@@ -272,6 +282,14 @@ def preset_result() -> Screen:
         buttons=(BUTTON_DRAW_AGAIN, BUTTON_SEND_TO_FRIEND, BUTTON_ANOTHER_PRESET),
         next_step="сама картинка, подписи не нужно",
     )
+
+
+PRESET_REFUSED = "С этим фото так не выйдет 🙅 Пришли другое или выбери прикол"
+
+
+def preset_refused(preset_buttons: tuple[str, ...]) -> Screen:
+    """Отказ по содержанию на фото. Выход с экрана — тот же список приколов."""
+    return Screen(text=PRESET_REFUSED, buttons=preset_buttons)
 
 
 # --- Пейволл (§2.5) ------------------------------------------------------
@@ -468,12 +486,14 @@ def _all_screens() -> tuple[Screen, ...]:
         image_ask(),
         image_drawing(),
         image_error(),
+        image_refused(),
         image_result(),
         share_caption("mybot", "https://t.me/mybot?start=ref_abc123"),
         presets_menu(("🧱 Лего", "🏚 Плохой день")),
         preset_ask_photo("Кинь фото — сделаю из тебя лего"),
         preset_working(),
         preset_error(),
+        preset_refused(("🧱 Лего", "🏚 Плохой день")),
         photo_rejected(PHOTO_TOO_BIG),
         photo_rejected(PHOTO_NOT_AN_IMAGE),
         preset_result(),

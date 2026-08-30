@@ -24,6 +24,7 @@ from app.core.scenarios import (
     tariffs,
 )
 from app.core.scenarios.deps import Deps, Session
+from app.ports.ai import ContentRefusedError
 from config import presets as registry
 from config.presets import PRESETS, Preset
 from tests.fakes import PNG_BYTES, FakeImages, FakeLLM, FakeMessenger
@@ -389,3 +390,59 @@ async def test_my_link_is_a_ready_message(
 
     assert messenger.last_text.text.startswith("Тут бесплатный ChatGPT")
     assert session.user.referral_code in messenger.last_text.text
+
+
+# --- Отказ провайдера по содержанию --------------------------------------
+
+
+async def test_a_refused_drawing_says_so_instead_of_blaming_a_failure(
+    deps: Deps, session: Session, messenger: FakeMessenger, images_: FakeImages
+) -> None:
+    """«Попробуй ещё раз» на отказе по содержанию — обещание, которое лжёт."""
+    images_.error = ContentRefusedError("moderation_blocked")
+
+    await images.draw(deps, session, "что-нибудь запрещённое")
+
+    assert messenger.text_edits[0].text == texts.IMAGE_REFUSED
+    assert messenger.text_edits[0].keyboard is None, "кнопки «Повторить» быть не должно"
+
+
+async def test_a_refused_drawing_costs_nothing(
+    deps: Deps,
+    session: Session,
+    storage: InMemoryStorage,
+    images_: FakeImages,
+) -> None:
+    images_.error = ContentRefusedError("moderation_blocked")
+
+    await images.draw(deps, session, "что-нибудь запрещённое")
+
+    usage = await storage.get_usage(session.user.id, session.day)
+    assert usage.images_used == 0
+
+
+async def test_a_refused_drawing_is_not_offered_for_repeat(
+    deps: Deps, session: Session, storage: InMemoryStorage, images_: FakeImages
+) -> None:
+    """Повтор дал бы тот же отказ — запоминать тут нечего."""
+    images_.error = ContentRefusedError("moderation_blocked")
+
+    await images.draw(deps, session, "что-нибудь запрещённое")
+
+    stored = await storage.get_user_by_id(session.user.id)
+    assert stored is not None
+    assert stored.retry_context is None
+
+
+async def test_a_refused_photo_keeps_a_way_out(
+    deps: Deps, session: Session, messenger: FakeMessenger, images_: FakeImages
+) -> None:
+    """Тупика быть не должно даже на отказе: под текстом список приколов."""
+    images_.error = ContentRefusedError("moderation_blocked")
+
+    await presets.apply(deps, session, registry.PRESETS["lego"], PHOTO, "src")
+
+    assert messenger.text_edits[0].text == texts.PRESET_REFUSED
+    keyboard = messenger.text_edits[0].keyboard
+    assert keyboard is not None
+    assert len(keyboard.rows) == len(registry.PRESETS)

@@ -360,15 +360,19 @@ async def test_profile_always_offers_two_ways_out(
 # --- Тарифы (§2.8) -------------------------------------------------------
 
 
-async def test_tariff_screen_shows_three_cards(
+async def test_tariff_screen_is_one_message_with_three_buttons(
     deps: Deps, session: Session, messenger: FakeMessenger
 ) -> None:
+    """Тремя сообщениями тарифы не сравнить: третье вытесняет первое."""
     await tariffs.show(deps, session)
 
-    assert len(messenger.texts) == 3
-    assert "Лайт" in messenger.texts[0].text
-    assert "Про" in messenger.texts[1].text
-    assert "Макс" in messenger.texts[2].text
+    assert len(messenger.texts) == 1
+    for title in ("Лайт", "Про", "Макс"):
+        assert title in messenger.last_text.text
+
+    keyboard = messenger.last_text.keyboard
+    assert keyboard is not None
+    assert [button.text for button in keyboard.rows[0]] == ["Лайт", "Про", "Макс"]
 
 
 async def test_payment_stub_is_not_a_dead_end(
@@ -383,13 +387,27 @@ async def test_payment_stub_is_not_a_dead_end(
 # --- Реферальная ссылка (§2.7) -------------------------------------------
 
 
-async def test_my_link_is_a_ready_message(
+async def test_my_link_first_explains_what_it_gives(
     deps: Deps, session: Session, messenger: FakeMessenger
 ) -> None:
-    await referral.show_link(deps, session)
+    """§2.7: голая ссылка не объясняет, зачем её пересылать."""
+    await referral.show_offer(deps, session)
+
+    assert "+50 сообщений" in messenger.last_text.text
+    assert messenger.last_text.keyboard is not None
+    assert session.user.referral_code not in messenger.last_text.text
+
+
+async def test_the_invitation_itself_is_ready_to_forward(
+    deps: Deps, session: Session, messenger: FakeMessenger
+) -> None:
+    await referral.send_invitation(deps, session)
 
     assert messenger.last_text.text.startswith("Тут бесплатный ChatGPT")
     assert session.user.referral_code in messenger.last_text.text
+    # Ничего лишнего: сообщение пересылают целиком.
+    assert messenger.last_text.keyboard is None
+    assert messenger.last_text.show_menu is False
 
 
 # --- Отказ провайдера по содержанию --------------------------------------

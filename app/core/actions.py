@@ -43,6 +43,7 @@ class Action(StrEnum):
     OPEN_TARIFFS = "t:open"
     INVITE_FRIEND = "r:invite"
     MY_LINK = "r:link"
+    REFERRAL_SEND = "r:send"
 
 
 #: Префикс выбора пресета. За ним идёт идентификатор из реестра.

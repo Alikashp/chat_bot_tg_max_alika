@@ -40,7 +40,7 @@ async def start(
     """
     existing = await deps.storage.get_user(messenger, external_id)
     if existing is not None:
-        session = Session(user=existing, chat=chat, day=deps.today())
+        session = Session(user=existing, chat=chat, day=deps.today(), now=deps.now())
         await _greet(deps, session, from_presentations=False, gifted=False)
         return session
 
@@ -48,7 +48,7 @@ async def start(
     user = await _create_user(
         deps, messenger, external_id, from_presentations=from_presentations
     )
-    session = Session(user=user, chat=chat, day=deps.today())
+    session = Session(user=user, chat=chat, day=deps.today(), now=deps.now())
 
     gifted = await _apply_referral(deps, session, payload)
     if gifted:
@@ -56,7 +56,9 @@ async def start(
         # правду, а не то, что было до подарка.
         refreshed = await deps.storage.get_user_by_id(user.id)
         if refreshed is not None:
-            session = Session(user=refreshed, chat=chat, day=session.day)
+            session = Session(
+                user=refreshed, chat=chat, day=session.day, now=session.now
+            )
 
     await _greet(deps, session, from_presentations=from_presentations, gifted=gifted)
     return session

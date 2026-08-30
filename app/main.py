@@ -32,14 +32,18 @@ from app.adapters.ai.text import OpenAICompatibleLLM
 from app.adapters.max import router as max_router
 from app.adapters.max.intake import dedup_key as max_dedup_key
 from app.adapters.max.messenger import MaxMessenger
+from app.adapters.payments.yookassa import YooKassaPayments, order_id_of
 from app.adapters.storage.migrations import upgrade_to_head_async
 from app.adapters.storage.postgres import PostgresStorage, create_engine
 from app.adapters.telegram import router as telegram_router
 from app.adapters.telegram.intake import dedup_key
 from app.adapters.telegram.messenger import TelegramMessenger
+from app.adapters.telegram.stars import TelegramStars
 from app.config import Settings, get_settings
+from app.core.models import Chat, MessengerKind
 from app.core.referral import MAX_HOST, TELEGRAM_HOST
-from app.core.scenarios.deps import Deps
+from app.core.scenarios import payments
+from app.core.scenarios.deps import Deps, Session
 from app.core.settings import CoreSettings
 from app.infra.antiflood import FloodGuard
 from app.infra.dedup import Deduplicator
@@ -53,6 +57,7 @@ from app.infra.server import (
     Webhook,
     create_app,
 )
+from app.ports.payments import StarsPayments
 
 logger = get_logger(__name__)
 
@@ -63,7 +68,9 @@ TELEGRAM_API_TIMEOUT = 15.0
 #: Что бот получает на вебхук. Чем уже список, тем меньше мусорного трафика.
 #: callback_query здесь обязателен: без него нажатия inline-кнопок просто не
 #: доходят, и это выглядит как «кнопки не работают».
-ALLOWED_UPDATES = ["message", "callback_query"]
+#: pre_checkout_query здесь так же обязателен, как callback_query: без него
+#: Telegram не дождётся ответа и не проведёт оплату звёздами.
+ALLOWED_UPDATES = ["message", "callback_query", "pre_checkout_query"]
 
 #: То же для MAX. Три типа против четырнадцати возможных
 #: (docs/research.md §1.4): остальные события боту не нужны.
@@ -80,6 +87,14 @@ class MaxWiring:
 
     bot: MaxBot
     http: httpx.AsyncClient
+    deps: Deps
+    handle: Callable[[dict[str, Any]], Awaitable[None]]
+
+
+@dataclass(slots=True)
+class Settlement:
+    """Приём уведомлений об оплате картой. None, если карты не настроены."""
+
     handle: Callable[[dict[str, Any]], Awaitable[None]]
 
 
@@ -92,6 +107,13 @@ class Wiring:
     engine: AsyncEngine
     http_clients: tuple[httpx.AsyncClient, ...]
     max: MaxWiring | None
+    settlement: Settlement | None
+
+
+def _payment_notice_key(notification: dict[str, Any]) -> str | None:
+    """Ключ дедупликации уведомления об оплате — наш идентификатор заказа."""
+    order_id = order_id_of(notification)
+    return f"yk:{order_id}" if order_id is not None else None
 
 
 def _utc_now() -> datetime:
@@ -189,6 +211,31 @@ def build_providers(
     return llm, images, (llm_client, image_client)
 
 
+def build_cards(
+    settings: Settings, *, return_url: str
+) -> tuple[YooKassaPayments | None, httpx.AsyncClient | None]:
+    """Провайдер оплаты картой, если он настроен.
+
+    Без ключей возвращает None: бот при этом работает, но платить можно
+    только звёздами, а без них — честная заглушка «оплата скоро».
+    """
+    if not settings.cards_enabled:
+        logger.info("cards_not_configured")
+        return None, None
+
+    client = create_client(settings.yookassa_timeout_seconds)
+    return (
+        YooKassaPayments(
+            client,
+            base_url=settings.yookassa_base_url,
+            shop_id=settings.yookassa_shop_id,
+            secret_key=settings.yookassa_secret_key,
+            return_url=return_url,
+        ),
+        client,
+    )
+
+
 def build_core_settings(
     settings: Settings, bot_username: str, *, referral_link_host: str
 ) -> CoreSettings:
@@ -204,6 +251,9 @@ def build_core_settings(
         model_standard=settings.model_standard,
         dialog_max_turns=settings.dialog_max_turns,
         max_photo_bytes=settings.max_photo_bytes,
+        stars_markup=settings.stars_markup,
+        rub_per_star=settings.rub_per_star,
+        subscription_days=settings.subscription_days,
     )
 
 
@@ -229,7 +279,20 @@ async def build_wiring(settings: Settings) -> Wiring:
     # содержит внутренний id пользователя, а он у мессенджеров разный.
     guard = FloodGuard(limit=settings.flood_limit_per_user)
 
-    def build_deps(messenger: Any, core_settings: CoreSettings) -> Deps:
+    # Возвращаем человека в переписку с ботом, а не на посторонний сайт.
+    cards, cards_client = build_cards(
+        settings,
+        return_url=settings.yookassa_return_url or f"{TELEGRAM_HOST}/{me.username}",
+    )
+    if cards_client is not None:
+        http_clients = (*http_clients, cards_client)
+
+    def build_deps(
+        messenger: Any,
+        core_settings: CoreSettings,
+        *,
+        stars: StarsPayments | None = None,
+    ) -> Deps:
         """Одни и те же зависимости, разный мессенджер и его настройки."""
         return Deps(
             storage=storage,
@@ -239,15 +302,23 @@ async def build_wiring(settings: Settings) -> Wiring:
             settings=core_settings,
             logger=get_logger("scenarios"),
             guard=guard,
+            cards=cards,
+            stars=stars,
             now=_utc_now,
         )
 
     deps = build_deps(
         TelegramMessenger(bot),
         build_core_settings(settings, me.username, referral_link_host=TELEGRAM_HOST),
+        # Звёзды бывают только в Telegram: в MAX такого механизма нет.
+        stars=TelegramStars(bot),
     )
 
     max_wiring = await _build_max(settings, build_deps)
+
+    by_messenger = {MessengerKind.TELEGRAM: deps}
+    if max_wiring is not None:
+        by_messenger[MessengerKind.MAX] = max_wiring.deps
 
     return Wiring(
         bot=bot,
@@ -255,7 +326,68 @@ async def build_wiring(settings: Settings) -> Wiring:
         engine=engine,
         http_clients=http_clients,
         max=max_wiring,
+        settlement=(
+            _build_settlement(cards, by_messenger) if cards is not None else None
+        ),
     )
+
+
+def _build_settlement(
+    cards: YooKassaPayments,
+    by_messenger: dict[MessengerKind, Deps],
+) -> Settlement:
+    """Приём уведомлений об оплате картой.
+
+    Уведомление здесь — только повод переспросить: статус читается у ЮKassa
+    нашим ключом. Иначе любой, кто узнал адрес вебхука, выдавал бы себе
+    подписки: их уведомления не подписаны ничем.
+
+    Отвечать человеку надо в тот мессенджер, из которого он пришёл, поэтому
+    зависимости выбираются по самому пользователю, а не по тому, куда
+    постучались.
+    """
+    any_deps = next(iter(by_messenger.values()))
+
+    async def handle(notification: dict[str, Any]) -> None:
+        order_id = order_id_of(notification)
+        if order_id is None:
+            logger.warning("payment_notice_without_order")
+            return
+
+        order = await any_deps.storage.get_payment(order_id)
+        if order is None or order.external_id is None:
+            logger.warning("payment_notice_unknown_order")
+            return
+
+        if not await cards.is_paid(order.external_id, expected_rub=order.amount):
+            logger.info("payment_notice_not_paid")
+            return
+
+        user = await any_deps.storage.get_user_by_id(order.user_id)
+        if user is None:
+            logger.error("payment_user_missing", user_id=int(order.user_id))
+            return
+
+        deps = by_messenger.get(user.messenger)
+        if deps is None:
+            # Человек пришёл из мессенджера, который сейчас выключен. Тариф
+            # всё равно выдаём — деньги получены; не скажем только об этом.
+            logger.warning("payment_messenger_disabled", user_id=int(user.id))
+            deps = any_deps
+
+        confirmed = await payments.confirm(deps, order_id)
+        if confirmed is None:
+            return
+
+        session = Session(
+            user=user,
+            chat=Chat(messenger=user.messenger, chat_id=user.external_id),
+            day=deps.today(),
+            now=deps.now(),
+        )
+        await payments.announce(deps, session, confirmed)
+
+    return Settlement(handle=handle)
 
 
 async def _build_max(
@@ -302,7 +434,7 @@ async def _build_max(
     async def handle(raw_update: dict[str, Any]) -> None:
         await max_router.handle_update(deps, raw_update)
 
-    return MaxWiring(bot=bot, http=http, handle=handle)
+    return MaxWiring(bot=bot, http=http, deps=deps, handle=handle)
 
 
 async def _register_webhook(bot: Bot, settings: Settings) -> None:
@@ -394,6 +526,37 @@ async def run() -> None:
         )
     ]
 
+    if wiring.settlement is not None:
+        # Уведомления об оплате идут своей очередью: они приходят редко, но
+        # каждое делает запрос к ЮKassa, и мешать их с потоком сообщений
+        # незачем. Ключ дедупликации — наш заказ: ЮKassa повторяет
+        # уведомление несколько раз, а работа по нему одна.
+        settle_queue: JobQueue[dict[str, Any]] = JobQueue(
+            "payment-notices",
+            wiring.settlement.handle,
+            capacity=settings.queue_capacity,
+            workers=4,
+        )
+        queues.append(settle_queue)
+        webhooks.append(
+            Webhook(
+                messenger="yookassa",
+                path=settings.yookassa_webhook_path,
+                # Уведомления ЮKassa не подписаны ничем: ни секретом, ни
+                # подписью тела. Принимать их можно только потому, что само
+                # уведомление ничего не решает — статус мы переспрашиваем у
+                # провайдера своим ключом.
+                secret_header=None,
+                secret=None,
+                submit=build_intake(
+                    settle_queue,
+                    dedup,
+                    messenger="yookassa",
+                    key_of=_payment_notice_key,
+                ),
+            )
+        )
+
     if wiring.max is not None:
         # Очередь у MAX своя. Общая была бы проще, но тогда наплыв в одном
         # мессенджере съедал бы ёмкость у другого — а мессенджеры независимы,
@@ -437,6 +600,7 @@ async def run() -> None:
             "dedup_keys": len(dedup),
             "database": "ready",
             "max": "ready" if wiring.max is not None else "not_configured",
+            "cards": "ready" if wiring.settlement is not None else "not_configured",
         }
 
     app = create_app(webhooks=webhooks, health=health)

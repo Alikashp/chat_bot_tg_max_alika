@@ -41,7 +41,14 @@ from app.infra.antiflood import FloodGuard
 from app.infra.dedup import Deduplicator
 from app.infra.queue import JobQueue
 from app.infra.server import MAX_SECRET_HEADER, Webhook, create_app
-from tests.fakes import PNG_BYTES, FakeImages, FakeLLM, FakeLogger, FrozenClock
+from tests.fakes import (
+    PNG_BYTES,
+    FakeCards,
+    FakeImages,
+    FakeLLM,
+    FakeLogger,
+    FrozenClock,
+)
 
 
 def _today() -> Any:
@@ -253,6 +260,9 @@ async def harness() -> AsyncIterator[Harness]:
         settings=CoreSettings(bot_username="testbot", referral_link_host=MAX_HOST),
         logger=FakeLogger(),
         guard=FloodGuard(limit=1),
+        cards=FakeCards(),
+        # Звёзд в MAX нет — и это не пропуск в тесте, а свойство мессенджера.
+        stars=None,
         now=clock,
     )
 

@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from app.adapters.storage.memory import InMemoryStorage
@@ -88,13 +90,32 @@ async def test_menu_label_arriving_as_text_is_recognised(
     assert llm.calls == []
 
 
-async def test_buy_action_leads_to_the_honest_stub(
+async def test_buy_action_asks_how_to_pay(
     deps: Deps, user: User, messenger: FakeMessenger
 ) -> None:
-    """Оплаты пока нет, но тупика быть не должно."""
     await handle(deps, incoming(action=buy_action("pro")))
 
+    assert "Чем платим?" in messenger.last_text.text
+
+
+async def test_an_unconfigured_payment_is_an_honest_stub(
+    deps: Deps, user: User, messenger: FakeMessenger
+) -> None:
+    """Без ключей провайдера и без звёзд тупика всё равно быть не должно."""
+    await handle(
+        replace(deps, cards=None, stars=None), incoming(action=buy_action("pro"))
+    )
+
     assert messenger.texts_said() == [texts.PAYMENTS_SOON]
+
+
+async def test_a_tariff_that_no_longer_exists_does_not_dead_end(
+    deps: Deps, user: User, messenger: FakeMessenger
+) -> None:
+    """Кнопка из версии, где тариф назывался иначе."""
+    await handle(deps, incoming(action=buy_action("platinum")))
+
+    assert messenger.texts_said()
 
 
 async def test_unknown_action_does_not_leave_the_user_in_silence(

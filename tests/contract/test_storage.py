@@ -390,3 +390,142 @@ async def test_referrals_are_counted_since_moment(storage: Storage) -> None:
         )
         == 0
     )
+
+
+# --- Оплата --------------------------------------------------------------
+
+
+async def test_a_created_payment_is_found_by_id(storage: Storage) -> None:
+    user = await _make_user(storage, "pay-1")
+
+    order = await storage.create_payment(
+        user_id=user.id,
+        tariff=TariffId.PRO,
+        method="card",
+        amount=599,
+        currency="RUB",
+    )
+    found = await storage.get_payment(order.id)
+
+    assert found is not None
+    assert found.user_id == user.id
+    assert found.amount == 599
+    assert found.status == "pending"
+
+
+async def test_an_unknown_payment_is_none(storage: Storage) -> None:
+    assert await storage.get_payment("нет такого заказа") is None
+
+
+async def test_two_payments_never_share_an_id(storage: Storage) -> None:
+    """Идентификатор служит ключом идемпотентности у провайдера."""
+    user = await _make_user(storage, "pay-2")
+
+    first = await storage.create_payment(
+        user_id=user.id,
+        tariff=TariffId.PRO,
+        method="card",
+        amount=599,
+        currency="RUB",
+    )
+    second = await storage.create_payment(
+        user_id=user.id,
+        tariff=TariffId.PRO,
+        method="card",
+        amount=599,
+        currency="RUB",
+    )
+
+    assert first.id != second.id
+
+
+async def test_the_provider_id_is_remembered(storage: Storage) -> None:
+    user = await _make_user(storage, "pay-3")
+    order = await storage.create_payment(
+        user_id=user.id,
+        tariff=TariffId.LITE,
+        method="card",
+        amount=299,
+        currency="RUB",
+    )
+
+    await storage.attach_external_id(order.id, "2d0a1b")
+
+    found = await storage.get_payment(order.id)
+    assert found is not None
+    assert found.external_id == "2d0a1b"
+
+
+async def test_a_payment_is_marked_paid_once(storage: Storage) -> None:
+    """Второй раз — False. На этом держится защита от двойной выдачи."""
+    user = await _make_user(storage, "pay-4")
+    order = await storage.create_payment(
+        user_id=user.id,
+        tariff=TariffId.PRO,
+        method="stars",
+        amount=524,
+        currency="XTR",
+    )
+
+    assert await storage.mark_paid(order.id) is True
+    assert await storage.mark_paid(order.id) is False
+
+    found = await storage.get_payment(order.id)
+    assert found is not None
+    assert found.status == "paid"
+    assert found.paid_at is not None
+
+
+async def test_an_unknown_payment_cannot_be_marked_paid(storage: Storage) -> None:
+    assert await storage.mark_paid("выдуманный заказ") is False
+
+
+async def test_concurrent_confirmations_grant_only_once(storage: Storage) -> None:
+    """Уведомления об оплате приходят пачкой и обрабатываются параллельно.
+
+    Написан специально ради PostgreSQL: в памяти внутри операции нет ни одного
+    await, и атомарность получается сама собой. В базе её обеспечивает условие
+    на статус внутри самого UPDATE.
+    """
+    user = await _make_user(storage, "pay-5")
+    order = await storage.create_payment(
+        user_id=user.id,
+        tariff=TariffId.MAX,
+        method="card",
+        amount=1490,
+        currency="RUB",
+    )
+
+    results = await asyncio.gather(*(storage.mark_paid(order.id) for _ in range(10)))
+
+    assert results.count(True) == 1, "подписка выдана бы несколько раз"
+
+
+async def test_one_provider_payment_cannot_close_two_orders(storage: Storage) -> None:
+    """Иначе одна оплата включала бы две подписки.
+
+    Проверка на стороне хранилища, а не в коде сценария: «мы аккуратно
+    проверили» — обещание, ограничение уникальности — гарантия.
+    """
+    user = await _make_user(storage, "pay-6")
+    first = await storage.create_payment(
+        user_id=user.id,
+        tariff=TariffId.PRO,
+        method="card",
+        amount=599,
+        currency="RUB",
+    )
+    second = await storage.create_payment(
+        user_id=user.id,
+        tariff=TariffId.PRO,
+        method="card",
+        amount=599,
+        currency="RUB",
+    )
+
+    assert await storage.attach_external_id(first.id, "2d0a1b") is True
+    assert await storage.attach_external_id(second.id, "2d0a1b") is False
+
+    found = await storage.get_payment(second.id)
+    assert found is not None
+    assert found.external_id is None

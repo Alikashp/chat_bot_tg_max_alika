@@ -127,7 +127,7 @@ async def _refreshed(deps: Deps, session: Session) -> Session:
     """Сессия с перечитанным пользователем — как её собирает маршрутизатор."""
     user = await deps.storage.get_user_by_id(session.user.id)
     assert user is not None
-    return Session(user=user, chat=session.chat, day=session.day)
+    return Session(user=user, chat=session.chat, day=session.day, now=session.now)
 
 
 async def test_a_stale_button_does_not_repeat_the_wrong_thing(

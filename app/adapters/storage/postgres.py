@@ -17,23 +17,32 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import UTC, date, datetime
 from typing import Any
+from uuid import uuid4
 
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
-from app.adapters.storage.schema import dialogs, referrals, usage, users
+from app.adapters.storage.schema import (
+    dialogs,
+    payments,
+    referrals,
+    usage,
+    users,
+)
 from app.core.models import (
     ChatTurn,
     DialogState,
     MessengerKind,
+    Payment,
     Role,
     TariffId,
     Usage,
     User,
     UserId,
 )
+from app.ports.payments import PaymentStatus
 
 
 def create_engine(dsn: str, *, echo: bool = False) -> AsyncEngine:
@@ -260,6 +269,90 @@ class PostgresStorage:
         async with self._session() as session, session.begin():
             await session.execute(query)
 
+    # --- Оплата --------------------------------------------------------
+
+    async def create_payment(
+        self,
+        *,
+        user_id: UserId,
+        tariff: TariffId,
+        method: str,
+        amount: int,
+        currency: str,
+    ) -> Payment:
+        payment = Payment(
+            id=str(uuid4()),
+            user_id=user_id,
+            tariff=tariff,
+            method=method,
+            amount=amount,
+            currency=currency,
+            status=PaymentStatus.PENDING.value,
+            created_at=self._now(),
+        )
+        async with self._session() as session, session.begin():
+            await session.execute(
+                insert(payments).values(
+                    id=payment.id,
+                    user_id=int(user_id),
+                    tariff=tariff.value,
+                    method=method,
+                    amount=amount,
+                    currency=currency,
+                    status=payment.status,
+                    created_at=payment.created_at,
+                )
+            )
+        return payment
+
+    async def get_payment(self, payment_id: str) -> Payment | None:
+        async with self._session() as session:
+            row = (
+                await session.execute(
+                    select(payments).where(payments.c.id == payment_id)
+                )
+            ).one_or_none()
+        return _to_payment(row) if row is not None else None
+
+    async def attach_external_id(self, payment_id: str, external_id: str) -> bool:
+        """Привязка, которую защищает ограничение уникальности.
+
+        Нарушение ловим, а не даём упасть: один платёж провайдера не должен
+        закрывать два наших заказа, и узнать об этом надо здесь, а не когда
+        человек уже заплатил.
+        """
+        query = (
+            update(payments)
+            .where(payments.c.id == payment_id)
+            .values(external_id=external_id)
+            .returning(payments.c.id)
+        )
+        try:
+            async with self._session() as session, session.begin():
+                return (await session.execute(query)).one_or_none() is not None
+        except IntegrityError:
+            return False
+
+    async def mark_paid(self, payment_id: str) -> bool:
+        """Переход в «оплачен» ровно один раз.
+
+        Условие на текущий статус стоит в самом UPDATE, поэтому из нескольких
+        одновременных уведомлений об оплате выигрывает ровно одно: остальные
+        не найдут строку в статусе pending и вернут False. Продлевать подписку
+        на каждое уведомление нельзя — их приходит несколько.
+        """
+        query = (
+            update(payments)
+            .where(
+                payments.c.id == payment_id,
+                payments.c.status == PaymentStatus.PENDING.value,
+            )
+            .values(status=PaymentStatus.PAID.value, paid_at=self._now())
+            .returning(payments.c.id)
+        )
+        async with self._session() as session, session.begin():
+            return (await session.execute(query)).one_or_none() is not None
+
     # --- Диалог --------------------------------------------------------
 
     async def get_dialog(self, user_id: UserId) -> DialogState:
@@ -339,6 +432,21 @@ class PostgresStorage:
         async with self._session() as session:
             row = (await session.execute(query)).mappings().one_or_none()
         return None if row is None else _to_user(row)
+
+
+def _to_payment(row: Any) -> Payment:
+    return Payment(
+        id=row.id,
+        user_id=UserId(row.user_id),
+        tariff=TariffId(row.tariff),
+        method=row.method,
+        amount=row.amount,
+        currency=row.currency,
+        status=row.status,
+        created_at=row.created_at,
+        external_id=row.external_id,
+        paid_at=row.paid_at,
+    )
 
 
 def _to_user(row: Any) -> User:

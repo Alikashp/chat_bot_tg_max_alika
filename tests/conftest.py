@@ -9,11 +9,13 @@ from app.core.models import Chat, MessengerKind, User
 from app.core.scenarios.deps import Deps, Session
 from app.core.settings import CoreSettings
 from tests.fakes import (
+    FakeCards,
     FakeGuard,
     FakeImages,
     FakeLLM,
     FakeLogger,
     FakeMessenger,
+    FakeStars,
     FrozenClock,
 )
 
@@ -56,6 +58,18 @@ def guard() -> FakeGuard:
 
 
 @pytest.fixture
+def cards() -> FakeCards:
+    """Оплата картой настроена — как в Telegram и в MAX с ключами ЮKassa."""
+    return FakeCards()
+
+
+@pytest.fixture
+def stars() -> FakeStars:
+    """Оплата звёздами есть — как в Telegram. Для MAX тесты подставляют None."""
+    return FakeStars()
+
+
+@pytest.fixture
 def clock() -> FrozenClock:
     return FrozenClock()
 
@@ -74,6 +88,8 @@ def deps(
     settings: CoreSettings,
     logger: FakeLogger,
     guard: FakeGuard,
+    cards: FakeCards,
+    stars: FakeStars,
     clock: FrozenClock,
 ) -> Deps:
     return Deps(
@@ -84,6 +100,8 @@ def deps(
         settings=settings,
         logger=logger,
         guard=guard,
+        cards=cards,
+        stars=stars,
         now=clock,
     )
 
@@ -104,4 +122,5 @@ def session(deps: Deps, user: User) -> Session:
         user=user,
         chat=Chat(messenger=MessengerKind.TELEGRAM, chat_id="1"),
         day=deps.today(),
+        now=deps.now(),
     )

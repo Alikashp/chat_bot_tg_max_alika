@@ -87,6 +87,32 @@ dialogs = Table(
     Column("user_turns", Integer, nullable=False, server_default="0"),
 )
 
+payments = Table(
+    "payments",
+    metadata,
+    # Идентификатор наш, а не провайдера: он нужен до того, как провайдер о
+    # платеже узнает, и он же служит ключом идемпотентности.
+    Column("id", String(36), primary_key=True),
+    Column(
+        "user_id",
+        BigInteger,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    ),
+    Column("tariff", String(16), nullable=False),
+    Column("method", String(16), nullable=False),
+    Column("amount", Integer, nullable=False),
+    Column("currency", String(8), nullable=False),
+    Column("status", String(16), nullable=False, server_default="pending"),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    # Идентификатор у провайдера. Уникален: одно уведомление об оплате не
+    # должно уметь закрыть два наших заказа.
+    Column("external_id", String(128), nullable=True, unique=True),
+    Column("paid_at", DateTime(timezone=True), nullable=True),
+    CheckConstraint("amount > 0", name="ck_payments_amount"),
+)
+
 referrals = Table(
     "referrals",
     metadata,

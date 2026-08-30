@@ -20,6 +20,7 @@ from app.core.models import (
     Photo,
 )
 from app.ports.ai import ImageQuality
+from app.ports.payments import PaymentIntent
 
 #: Минимальный настоящий PNG: восемь байт сигнатуры плюс немного тела.
 #: Проверка формата смотрит именно на сигнатуру, поэтому подделка обязана
@@ -283,3 +284,65 @@ class FakeGuard:
 
     def active(self, key: str) -> int:
         return self._active.get(key, 0)
+
+
+class FakeCards:
+    """Провайдер оплаты картой с заранее заданным поведением."""
+
+    def __init__(self) -> None:
+        self.created: list[tuple[str, int]] = []
+        self.error: Exception | None = None
+        #: Что провайдер отвечает на вопрос «оплачено ли».
+        self.paid: bool = True
+        #: Ссылка, которую он возвращает. None — провайдер её не дал.
+        self.confirmation_url: str | None = "https://pay.example/checkout"
+
+    async def create_payment(
+        self, *, order_id: str, amount_rub: int, description: str
+    ) -> PaymentIntent:
+        if self.error is not None:
+            raise self.error
+        self.created.append((order_id, amount_rub))
+        return PaymentIntent(
+            external_id=f"ext-{len(self.created)}",
+            confirmation_url=self.confirmation_url,
+        )
+
+    async def is_paid(self, external_id: str, *, expected_rub: int) -> bool:
+        return self.paid
+
+
+@dataclass
+class SentInvoice:
+    chat: Chat
+    title: str
+    order_id: str
+    stars: int
+
+
+class FakeStars:
+    """Оплата звёздами: записывает счета и ответы на предварительный запрос."""
+
+    def __init__(self) -> None:
+        self.invoices: list[SentInvoice] = []
+        self.approvals: list[tuple[str, bool]] = []
+        self.error: Exception | None = None
+
+    async def send_invoice(
+        self,
+        chat: Chat,
+        *,
+        title: str,
+        description: str,
+        order_id: str,
+        stars: int,
+    ) -> MessageRef:
+        if self.error is not None:
+            raise self.error
+        self.invoices.append(SentInvoice(chat, title, order_id, stars))
+        return MessageRef(chat=chat, message_id=str(len(self.invoices)))
+
+    async def approve(
+        self, request_id: str, *, ok: bool, reason: str | None = None
+    ) -> None:
+        self.approvals.append((request_id, ok))

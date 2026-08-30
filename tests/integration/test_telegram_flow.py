@@ -22,9 +22,11 @@ from aiogram import Bot
 from aiogram.client.session.base import BaseSession
 from aiogram.methods import (
     AnswerCallbackQuery,
+    AnswerPreCheckoutQuery,
     DeleteMessage,
     EditMessageText,
     GetFile,
+    SendInvoice,
     SendMessage,
     SendPhoto,
     TelegramMethod,
@@ -33,6 +35,7 @@ from aiogram.types import (
     Chat,
     File,
     InlineKeyboardMarkup,
+    Invoice,
     Message,
     PhotoSize,
     ReplyKeyboardMarkup,
@@ -43,16 +46,25 @@ from aiohttp.test_utils import TestClient, TestServer
 from app.adapters.storage.memory import InMemoryStorage
 from app.adapters.telegram import router as telegram_router
 from app.adapters.telegram.messenger import TelegramMessenger
+from app.adapters.telegram.stars import TelegramStars
 from app.core import texts
-from app.core.actions import Action, preset_action
-from app.core.models import MessengerKind
+from app.core.actions import Action, buy_action, method_action, preset_action
+from app.core.models import MessengerKind, TariffId
 from app.core.scenarios.deps import Deps
 from app.core.settings import CoreSettings
 from app.infra.antiflood import FloodGuard
 from app.infra.dedup import Deduplicator
 from app.infra.queue import JobQueue
 from app.infra.server import TELEGRAM_SECRET_HEADER, Webhook, create_app
-from tests.fakes import PNG_BYTES, FakeImages, FakeLLM, FakeLogger, FrozenClock
+from app.ports.payments import PaymentMethod
+from tests.fakes import (
+    PNG_BYTES,
+    FakeCards,
+    FakeImages,
+    FakeLLM,
+    FakeLogger,
+    FrozenClock,
+)
 
 SECRET = "integration-webhook-secret"
 PATH = "/webhook/telegram"
@@ -111,6 +123,20 @@ class RecordingSession(BaseSession):
                 ],
             ).as_(bot)
 
+        if isinstance(method, SendInvoice):
+            return Message(
+                message_id=self._next_message_id,
+                date=datetime.now(UTC),
+                chat=Chat(id=CHAT_ID, type="private"),
+                invoice=Invoice(
+                    title=method.title,
+                    description=method.description,
+                    start_parameter="",
+                    currency=method.currency,
+                    total_amount=method.prices[0].amount,
+                ),
+            ).as_(bot)
+
         if isinstance(method, GetFile):
             return File(
                 file_id=method.file_id,
@@ -167,6 +193,32 @@ def photo_update(update_id: int, file_id: str = "incoming-photo") -> dict[str, A
                 "file_size": len(PNG_BYTES),
             }
         ],
+    )
+
+
+def pre_checkout_update(update_id: int, order_id: str) -> dict[str, Any]:
+    return {
+        "update_id": update_id,
+        "pre_checkout_query": {
+            "id": f"pre{update_id}",
+            "from": {"id": CHAT_ID, "is_bot": False, "first_name": "Тест"},
+            "currency": "XTR",
+            "total_amount": 524,
+            "invoice_payload": order_id,
+        },
+    }
+
+
+def paid_update(update_id: int, order_id: str) -> dict[str, Any]:
+    return _message_update(
+        update_id,
+        successful_payment={
+            "currency": "XTR",
+            "total_amount": 524,
+            "invoice_payload": order_id,
+            "telegram_payment_charge_id": "charge-1",
+            "provider_payment_charge_id": "",
+        },
     )
 
 
@@ -260,6 +312,10 @@ async def harness() -> AsyncIterator[Harness]:
 
     clock = FrozenClock()
     storage = InMemoryStorage(clock=clock)
+    cards = FakeCards()
+    # Звёзды — настоящим адаптером: весь смысл этого файла в том, чтобы
+    # проверить проводку, а фейк проверил бы сам себя.
+    stars = TelegramStars(bot)
     llm = FakeLLM()
     images = FakeImages()
     logger = FakeLogger()
@@ -272,6 +328,8 @@ async def harness() -> AsyncIterator[Harness]:
         settings=CoreSettings(bot_username="testbot"),
         logger=logger,
         guard=FloodGuard(limit=1),
+        cards=cards,
+        stars=stars,
         now=clock,
     )
     dispatcher = telegram_router.build_dispatcher(deps)
@@ -597,3 +655,70 @@ def _today() -> Any:
     from app.core.limits import current_day
 
     return current_day(FrozenClock().now, "Europe/Moscow")
+
+
+# --- Оплата звёздами -----------------------------------------------------
+
+
+async def test_paying_with_stars_turns_the_tariff_on(started: Harness) -> None:
+    """Весь путь оплаты целиком, от кнопки до включённого тарифа.
+
+    Юнит-тесты проверяют решения, а здесь проверяется проводка: дошёл ли
+    pre_checkout_query до бота (без него Telegram платёж не проведёт), опознан
+    ли заказ по payload, выдан ли тариф ровно один раз.
+    """
+    await started.press(buy_action(TariffId.PRO.value))
+    assert "Чем платим?" in started.texts_said()[0]
+    started.forget()
+
+    await started.press(method_action(PaymentMethod.STARS.value, TariffId.PRO.value))
+
+    invoices = started.calls_of(SendInvoice)
+    assert len(invoices) == 1
+    assert invoices[0].currency == "XTR"
+    order_id = invoices[0].payload
+    started.forget()
+
+    # Telegram спрашивает перед списанием и ждёт ответа считаные секунды.
+    assert await started.post(pre_checkout_update(started.next_id(), order_id)) == 200
+    approvals = started.calls_of(AnswerPreCheckoutQuery)
+    assert len(approvals) == 1
+    assert approvals[0].ok is True
+    started.forget()
+
+    assert await started.post(paid_update(started.next_id(), order_id)) == 200
+
+    user = await started.user()
+    assert user.tariff is TariffId.PRO
+    assert user.tariff_expires_at is not None
+    assert "Про" in started.texts_said()[-1]
+
+
+async def test_an_unknown_invoice_is_refused_before_the_money_moves(
+    started: Harness,
+) -> None:
+    """Согласиться на платёж, который нечем закрыть, дороже отказа."""
+    assert (
+        await started.post(pre_checkout_update(started.next_id(), "выдуманный заказ"))
+        == 200
+    )
+
+    approvals = started.calls_of(AnswerPreCheckoutQuery)
+    assert len(approvals) == 1
+    assert approvals[0].ok is False
+
+
+async def test_a_repeated_payment_notice_does_not_extend_the_subscription(
+    started: Harness,
+) -> None:
+    """Одна оплата — один месяц, сколько бы уведомлений ни пришло."""
+    await started.press(method_action(PaymentMethod.STARS.value, TariffId.PRO.value))
+    order_id = started.calls_of(SendInvoice)[0].payload
+
+    await started.post(paid_update(started.next_id(), order_id))
+    first = (await started.user()).tariff_expires_at
+
+    await started.post(paid_update(started.next_id(), order_id))
+    second = (await started.user()).tariff_expires_at
+
+    assert first == second

@@ -77,6 +77,28 @@ class User:
 
 
 @dataclass(frozen=True, slots=True)
+class Payment:
+    """Заказ на подписку.
+
+    Заводится до обращения к провайдеру и живёт дальше него: по нему потом
+    сверяется уведомление об оплате. Без своей записи мы верили бы на слово
+    тому, кто постучался на вебхук.
+    """
+
+    id: str
+    user_id: UserId
+    tariff: TariffId
+    method: str
+    amount: int
+    currency: str
+    status: str
+    created_at: datetime
+    #: Идентификатор платежа у провайдера. Появляется после его создания.
+    external_id: str | None = None
+    paid_at: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class Usage:
     """Израсходованное за конкретные сутки.
 
@@ -185,3 +207,8 @@ class IncomingMessage:
     action: str | None = None
     start_payload: str | None = None
     callback_id: str | None = None
+    #: Заказ, который мессенджер объявил оплаченным (звёзды Telegram).
+    paid_order_id: str | None = None
+    #: Запрос «готовы ли принять оплату» вместе с заказом, о котором спросили.
+    pre_checkout_id: str | None = None
+    pre_checkout_order_id: str | None = None

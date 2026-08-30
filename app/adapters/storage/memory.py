@@ -18,15 +18,18 @@ from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, date, datetime
 from itertools import count
+from uuid import uuid4
 
 from app.core.models import (
     DialogState,
     MessengerKind,
+    Payment,
     TariffId,
     Usage,
     User,
     UserId,
 )
+from app.ports.payments import PaymentStatus
 
 
 class InMemoryStorage:
@@ -51,6 +54,7 @@ class InMemoryStorage:
         #: потому что награда полагается только за нового пользователя и
         #: только одному пригласившему.
         self._referrals: dict[UserId, tuple[UserId, datetime]] = {}
+        self._payments: dict[str, Payment] = {}
 
     # --- Пользователи --------------------------------------------------
 
@@ -169,6 +173,53 @@ class InMemoryStorage:
             bonus_messages=user.bonus_messages + messages,
             bonus_images=user.bonus_images + images,
         )
+
+    # --- Оплата --------------------------------------------------------
+
+    async def create_payment(
+        self,
+        *,
+        user_id: UserId,
+        tariff: TariffId,
+        method: str,
+        amount: int,
+        currency: str,
+    ) -> Payment:
+        payment = Payment(
+            id=str(uuid4()),
+            user_id=user_id,
+            tariff=tariff,
+            method=method,
+            amount=amount,
+            currency=currency,
+            status=PaymentStatus.PENDING.value,
+            created_at=self._now(),
+        )
+        self._payments[payment.id] = payment
+        return payment
+
+    async def get_payment(self, payment_id: str) -> Payment | None:
+        return self._payments.get(payment_id)
+
+    async def attach_external_id(self, payment_id: str, external_id: str) -> bool:
+        taken = any(
+            other.external_id == external_id and other.id != payment_id
+            for other in self._payments.values()
+        )
+        payment = self._payments.get(payment_id)
+        if taken or payment is None:
+            return False
+        self._payments[payment_id] = replace(payment, external_id=external_id)
+        return True
+
+    async def mark_paid(self, payment_id: str) -> bool:
+        payment = self._payments.get(payment_id)
+        if payment is None or payment.status != PaymentStatus.PENDING.value:
+            return False
+        self._payments[payment_id] = replace(
+            payment, status=PaymentStatus.PAID.value, paid_at=self._now()
+        )
+        return True
 
     # --- Диалог --------------------------------------------------------
 

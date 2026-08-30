@@ -16,8 +16,13 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 
 from app.core import pending, texts
-from app.core.actions import Action, parse_buy_action, parse_preset_action
-from app.core.models import IncomingMessage
+from app.core.actions import (
+    Action,
+    parse_buy_action,
+    parse_method_action,
+    parse_preset_action,
+)
+from app.core.models import IncomingMessage, TariffId
 from app.core.photos import PhotoTooLargeError
 from app.core.retry_context import RetryKind
 from app.core.scenarios import (
@@ -25,6 +30,7 @@ from app.core.scenarios import (
     images,
     keyboards,
     onboarding,
+    payments,
     presets,
     profile,
     referral,
@@ -32,6 +38,7 @@ from app.core.scenarios import (
     tariffs,
 )
 from app.core.scenarios.deps import Deps, Session
+from app.ports.payments import PaymentMethod
 from config import presets as registry
 
 #: Команда, с которой начинается знакомство. Одинакова в обоих мессенджерах.
@@ -80,6 +87,19 @@ async def handle(deps: Deps, incoming: IncomingMessage) -> None:
     user = await deps.storage.get_user(
         incoming.chat.messenger, incoming.external_user_id
     )
+
+    if incoming.pre_checkout_id is not None:
+        # Мессенджер спрашивает, готовы ли мы принять оплату, и ждёт ответа
+        # считаные секунды. Отвечаем даже незнакомцу: без ответа платёж
+        # повиснет, а заводить человека на этом событии незачем.
+        await payments.approve(
+            deps,
+            incoming.pre_checkout_id,
+            incoming.pre_checkout_order_id or "",
+            user=user,
+        )
+        return
+
     if user is None:
         # Человек пишет боту, не нажав /start: так бывает после чистки базы
         # или если в чат вернулись по старой переписке. Здороваемся и заводим
@@ -93,7 +113,14 @@ async def handle(deps: Deps, incoming: IncomingMessage) -> None:
         )
         return
 
-    session = Session(user=user, chat=incoming.chat, day=deps.today())
+    session = Session(user=user, chat=incoming.chat, day=deps.today(), now=deps.now())
+
+    if incoming.paid_order_id is not None:
+        # Мессенджер подтвердил оплату. Выдаём тариф — ровно один раз.
+        order = await payments.confirm(deps, incoming.paid_order_id)
+        if order is not None:
+            await payments.announce(deps, session, order)
+        return
 
     action = incoming.action or keyboards.action_for_label(incoming.text)
     if action is not None:
@@ -142,9 +169,14 @@ async def _route_action(deps: Deps, session: Session, action: str) -> None:
         await repeat.share_last(deps, session, share_kind)
         return
 
-    if parse_buy_action(action) is not None:
-        # Настоящая оплата — фаза 8. До неё честная заглушка с выходом.
-        await tariffs.payments_not_ready(deps, session)
+    bought = parse_buy_action(action)
+    if bought is not None:
+        await _open_payment(deps, session, bought)
+        return
+
+    chosen = parse_method_action(action)
+    if chosen is not None:
+        await _pay_by(deps, session, *chosen)
         return
 
     match action:
@@ -171,6 +203,36 @@ async def _route_action(deps: Deps, session: Session, action: str) -> None:
             # Кнопка из версии, которой больше нет. Тупика быть не должно.
             deps.logger.warning("unknown_action", user_id=int(session.user.id))
             await _say(deps, session, texts.unsupported_input().text)
+
+
+async def _open_payment(deps: Deps, session: Session, tariff_id: str) -> None:
+    """Нажали «Выбрать тариф»."""
+    tariff = _tariff(tariff_id)
+    if tariff is None:
+        # Кнопка из версии, где тариф назывался иначе.
+        await tariffs.show(deps, session)
+        return
+    await payments.choose_method(deps, session, tariff)
+
+
+async def _pay_by(deps: Deps, session: Session, method: str, tariff_id: str) -> None:
+    """Выбран способ оплаты."""
+    tariff = _tariff(tariff_id)
+    if tariff is None:
+        await tariffs.show(deps, session)
+        return
+
+    if method == PaymentMethod.STARS:
+        await payments.start_stars(deps, session, tariff)
+        return
+    await payments.start_card(deps, session, tariff)
+
+
+def _tariff(tariff_id: str) -> TariffId | None:
+    try:
+        return TariffId(tariff_id)
+    except ValueError:
+        return None
 
 
 async def _pick_preset(deps: Deps, session: Session, preset_id: str) -> None:

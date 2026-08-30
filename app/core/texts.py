@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 
 from app.core.models import TariffId
 from app.core.tariffs import PAID_TARIFFS, TARIFFS
@@ -60,6 +61,32 @@ def _messages(count: int) -> str:
 
 def _friends(count: int) -> str:
     return f"{count} {plural(count, 'друга', 'друзей', 'друзей')}"
+
+
+def _days(count: int) -> str:
+    return f"{count} {plural(count, 'день', 'дня', 'дней')}"
+
+
+#: Месяцы в родительном падеже: «до 30 сентября», а не «до 30 сентябрь».
+_MONTHS = (
+    "января",
+    "февраля",
+    "марта",
+    "апреля",
+    "мая",
+    "июня",
+    "июля",
+    "августа",
+    "сентября",
+    "октября",
+    "ноября",
+    "декабря",
+)
+
+
+def format_date(value: date) -> str:
+    """Дата по-человечески: «30 сентября»."""
+    return f"{value.day} {_MONTHS[value.month - 1]}"
 
 
 def _rubles(amount: int) -> str:
@@ -415,6 +442,10 @@ def friends_invited(count: int) -> str:
 
 PAYMENTS_SOON = "Оплата скоро заработает 🙏 А пока лимиты можно поднять бесплатно:"
 
+BUTTON_PAY_CARD = "💳 Картой"
+BUTTON_PAY_STARS = "⭐ Звёздами"
+BUTTON_PAY_OPEN = "💳 Перейти к оплате"
+
 
 def tariffs_screen() -> Screen:
     """Все три тарифа одним сообщением (§2.8).
@@ -469,6 +500,79 @@ TOO_BUSY = "Сейчас много запросов, попробуй чере�
 def too_busy() -> Screen:
     """Честный отказ при переполнении очереди. Лимит при этом не списывается."""
     return Screen(text=TOO_BUSY, buttons=(BUTTON_RETRY,))
+
+
+# --- Оплата (§2.8) -------------------------------------------------------
+
+
+def payment_methods(
+    tariff_id: TariffId, *, days: int, stars: int | None = None
+) -> Screen:
+    """Выбор способа оплаты. Цена названа сразу, чтобы не было сюрприза."""
+    tariff = TARIFFS[tariff_id]
+    lines = [
+        f"{TARIFF_TITLES[tariff_id]} — {_rubles(tariff.price_rub)} ₽ на {_days(days)}.",
+        "Чем платим?",
+    ]
+    buttons = [BUTTON_PAY_CARD]
+    if stars is not None:
+        # Про наценку говорим прямо: цену в звёздах человек всё равно увидит
+        # на счёте, и лучше он узнает её здесь, чем удивится там.
+        lines.insert(1, f"Звёздами Telegram — {stars} ⭐, чуть дороже.")
+        buttons.append(BUTTON_PAY_STARS)
+    return Screen(text="\n".join(lines), buttons=tuple(buttons))
+
+
+PAYMENT_LINK = "Оплата откроется по кнопке 👇 После оплаты тариф включится сам."
+
+
+def payment_link() -> Screen:
+    """Сообщение со ссылкой на оплату."""
+    return Screen(text=PAYMENT_LINK, buttons=(BUTTON_PAY_OPEN,))
+
+
+PAYMENT_FAILED = "Не получилось открыть оплату 🤷 Попробуй ещё раз или напиши нам."
+
+#: Что видит человек, если мессенджер спросил про заказ, которого у нас нет.
+#: Не экран бота, а поле ответа мессенджера, — но текст всё равно наш, и
+#: правила §2.9 на него распространяются.
+PAYMENT_REFUSED = "Счёт устарел. Открой тарифы и выбери ещё раз 🙏"
+
+
+def payment_refused() -> Screen:
+    return Screen(
+        text=PAYMENT_REFUSED,
+        next_step="человек возвращается к тарифам сам",
+    )
+
+
+def payment_failed() -> Screen:
+    """Провайдер не ответил. Денег с человека при этом не взяли."""
+    return Screen(text=PAYMENT_FAILED, buttons=_menu_buttons())
+
+
+def payment_done(tariff_id: TariffId, *, until: str) -> Screen:
+    """Подтверждение после оплаты. Единственный экран, где важна точность."""
+    return Screen(
+        text=(
+            f"Готово! Тариф {TARIFF_TITLES[tariff_id]} включён до {until}.\n"
+            "Лимиты уже обновились — пиши 👇"
+        ),
+        buttons=_menu_buttons(),
+    )
+
+
+def invoice(tariff_id: TariffId, *, days: int) -> tuple[str, str]:
+    """Заголовок и описание счёта в мессенджере.
+
+    Не Screen: это не экран бота, а поля счёта, которые рисует сам мессенджер.
+    Но текст всё равно наш, поэтому живёт здесь.
+    """
+    features = TARIFF_FEATURES[tariff_id]
+    return (
+        f"Тариф {TARIFF_TITLES[tariff_id]}",
+        f"{features[0]} · {features[1]}. Подписка на {_days(days)}.",
+    )
 
 
 # --- Повтор и параллельная работа ----------------------------------------
@@ -570,6 +674,12 @@ def _all_screens() -> tuple[Screen, ...]:
         referral_invite("https://t.me/mybot?start=ref_abc123"),
         referral_reward(),
         tariffs_screen(),
+        payment_methods(TariffId.PRO, days=30),
+        payment_methods(TariffId.PRO, days=30, stars=524),
+        payment_link(),
+        payment_failed(),
+        payment_refused(),
+        payment_done(TariffId.PRO, until="30 сентября"),
         payments_soon(),
         too_busy(),
         nothing_to_repeat(),

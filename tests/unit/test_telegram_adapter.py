@@ -23,6 +23,7 @@ from aiogram.types import (
     Message,
     PhotoSize,
     ReplyKeyboardMarkup,
+    SuccessfulPayment,
     User,
 )
 
@@ -51,6 +52,55 @@ def _message(**fields: Any) -> Message:
     }
     payload.update(fields)
     return Message(**payload)
+
+
+def _paid(**fields: Any) -> SuccessfulPayment:
+    payload: dict[str, Any] = {
+        "currency": "XTR",
+        "total_amount": 525,
+        "invoice_payload": "order-1",
+        "telegram_payment_charge_id": "charge-1",
+        "provider_payment_charge_id": "",
+    }
+    payload.update(fields)
+    return SuccessfulPayment(**payload)
+
+
+def test_the_first_subscription_payment_is_not_a_renewal() -> None:
+    """У первого платежа подписки оба признака подняты — продление это не он."""
+    incoming = to_incoming(
+        _message(successful_payment=_paid(is_recurring=True, is_first_recurring=True))
+    )
+
+    assert incoming is not None
+    assert incoming.paid_order_id == "order-1"
+    assert incoming.paid_renewal is False
+    assert incoming.paid_charge_id == "charge-1"
+
+
+def test_a_later_subscription_payment_is_a_renewal() -> None:
+    """Telegram ссылается тем же заказом, и отличить их можно только так."""
+    incoming = to_incoming(
+        _message(
+            successful_payment=_paid(
+                is_recurring=True,
+                is_first_recurring=None,
+                telegram_payment_charge_id="charge-2",
+            )
+        )
+    )
+
+    assert incoming is not None
+    assert incoming.paid_order_id == "order-1"
+    assert incoming.paid_renewal is True
+    assert incoming.paid_charge_id == "charge-2"
+
+
+def test_a_one_off_payment_is_not_a_renewal() -> None:
+    incoming = to_incoming(_message(successful_payment=_paid()))
+
+    assert incoming is not None
+    assert incoming.paid_renewal is False
 
 
 @pytest.mark.parametrize(

@@ -35,6 +35,7 @@ from app.core.scenarios import (
     profile,
     referral,
     repeat,
+    subscriptions,
     tariffs,
 )
 from app.core.scenarios.deps import Deps, Session
@@ -117,9 +118,14 @@ async def handle(deps: Deps, incoming: IncomingMessage) -> None:
 
     if incoming.paid_order_id is not None:
         # Мессенджер подтвердил оплату. Выдаём тариф — ровно один раз.
-        order = await payments.confirm(deps, incoming.paid_order_id)
+        order = await payments.confirm(
+            deps,
+            incoming.paid_order_id,
+            charge_id=incoming.paid_charge_id,
+            renewal=incoming.paid_renewal,
+        )
         if order is not None:
-            await payments.announce(deps, session, order)
+            await payments.announce(deps, session, order, renewal=incoming.paid_renewal)
         return
 
     action = incoming.action or keyboards.action_for_label(incoming.text)
@@ -192,6 +198,12 @@ async def _route_action(deps: Deps, session: Session, action: str) -> None:
         case Action.MENU_TARIFFS | Action.OPEN_TARIFFS:
             await _clear_pending(deps, session)
             await tariffs.show(deps, session)
+        case Action.SUBSCRIPTION:
+            await _clear_pending(deps, session)
+            await subscriptions.show(deps, session)
+        case Action.SUBSCRIPTION_OFF:
+            await _clear_pending(deps, session)
+            await subscriptions.cancel(deps, session)
         case Action.CHAT_NEW_DIALOG:
             await _clear_pending(deps, session)
             await chat.start_new_dialog(deps, session)

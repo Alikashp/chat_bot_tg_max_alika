@@ -87,10 +87,21 @@ def to_incoming(message: Message) -> IncomingMessage | None:
     if message.successful_payment is not None:
         # Деньги списаны. Заказ опознаём по payload, который сами же и
         # положили в счёт.
+        #
+        # Продление приходит тем же payload'ом, что и первая оплата: Telegram
+        # ссылается на счёт подписки, а не на конкретный период. Отличает их
+        # пара признаков — is_recurring говорит, что это подписка вообще, а
+        # is_first_recurring, что это её первый платёж. Продление, стало
+        # быть, второе без первого; и только у него идентификатор списания
+        # ещё не встречался нам в базе.
+        payment = message.successful_payment
         return IncomingMessage(
             chat=chat,
             external_user_id=str(message.from_user.id),
-            paid_order_id=message.successful_payment.invoice_payload,
+            paid_order_id=payment.invoice_payload,
+            paid_renewal=bool(payment.is_recurring)
+            and not bool(payment.is_first_recurring),
+            paid_charge_id=payment.telegram_payment_charge_id,
         )
 
     text = message.text or message.caption

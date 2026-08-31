@@ -40,16 +40,18 @@ from app.adapters.telegram.intake import dedup_key
 from app.adapters.telegram.messenger import TelegramMessenger
 from app.adapters.telegram.stars import TelegramStars
 from app.config import Settings, get_settings
-from app.core.models import Chat, MessengerKind
+from app.core.billing import Billing
+from app.core.models import MessengerKind
 from app.core.referral import MAX_HOST, TELEGRAM_HOST
 from app.core.scenarios import payments
-from app.core.scenarios.deps import Deps, Session
+from app.core.scenarios.deps import Deps, session_for
 from app.core.settings import CoreSettings
 from app.infra.antiflood import FloodGuard
 from app.infra.dedup import Deduplicator
 from app.infra.logging import configure_logging, get_logger
 from app.infra.queue import JobQueue
 from app.infra.retry import RetryPolicy
+from app.infra.scheduler import Periodic
 from app.infra.server import (
     MAX_SECRET_HEADER,
     TELEGRAM_SECRET_HEADER,
@@ -108,6 +110,8 @@ class Wiring:
     http_clients: tuple[httpx.AsyncClient, ...]
     max: MaxWiring | None
     settlement: Settlement | None
+    #: Обход подписок: напоминания и списания по расписанию.
+    billing: Billing
 
 
 def _payment_notice_key(notification: dict[str, Any]) -> str | None:
@@ -231,6 +235,10 @@ def build_cards(
             shop_id=settings.yookassa_shop_id,
             secret_key=settings.yookassa_secret_key,
             return_url=return_url,
+            # Автоплатежи включаются в кабинете ЮKassa отдельно. Пока их нет,
+            # оплата картой остаётся разовой — и на экране заказа так и
+            # написано: обещать продление, которого не будет, нельзя.
+            recurring=settings.yookassa_recurring,
         ),
         client,
     )
@@ -337,6 +345,7 @@ async def build_wiring(settings: Settings) -> Wiring:
         settlement=(
             _build_settlement(cards, by_messenger) if cards is not None else None
         ),
+        billing=Billing(by_messenger=by_messenger, batch=settings.billing_batch),
     )
 
 
@@ -387,13 +396,7 @@ def _build_settlement(
         if confirmed is None:
             return
 
-        session = Session(
-            user=user,
-            chat=Chat(messenger=user.messenger, chat_id=user.external_id),
-            day=deps.today(),
-            now=deps.now(),
-        )
-        await payments.announce(deps, session, confirmed)
+        await payments.announce(deps, session_for(deps, user), confirmed)
 
     return Settlement(handle=handle)
 
@@ -617,12 +620,23 @@ async def run() -> None:
             "max": "ready" if wiring.max is not None else "not_configured",
             "cards": "ready" if wiring.settlement is not None else "not_configured",
             "documents": "ready" if settings.documents_ready else "not_configured",
+            "recurring": "ready" if settings.yookassa_recurring else "not_configured",
         }
 
     app = create_app(webhooks=webhooks, health=health)
 
+    # Обход подписок: предупредить о списании и списать (§4.13–4.17 оферты).
+    # Задача одна на весь сервис, а не на мессенджер: подписки лежат в общей
+    # базе, а отвечать в нужный мессенджер умеет сам обход.
+    billing = Periodic(
+        "billing",
+        wiring.billing.run,
+        interval_seconds=settings.billing_interval_seconds,
+    )
+
     for each in queues:
         each.start()
+    billing.start()
     runner = web.AppRunner(app, access_log=None)
     await runner.setup()
     site = web.TCPSite(runner, host="0.0.0.0", port=settings.port)  # noqa: S104
@@ -661,6 +675,11 @@ async def run() -> None:
         # проскочить новое обновление.
         for each in queues:
             each.stop_accepting()
+        # Планировщик останавливаем раньше очередей: он сам ставит им работу,
+        # и глушить его после значило бы подкидывать задачи в закрывающуюся
+        # очередь. Текущий проход при этом дорабатывает — прерывать его между
+        # списанием и выдачей тарифа нельзя.
+        await billing.stop()
         await site.stop()
         abandoned = 0
         for each in queues:

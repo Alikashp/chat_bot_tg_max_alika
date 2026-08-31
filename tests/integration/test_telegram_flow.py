@@ -23,10 +23,10 @@ from aiogram.client.session.base import BaseSession
 from aiogram.methods import (
     AnswerCallbackQuery,
     AnswerPreCheckoutQuery,
+    CreateInvoiceLink,
     DeleteMessage,
     EditMessageText,
     GetFile,
-    SendInvoice,
     SendMessage,
     SendPhoto,
     TelegramMethod,
@@ -35,7 +35,6 @@ from aiogram.types import (
     Chat,
     File,
     InlineKeyboardMarkup,
-    Invoice,
     Message,
     PhotoSize,
     ReplyKeyboardMarkup,
@@ -123,19 +122,10 @@ class RecordingSession(BaseSession):
                 ],
             ).as_(bot)
 
-        if isinstance(method, SendInvoice):
-            return Message(
-                message_id=self._next_message_id,
-                date=datetime.now(UTC),
-                chat=Chat(id=CHAT_ID, type="private"),
-                invoice=Invoice(
-                    title=method.title,
-                    description=method.description,
-                    start_parameter="",
-                    currency=method.currency,
-                    total_amount=method.prices[0].amount,
-                ),
-            ).as_(bot)
+        if isinstance(method, CreateInvoiceLink):
+            # Счёт на подписку Telegram умеет создавать только ссылкой:
+            # у sendInvoice нет subscription_period.
+            return f"https://t.me/invoice/{method.payload}"
 
         if isinstance(method, GetFile):
             return File(
@@ -675,15 +665,17 @@ async def test_paying_with_stars_turns_the_tariff_on(started: Harness) -> None:
     ли заказ по payload, выдан ли тариф ровно один раз.
     """
     await started.press(buy_action(TariffId.PRO.value))
-    # Условия показаны до денег, со ссылками на документы.
-    assert texts.CONSENT in started.texts_said()[0]
     started.forget()
 
     await started.press(method_action(PaymentMethod.STARS.value, TariffId.PRO.value))
 
-    invoices = started.calls_of(SendInvoice)
+    # Условия показаны до денег и в том же сообщении, что и кнопка оплаты:
+    # согласие даётся её нажатием (§4.11 оферты).
+    assert texts.CONSENT in started.texts_said()[-1]
+    invoices = started.calls_of(CreateInvoiceLink)
     assert len(invoices) == 1
     assert invoices[0].currency == "XTR"
+    assert invoices[0].subscription_period == 30 * 24 * 60 * 60
     order_id = invoices[0].payload
     started.forget()
 
@@ -721,7 +713,7 @@ async def test_a_repeated_payment_notice_does_not_extend_the_subscription(
 ) -> None:
     """Одна оплата — один месяц, сколько бы уведомлений ни пришло."""
     await started.press(method_action(PaymentMethod.STARS.value, TariffId.PRO.value))
-    order_id = started.calls_of(SendInvoice)[0].payload
+    order_id = started.calls_of(CreateInvoiceLink)[0].payload
 
     await started.post(paid_update(started.next_id(), order_id))
     first = (await started.user()).tariff_expires_at

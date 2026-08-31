@@ -74,8 +74,16 @@ def _label(text: str) -> str:
     return first_line[:60] + ("…" if len(first_line) > 60 else "")
 
 
-def check_wording(where: str, text: str) -> list[Violation]:
-    """Запрещённые слова и обращение на «вы»."""
+def check_wording(
+    where: str, text: str, *, allow_formal: bool = False
+) -> list[Violation]:
+    """Запрещённые слова и обращение на «вы».
+
+    ``allow_formal`` снимает только правило об обращении и только там, где
+    экран заявил это о себе явно (Screen.formal_address). Единственный такой
+    экран — согласие с офертой перед оплатой; тест следит, чтобы их не стало
+    больше. Запрет на «кредиты» и «промпты» не снимается никогда.
+    """
     violations: list[Violation] = []
     lowered = text.lower()
 
@@ -85,7 +93,7 @@ def check_wording(where: str, text: str) -> list[Violation]:
         if stem in lowered
     )
 
-    formal = FORMAL_ADDRESS.search(text)
+    formal = None if allow_formal else FORMAL_ADDRESS.search(text)
     if formal is not None:
         violations.append(
             Violation(
@@ -100,8 +108,10 @@ def check_wording(where: str, text: str) -> list[Violation]:
 def check_screen(screen: Screen) -> list[Violation]:
     """Все правила для одного экрана."""
     where = _label(screen.text) if screen.text else _label(", ".join(screen.buttons))
-    violations = check_wording(where, screen.text)
+    violations = check_wording(where, screen.text, allow_formal=screen.formal_address)
 
+    # Подписи кнопок — всегда на «ты», даже на экране согласия: послабление
+    # касается условий договора, а не разговора с человеком.
     for button in screen.buttons:
         violations.extend(check_wording(f"{where} → кнопка «{button}»", button))
 

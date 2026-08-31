@@ -89,6 +89,37 @@ dialogs = Table(
     Column("user_turns", Integer, nullable=False, server_default="0"),
 )
 
+subscriptions = Table(
+    "subscriptions",
+    metadata,
+    # Первичный ключ — сам пользователь: подписка у человека одна. Смена
+    # тарифа меняет строку, а не добавляет вторую, иначе списывали бы дважды.
+    Column(
+        "user_id",
+        BigInteger,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    Column("tariff", String(16), nullable=False),
+    Column("method", String(16), nullable=False),
+    Column("status", String(16), nullable=False),
+    # Сумма списания и валюта. Хранятся, а не берутся из тарифа: цена тарифа
+    # меняется, а списываем мы то, на что человек согласился, пока не
+    # предупредим об изменении (§4.17 оферты).
+    Column("amount", Integer, nullable=False),
+    Column("currency", String(8), nullable=False),
+    Column("next_charge_at", DateTime(timezone=True), nullable=False, index=True),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    Column("payment_method_id", String(128), nullable=True),
+    Column("charge_id", String(128), nullable=True),
+    Column("reminded_for", DateTime(timezone=True), nullable=True),
+    # За какое списание уже сверили цену с тарифом (§4.17 оферты).
+    Column("price_checked_for", DateTime(timezone=True), nullable=True),
+    Column("failed_since", DateTime(timezone=True), nullable=True),
+    Column("cancelled_at", DateTime(timezone=True), nullable=True),
+    CheckConstraint("amount > 0", name="ck_subscriptions_amount"),
+)
+
 payments = Table(
     "payments",
     metadata,

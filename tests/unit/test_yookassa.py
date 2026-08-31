@@ -13,7 +13,7 @@ import httpx
 import pytest
 import respx
 
-from app.adapters.ai.errors import ProviderRequestError
+from app.adapters.ai.errors import ProviderRequestError, ProviderUnavailableError
 from app.adapters.payments.yookassa import YooKassaPayments, order_id_of
 
 BASE = "https://api.example/v3"
@@ -198,3 +198,114 @@ def test_a_notification_without_an_order_is_ignored(
 ) -> None:
     """Уведомление приходит от кого угодно: разбирать надо осторожно."""
     assert order_id_of(notification) is None
+
+
+# --- Автоплатежи ---------------------------------------------------------
+
+
+@respx.mock
+async def test_saving_the_card_is_asked_for_only_when_needed() -> None:
+    """Провайдер не должен хранить карту человека без причины."""
+    route = respx.post(PAYMENTS_URL).mock(
+        return_value=httpx.Response(200, json=_created())
+    )
+
+    await _provider().create_payment(
+        order_id="order-1", amount_rub=599, description="Тариф Про"
+    )
+    await _provider().create_payment(
+        order_id="order-2", amount_rub=599, description="Тариф Про", save_method=True
+    )
+
+    one_off = json.loads(route.calls[0].request.content)
+    recurring = json.loads(route.calls[1].request.content)
+    assert "save_payment_method" not in one_off
+    assert recurring["save_payment_method"] is True
+
+
+@respx.mock
+async def test_a_repeat_charge_uses_the_saved_card() -> None:
+    route = respx.post(PAYMENTS_URL).mock(
+        return_value=httpx.Response(200, json=_succeeded())
+    )
+
+    payment_id = await _provider().charge_saved(
+        order_id="order-2",
+        amount_rub=599,
+        description="Тариф Про",
+        payment_method_id="card-1",
+    )
+
+    body = json.loads(route.calls[0].request.content)
+    assert payment_id == "2d0a1b"
+    assert body["payment_method_id"] == "card-1"
+    assert body["capture"] is True
+    assert route.calls[0].request.headers["Idempotence-Key"] == "order-2"
+
+
+@respx.mock
+async def test_a_refused_charge_is_not_an_error() -> None:
+    """Банк отказал — это обычное дело, разбираемое §4.16 оферты, а не сбой.
+
+    Разница принципиальная: сбой означает «неизвестно, списали ли», и на нём
+    подписку прекращать нельзя. Отказ означает «денег нет», и он честно
+    считается неудачной попыткой.
+    """
+    respx.post(PAYMENTS_URL).mock(
+        return_value=httpx.Response(200, json={"id": "2d0a1b", "status": "canceled"})
+    )
+
+    assert (
+        await _provider().charge_saved(
+            order_id="order-2",
+            amount_rub=599,
+            description="Тариф Про",
+            payment_method_id="card-1",
+        )
+        is None
+    )
+
+
+@respx.mock
+async def test_a_provider_outage_during_a_charge_raises() -> None:
+    """«Неизвестно» не должно молча превращаться в «отказано»."""
+    respx.post(PAYMENTS_URL).mock(return_value=httpx.Response(500, text="упало"))
+
+    with pytest.raises(ProviderUnavailableError):
+        await _provider().charge_saved(
+            order_id="order-2",
+            amount_rub=599,
+            description="Тариф Про",
+            payment_method_id="card-1",
+        )
+
+
+@respx.mock
+async def test_the_saved_card_is_read_from_the_payment() -> None:
+    respx.get(f"{PAYMENTS_URL}/2d0a1b").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                **_succeeded(),
+                "payment_method": {"id": "card-1", "saved": True, "type": "bank_card"},
+            },
+        )
+    )
+
+    assert await _provider().saved_method_of("2d0a1b") == "card-1"
+
+
+@respx.mock
+async def test_an_unsaved_card_gives_nothing_to_charge_later() -> None:
+    """Просили сохранить, не сохранили — значит подписку заводить не на чем."""
+    respx.get(f"{PAYMENTS_URL}/2d0a1b").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                **_succeeded(),
+                "payment_method": {"id": "card-1", "saved": False, "type": "bank_card"},
+            },
+        )
+    )
+
+    assert await _provider().saved_method_of("2d0a1b") is None

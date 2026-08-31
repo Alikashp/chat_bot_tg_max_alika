@@ -19,6 +19,15 @@ from types import MappingProxyType
 from app.core.models import TariffId
 from app.ports.ai import ImageQuality
 
+#: Валюты, в которых мы берём деньги.
+#:
+#: Звёзды — не деньги в привычном смысле, но учёт им нужен тот же: код
+#: валюты уезжает и в заказ, и в подписку, и в то, как показывается сумма.
+#: Одно место на весь проект, потому что разойтись здесь означало бы
+#: показать одну цену, а списать другую.
+RUB = "RUB"
+STARS = "XTR"
+
 
 class ModelTier(StrEnum):
     """Класс модели.

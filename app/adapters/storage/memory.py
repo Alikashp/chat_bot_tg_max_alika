@@ -24,12 +24,13 @@ from app.core.models import (
     DialogState,
     MessengerKind,
     Payment,
+    Subscription,
     TariffId,
     Usage,
     User,
     UserId,
 )
-from app.ports.payments import PaymentStatus
+from app.ports.payments import PaymentStatus, SubscriptionStatus
 
 
 class InMemoryStorage:
@@ -55,6 +56,7 @@ class InMemoryStorage:
         #: только одному пригласившему.
         self._referrals: dict[UserId, tuple[UserId, datetime]] = {}
         self._payments: dict[str, Payment] = {}
+        self._subscriptions: dict[UserId, Subscription] = {}
 
     # --- Пользователи --------------------------------------------------
 
@@ -228,6 +230,71 @@ class InMemoryStorage:
             payment, status=PaymentStatus.PAID.value, paid_at=self._now()
         )
         return True
+
+    # --- Подписка ------------------------------------------------------
+
+    async def get_subscription(self, user_id: UserId) -> Subscription | None:
+        return self._subscriptions.get(user_id)
+
+    async def save_subscription(self, subscription: Subscription) -> None:
+        self._subscriptions[subscription.user_id] = subscription
+
+    async def cancel_subscription(self, user_id: UserId, at: datetime) -> bool:
+        current = self._subscriptions.get(user_id)
+        if current is None or current.status == SubscriptionStatus.CANCELLED.value:
+            return False
+        self._subscriptions[user_id] = replace(
+            current, status=SubscriptionStatus.CANCELLED.value, cancelled_at=at
+        )
+        return True
+
+    async def subscriptions_to_charge(
+        self, now: datetime, *, limit: int
+    ) -> list[Subscription]:
+        due = [
+            subscription
+            for subscription in self._subscriptions.values()
+            if subscription.status != SubscriptionStatus.CANCELLED.value
+            and subscription.next_charge_at <= now
+        ]
+        due.sort(key=lambda subscription: subscription.next_charge_at)
+        return due[:limit]
+
+    async def subscriptions_to_remind(
+        self, since: datetime, until: datetime, *, limit: int
+    ) -> list[Subscription]:
+        due = [
+            subscription
+            for subscription in self._subscriptions.values()
+            if subscription.status == SubscriptionStatus.ACTIVE.value
+            and since < subscription.next_charge_at <= until
+            and subscription.reminded_for != subscription.next_charge_at
+        ]
+        due.sort(key=lambda subscription: subscription.next_charge_at)
+        return due[:limit]
+
+    async def mark_reminded(self, user_id: UserId, charge_at: datetime) -> None:
+        current = self._subscriptions.get(user_id)
+        if current is not None:
+            self._subscriptions[user_id] = replace(current, reminded_for=charge_at)
+
+    async def subscriptions_to_check_price(
+        self, since: datetime, until: datetime, *, limit: int
+    ) -> list[Subscription]:
+        due = [
+            subscription
+            for subscription in self._subscriptions.values()
+            if subscription.status == SubscriptionStatus.ACTIVE.value
+            and since < subscription.next_charge_at <= until
+            and subscription.price_checked_for != subscription.next_charge_at
+        ]
+        due.sort(key=lambda subscription: subscription.next_charge_at)
+        return due[:limit]
+
+    async def mark_price_checked(self, user_id: UserId, charge_at: datetime) -> None:
+        current = self._subscriptions.get(user_id)
+        if current is not None:
+            self._subscriptions[user_id] = replace(current, price_checked_for=charge_at)
 
     # --- Диалог --------------------------------------------------------
 

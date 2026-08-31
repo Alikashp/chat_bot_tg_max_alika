@@ -19,7 +19,7 @@ from datetime import UTC, date, datetime
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
@@ -28,6 +28,7 @@ from app.adapters.storage.schema import (
     dialogs,
     payments,
     referrals,
+    subscriptions,
     usage,
     users,
 )
@@ -37,12 +38,13 @@ from app.core.models import (
     MessengerKind,
     Payment,
     Role,
+    Subscription,
     TariffId,
     Usage,
     User,
     UserId,
 )
-from app.ports.payments import PaymentStatus
+from app.ports.payments import PaymentStatus, SubscriptionStatus
 
 
 def create_engine(dsn: str, *, echo: bool = False) -> AsyncEngine:
@@ -376,6 +378,138 @@ class PostgresStorage:
         async with self._session() as session, session.begin():
             return (await session.execute(query)).one_or_none() is not None
 
+    # --- Подписка ------------------------------------------------------
+
+    async def get_subscription(self, user_id: UserId) -> Subscription | None:
+        async with self._session() as session:
+            row = (
+                await session.execute(
+                    select(subscriptions).where(subscriptions.c.user_id == user_id)
+                )
+            ).one_or_none()
+        return _to_subscription(row) if row is not None else None
+
+    async def save_subscription(self, subscription: Subscription) -> None:
+        """Заводит подписку или заменяет существующую.
+
+        Через ON CONFLICT, а не «посмотреть и решить»: между чтением и записью
+        успевает вклиниться параллельное обновление, и тогда у человека
+        оказалось бы две подписки — то есть два списания в месяц.
+        """
+        values = {
+            "user_id": int(subscription.user_id),
+            "tariff": subscription.tariff.value,
+            "method": subscription.method,
+            "status": subscription.status,
+            "amount": subscription.amount,
+            "currency": subscription.currency,
+            "next_charge_at": subscription.next_charge_at,
+            "created_at": subscription.created_at,
+            "payment_method_id": subscription.payment_method_id,
+            "charge_id": subscription.charge_id,
+            "reminded_for": subscription.reminded_for,
+            "price_checked_for": subscription.price_checked_for,
+            "failed_since": subscription.failed_since,
+            "cancelled_at": subscription.cancelled_at,
+        }
+        updates = {key: value for key, value in values.items() if key != "user_id"}
+        query = (
+            insert(subscriptions)
+            .values(**values)
+            .on_conflict_do_update(
+                index_elements=[subscriptions.c.user_id], set_=updates
+            )
+        )
+        async with self._session() as session, session.begin():
+            await session.execute(query)
+
+    async def cancel_subscription(self, user_id: UserId, at: datetime) -> bool:
+        query = (
+            update(subscriptions)
+            .where(
+                subscriptions.c.user_id == user_id,
+                subscriptions.c.status != SubscriptionStatus.CANCELLED.value,
+            )
+            .values(status=SubscriptionStatus.CANCELLED.value, cancelled_at=at)
+            .returning(subscriptions.c.user_id)
+        )
+        async with self._session() as session, session.begin():
+            return (await session.execute(query)).one_or_none() is not None
+
+    async def subscriptions_to_charge(
+        self, now: datetime, *, limit: int
+    ) -> list[Subscription]:
+        query = (
+            select(subscriptions)
+            .where(
+                subscriptions.c.status != SubscriptionStatus.CANCELLED.value,
+                subscriptions.c.next_charge_at <= now,
+            )
+            .order_by(subscriptions.c.next_charge_at)
+            .limit(limit)
+        )
+        async with self._session() as session:
+            rows = (await session.execute(query)).all()
+        return [_to_subscription(row) for row in rows]
+
+    async def subscriptions_to_remind(
+        self, since: datetime, until: datetime, *, limit: int
+    ) -> list[Subscription]:
+        query = (
+            select(subscriptions)
+            .where(
+                subscriptions.c.status == SubscriptionStatus.ACTIVE.value,
+                subscriptions.c.next_charge_at > since,
+                subscriptions.c.next_charge_at <= until,
+                or_(
+                    subscriptions.c.reminded_for.is_(None),
+                    subscriptions.c.reminded_for != subscriptions.c.next_charge_at,
+                ),
+            )
+            .order_by(subscriptions.c.next_charge_at)
+            .limit(limit)
+        )
+        async with self._session() as session:
+            rows = (await session.execute(query)).all()
+        return [_to_subscription(row) for row in rows]
+
+    async def mark_reminded(self, user_id: UserId, charge_at: datetime) -> None:
+        async with self._session() as session, session.begin():
+            await session.execute(
+                update(subscriptions)
+                .where(subscriptions.c.user_id == user_id)
+                .values(reminded_for=charge_at)
+            )
+
+    async def subscriptions_to_check_price(
+        self, since: datetime, until: datetime, *, limit: int
+    ) -> list[Subscription]:
+        query = (
+            select(subscriptions)
+            .where(
+                subscriptions.c.status == SubscriptionStatus.ACTIVE.value,
+                subscriptions.c.next_charge_at > since,
+                subscriptions.c.next_charge_at <= until,
+                or_(
+                    subscriptions.c.price_checked_for.is_(None),
+                    subscriptions.c.price_checked_for != subscriptions.c.next_charge_at,
+                ),
+            )
+            .order_by(subscriptions.c.next_charge_at)
+            .limit(limit)
+        )
+        async with self._session() as session:
+            rows = (await session.execute(query)).all()
+        return [_to_subscription(row) for row in rows]
+
+    async def mark_price_checked(self, user_id: UserId, charge_at: datetime) -> None:
+        async with self._session() as session, session.begin():
+            await session.execute(
+                update(subscriptions)
+                .where(subscriptions.c.user_id == user_id)
+                .values(price_checked_for=charge_at)
+            )
+
     # --- Диалог --------------------------------------------------------
 
     async def get_dialog(self, user_id: UserId) -> DialogState:
@@ -455,6 +589,25 @@ class PostgresStorage:
         async with self._session() as session:
             row = (await session.execute(query)).mappings().one_or_none()
         return None if row is None else _to_user(row)
+
+
+def _to_subscription(row: Any) -> Subscription:
+    return Subscription(
+        user_id=UserId(row.user_id),
+        tariff=TariffId(row.tariff),
+        method=row.method,
+        status=row.status,
+        amount=row.amount,
+        currency=row.currency,
+        next_charge_at=row.next_charge_at,
+        created_at=row.created_at,
+        payment_method_id=row.payment_method_id,
+        charge_id=row.charge_id,
+        reminded_for=row.reminded_for,
+        price_checked_for=row.price_checked_for,
+        failed_since=row.failed_since,
+        cancelled_at=row.cancelled_at,
+    )
 
 
 def _to_payment(row: Any) -> Payment:

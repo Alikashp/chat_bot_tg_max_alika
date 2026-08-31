@@ -48,29 +48,26 @@ async def test_the_star_price_is_named_before_paying(
     assert "⭐" in messenger.last_text.text
 
 
-async def test_the_terms_are_shown_even_with_a_single_method(
+async def test_a_single_method_goes_straight_to_the_terms(
     deps: Deps, session: Session, messenger: FakeMessenger, stars: FakeStars
 ) -> None:
-    """Раньше единственный способ вёл к счёту сразу, экономя нажатие.
+    """Выбирать не из чего — значит и спрашивать не о чем.
 
-    Так больше нельзя: этот экран — единственное место, где человек видит
-    условия до того, как отдаст деньги. Одно нажатие дешевле, чем деньги,
-    взятые без показанной оферты.
+    Условия при этом не теряются: они на экране заказа, ровно над кнопкой
+    оплаты. Раньше их показывал экран выбора, и лишний шаг был обязателен;
+    теперь согласие стоит там же, где действие, которым его дают.
     """
     await payments.choose_method(replace(deps, cards=None), session, PRO)
 
-    assert stars.invoices == []
+    assert len(stars.invoices) == 1
     assert texts.CONSENT in messenger.last_text.text
-    keyboard = messenger.last_text.keyboard
-    assert keyboard is not None
-    assert [button.text for button in keyboard.rows[0]] == [texts.BUTTON_PAY_STARS]
 
 
-async def test_the_screen_links_to_both_documents(
+async def test_the_order_screen_links_to_both_documents(
     deps: Deps, session: Session, messenger: FakeMessenger
 ) -> None:
     """Согласие без возможности прочитать — не согласие."""
-    await payments.choose_method(deps, session, PRO)
+    await payments.start_card(deps, session, PRO)
 
     keyboard = messenger.last_text.keyboard
     assert keyboard is not None
@@ -79,6 +76,22 @@ async def test_the_screen_links_to_both_documents(
         texts.BUTTON_OFFER: deps.settings.offer_url,
         texts.BUTTON_PRIVACY: deps.settings.privacy_url,
     }
+
+
+async def test_the_consent_stands_next_to_the_pay_button(
+    deps: Deps, session: Session, messenger: FakeMessenger
+) -> None:
+    """§4.11 оферты: согласие даётся нажатием кнопки оплаты.
+
+    Значит и условия должны быть в том же сообщении. Разнеси их по разным —
+    и согласие получено вслепую.
+    """
+    await payments.start_card(deps, session, PRO)
+
+    keyboard = messenger.last_text.keyboard
+    assert keyboard is not None
+    assert texts.CONSENT in messenger.last_text.text
+    assert keyboard.rows[0][0].text == texts.BUTTON_PAY_OPEN
 
 
 async def test_payment_is_hidden_until_the_documents_are_published(
@@ -106,11 +119,18 @@ async def test_the_consent_is_recorded_with_the_order(
     assert order.docs_version == deps.settings.docs_version
 
 
-async def test_the_consent_is_written_to_the_log(
+async def test_the_consent_is_written_to_the_log_on_payment(
     deps: Deps, session: Session, logger: FakeLogger, stars: FakeStars
 ) -> None:
-    """Кто, когда, по какой редакции и за какой заказ — одной записью."""
+    """Кто, когда, по какой редакции и за какой заказ — одной записью.
+
+    Запись появляется по факту оплаты, а не при открытии экрана: соглашается
+    человек нажатием кнопки, а брошенный заказ никакого согласия не значит.
+    """
     await payments.start_stars(deps, session, PRO)
+    assert [e for e in logger.events if e.event == "consent_accepted"] == []
+
+    await payments.confirm(deps, stars.invoices[0].order_id)
 
     consent = [entry for entry in logger.events if entry.event == "consent_accepted"]
     assert len(consent) == 1
@@ -184,13 +204,18 @@ async def test_a_provider_without_a_link_is_a_failure(
 # --- Оплата звёздами -----------------------------------------------------
 
 
-async def test_a_star_payment_sends_an_invoice(
-    deps: Deps, session: Session, stars: FakeStars
+async def test_a_star_payment_offers_a_subscription(
+    deps: Deps, session: Session, stars: FakeStars, messenger: FakeMessenger
 ) -> None:
+    """Счёт на звёздах теперь всегда подписка: разового варианта у неё нет."""
     await payments.start_stars(deps, session, PRO)
 
     assert len(stars.invoices) == 1
     assert stars.invoices[0].stars > 0
+    assert stars.invoices[0].period_days == deps.settings.subscription_days
+    keyboard = messenger.last_text.keyboard
+    assert keyboard is not None
+    assert keyboard.rows[0][0].url is not None
 
 
 async def test_the_invoice_carries_the_order(
@@ -253,10 +278,10 @@ async def test_someone_elses_order_is_refused(
     assert stars.approvals == [("req-1", False)]
 
 
-async def test_an_already_paid_order_is_refused(
+async def test_a_paid_order_without_a_subscription_is_refused(
     deps: Deps, session: Session, storage: InMemoryStorage, stars: FakeStars
 ) -> None:
-    """Второй счёт по оплаченному заказу — это вторые деньги за то же."""
+    """Старая ссылка на счёт, открытая второй раз, — это вторые деньги за то же."""
     await payments.start_stars(deps, session, PRO)
     order_id = stars.invoices[0].order_id
     await storage.mark_paid(order_id)
@@ -264,6 +289,24 @@ async def test_an_already_paid_order_is_refused(
     await payments.approve(deps, "req-2", order_id, user=session.user)
 
     assert stars.approvals == [("req-2", False)]
+
+
+async def test_a_renewal_of_a_live_subscription_is_approved(
+    deps: Deps, session: Session, stars: FakeStars
+) -> None:
+    """Продление приходит по тому же заказу, который давно оплачен.
+
+    Отказать здесь значило бы остановить подписку, за которую человек
+    платит: Telegram спрашивает про списание тем же запросом, что и в первый
+    раз, и ссылается на тот же счёт.
+    """
+    await payments.start_stars(deps, session, PRO)
+    order_id = stars.invoices[0].order_id
+    await payments.confirm(deps, order_id, charge_id="charge-1")
+
+    await payments.approve(deps, "req-2", order_id, user=session.user)
+
+    assert stars.approvals == [("req-2", True)]
 
 
 # --- Подтверждение -------------------------------------------------------

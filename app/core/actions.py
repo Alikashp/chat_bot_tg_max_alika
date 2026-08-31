@@ -39,6 +39,10 @@ class Action(StrEnum):
     PRESET_ANOTHER = "p:other"
     PRESET_RETRY = "p:retry"
 
+    # Подписка (§4.14 оферты: отмена — в профиле)
+    SUBSCRIPTION = "s:show"
+    SUBSCRIPTION_OFF = "s:off"
+
     # Пейволл и тарифы (§2.5, §2.8)
     OPEN_TARIFFS = "t:open"
     INVITE_FRIEND = "r:invite"

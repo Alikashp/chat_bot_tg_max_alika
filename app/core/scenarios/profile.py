@@ -17,6 +17,10 @@ async def show(deps: Deps, session: Session) -> None:
     usage = await deps.storage.get_usage(session.user.id, session.day)
     images = await spending.current_allowance(deps, session, LimitKind.IMAGES)
     friends = await deps.storage.count_referrals(session.user.id)
+    # Кнопка подписки нужна тому, у кого подписка есть: §4.14 оферты обещает
+    # отмену «в разделе Профиль», и вести туда надо отсюда. Остальным она
+    # показывала бы экран о том, что смотреть нечего.
+    subscription = await deps.storage.get_subscription(session.user.id)
 
     screen = texts.profile(
         tariff_id=session.tariff.id,
@@ -29,5 +33,7 @@ async def show(deps: Deps, session: Session) -> None:
         ),
     )
     await deps.messenger.send_text(
-        session.chat, screen.text, keyboard=keyboards.profile()
+        session.chat,
+        screen.text,
+        keyboard=keyboards.profile(has_subscription=subscription is not None),
     )

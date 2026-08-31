@@ -93,9 +93,19 @@ async def test_menu_label_arriving_as_text_is_recognised(
 async def test_buy_action_asks_how_to_pay(
     deps: Deps, user: User, messenger: FakeMessenger
 ) -> None:
+    """Способов два — значит сначала спрашиваем, чем платить.
+
+    Условия здесь ещё не показываются: они на экране заказа, вместе с
+    кнопкой оплаты, которой человек и даёт согласие.
+    """
     await handle(deps, incoming(action=buy_action("pro")))
 
-    assert texts.CONSENT in messenger.last_text.text
+    keyboard = messenger.last_text.keyboard
+    assert keyboard is not None
+    assert [button.text for button in keyboard.rows[0]] == [
+        texts.BUTTON_PAY_CARD,
+        texts.BUTTON_PAY_STARS,
+    ]
 
 
 async def test_an_unconfigured_payment_is_an_honest_stub(

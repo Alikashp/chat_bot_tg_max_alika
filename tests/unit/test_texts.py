@@ -293,6 +293,37 @@ def test_only_the_tariff_screen_raises_the_line_limit() -> None:
     assert exceptions[0].buttons == ("Лайт", "Про", "Макс")
 
 
+def test_only_the_consent_screen_may_say_you() -> None:
+    """Исключение из правила §2.9 должно оставаться ровно одним.
+
+    Обращение на «вы» снято там, где человек становится стороной договора:
+    «нажимая кнопку, ты соглашаешься с офертой» звучало бы как приятельская
+    просьба, а не как согласие с условиями. Послабление легко расползётся по
+    другим экранам, поэтому список исключений один и лежит здесь.
+    """
+    exceptions = [screen for screen in texts.SCREENS if screen.formal_address]
+
+    assert {screen.text for screen in exceptions} != set()
+    assert all(texts.CONSENT in screen.text for screen in exceptions)
+
+
+def test_the_consent_screen_still_obeys_every_other_rule() -> None:
+    """Снято одно правило, а не проверка целиком."""
+    consent = next(screen for screen in texts.SCREENS if screen.formal_address)
+
+    assert check_screen(consent) == []
+    assert consent.buttons
+
+
+def test_buttons_never_get_the_formal_exception() -> None:
+    """Послабление касается условий договора, а не разговора с человеком."""
+    violations = check_screen(
+        Screen(text="Условия", buttons=("Оплатить вашей картой",), formal_address=True)
+    )
+
+    assert any(v.rule == "обращение" for v in violations)
+
+
 def test_every_screen_has_a_way_out() -> None:
     """§2.9: ни одного экрана, с которого нельзя уйти."""
     stuck = [

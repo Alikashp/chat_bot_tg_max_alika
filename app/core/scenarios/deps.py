@@ -83,3 +83,19 @@ class Session:
         if self.tariff.model_tier is ModelTier.ECONOMY:
             return settings.model_economy
         return settings.model_standard
+
+
+def session_for(deps: Deps, user: User) -> Session:
+    """Контекст обращения к человеку, который сейчас ничего не писал.
+
+    Нужен там, где разговор начинаем мы: подтверждение оплаты приходит
+    вебхуком провайдера, напоминание о списании — по расписанию. Чат в
+    личной переписке совпадает с самим человеком, поэтому собрать его можно
+    из пользователя, не имея входящего сообщения.
+    """
+    return Session(
+        user=user,
+        chat=Chat(messenger=user.messenger, chat_id=user.external_id),
+        day=deps.today(),
+        now=deps.now(),
+    )

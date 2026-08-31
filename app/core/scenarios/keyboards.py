@@ -100,11 +100,48 @@ def paywall(invite_label: str) -> Keyboard:
     )
 
 
-def profile() -> Keyboard:
-    """Два выхода из профиля (§2.6)."""
+def profile(*, has_subscription: bool = False) -> Keyboard:
+    """Выходы из профиля (§2.6).
+
+    Кнопка подписки появляется только у того, у кого подписка есть. Держать
+    её всегда значило бы уводить бесплатного человека на экран, который
+    сообщит ему, что смотреть нечего.
+
+    Отдельным рядом: третья подпись в строке на телефоне обрезается.
+    """
+    rows: list[tuple[Button, ...]] = [
+        (
+            Button(text=texts.MENU_TARIFFS, action=Action.OPEN_TARIFFS),
+            Button(text=texts.BUTTON_MY_LINK, action=Action.MY_LINK),
+        )
+    ]
+    if has_subscription:
+        rows.append(
+            (Button(text=texts.BUTTON_SUBSCRIPTION, action=Action.SUBSCRIPTION),)
+        )
+    return Keyboard(rows=tuple(rows))
+
+
+def subscription_manage() -> Keyboard:
+    """Экран подписки, которую есть смысл отключать."""
+    return Keyboard.row(
+        Button(text=texts.BUTTON_SUBSCRIPTION_OFF, action=Action.SUBSCRIPTION_OFF),
+        Button(text=texts.MENU_PROFILE, action=Action.MENU_PROFILE),
+    )
+
+
+def tariffs_or_profile() -> Keyboard:
+    """Выход с экранов, где отключать уже нечего."""
     return Keyboard.row(
         Button(text=texts.MENU_TARIFFS, action=Action.OPEN_TARIFFS),
-        Button(text=texts.BUTTON_MY_LINK, action=Action.MY_LINK),
+        Button(text=texts.MENU_PROFILE, action=Action.MENU_PROFILE),
+    )
+
+
+def open_tariffs() -> Keyboard:
+    """Одна кнопка — в тарифы. Ставится там, где других выходов нет."""
+    return Keyboard.row(
+        Button(text=texts.BUTTON_OPEN_TARIFFS, action=Action.OPEN_TARIFFS)
     )
 
 

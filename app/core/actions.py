@@ -39,6 +39,10 @@ class Action(StrEnum):
     PRESET_ANOTHER = "p:other"
     PRESET_RETRY = "p:retry"
 
+    # Подписка (§4.14 оферты: отмена — в профиле)
+    SUBSCRIPTION = "s:show"
+    SUBSCRIPTION_OFF = "s:off"
+
     # Пейволл и тарифы (§2.5, §2.8)
     OPEN_TARIFFS = "t:open"
     INVITE_FRIEND = "r:invite"
@@ -52,6 +56,9 @@ PRESET_PREFIX = "p:pick:"
 #: Префикс покупки тарифа. За ним идёт идентификатор тарифа.
 BUY_PREFIX = "t:buy:"
 
+#: Префикс выбора способа оплаты: за ним «способ:тариф».
+METHOD_PREFIX = "t:pay:"
+
 
 def preset_action(preset_id: str) -> str:
     """Действие «выбран такой-то пресет»."""
@@ -63,6 +70,21 @@ def parse_preset_action(action: str) -> str | None:
     if not action.startswith(PRESET_PREFIX):
         return None
     return action.removeprefix(PRESET_PREFIX) or None
+
+
+def method_action(method: str, tariff_id: str) -> str:
+    """Действие «оплатить такой-то тариф таким-то способом»."""
+    return f"{METHOD_PREFIX}{method}:{tariff_id}"
+
+
+def parse_method_action(action: str) -> tuple[str, str] | None:
+    """Достаёт пару «способ, тариф»; None — если это не оно."""
+    if not action.startswith(METHOD_PREFIX):
+        return None
+    method, _, tariff_id = action.removeprefix(METHOD_PREFIX).partition(":")
+    if not method or not tariff_id:
+        return None
+    return method, tariff_id
 
 
 def buy_action(tariff_id: str) -> str:

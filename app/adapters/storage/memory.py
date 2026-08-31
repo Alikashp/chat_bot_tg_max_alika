@@ -18,15 +18,19 @@ from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, date, datetime
 from itertools import count
+from uuid import uuid4
 
 from app.core.models import (
     DialogState,
     MessengerKind,
+    Payment,
+    Subscription,
     TariffId,
     Usage,
     User,
     UserId,
 )
+from app.ports.payments import PaymentStatus, SubscriptionStatus
 
 
 class InMemoryStorage:
@@ -51,6 +55,8 @@ class InMemoryStorage:
         #: потому что награда полагается только за нового пользователя и
         #: только одному пригласившему.
         self._referrals: dict[UserId, tuple[UserId, datetime]] = {}
+        self._payments: dict[str, Payment] = {}
+        self._subscriptions: dict[UserId, Subscription] = {}
 
     # --- Пользователи --------------------------------------------------
 
@@ -71,15 +77,20 @@ class InMemoryStorage:
         messenger: MessengerKind,
         external_id: str,
         referral_code: str,
+        support_number: int,
         daily_image_quota: int,
         referred_by: UserId | None = None,
     ) -> User:
-        if (messenger, external_id) in self._by_external:
-            raise ValueError(
-                f"пользователь {messenger.value}:{external_id} уже существует"
-            )
+        existing = self._by_external.get((messenger, external_id))
+        if existing is not None:
+            # Не ошибка: кто-то успел завести его первым.
+            return self._users[existing]
         if referral_code in self._by_referral_code:
             raise ValueError(f"реферальный код {referral_code} уже занят")
+        if any(
+            other.support_number == support_number for other in self._users.values()
+        ):
+            raise ValueError(f"номер {support_number} уже занят")
 
         user = User(
             id=UserId(next(self._ids)),
@@ -87,6 +98,7 @@ class InMemoryStorage:
             external_id=external_id,
             tariff=TariffId.FREE,
             referral_code=referral_code,
+            support_number=support_number,
             created_at=self._now(),
             daily_image_quota=daily_image_quota,
             referred_by=referred_by,
@@ -169,6 +181,120 @@ class InMemoryStorage:
             bonus_messages=user.bonus_messages + messages,
             bonus_images=user.bonus_images + images,
         )
+
+    # --- Оплата --------------------------------------------------------
+
+    async def create_payment(
+        self,
+        *,
+        user_id: UserId,
+        tariff: TariffId,
+        method: str,
+        amount: int,
+        currency: str,
+        docs_version: str,
+    ) -> Payment:
+        payment = Payment(
+            id=str(uuid4()),
+            user_id=user_id,
+            tariff=tariff,
+            method=method,
+            amount=amount,
+            currency=currency,
+            status=PaymentStatus.PENDING.value,
+            created_at=self._now(),
+            docs_version=docs_version,
+        )
+        self._payments[payment.id] = payment
+        return payment
+
+    async def get_payment(self, payment_id: str) -> Payment | None:
+        return self._payments.get(payment_id)
+
+    async def attach_external_id(self, payment_id: str, external_id: str) -> bool:
+        taken = any(
+            other.external_id == external_id and other.id != payment_id
+            for other in self._payments.values()
+        )
+        payment = self._payments.get(payment_id)
+        if taken or payment is None:
+            return False
+        self._payments[payment_id] = replace(payment, external_id=external_id)
+        return True
+
+    async def mark_paid(self, payment_id: str) -> bool:
+        payment = self._payments.get(payment_id)
+        if payment is None or payment.status != PaymentStatus.PENDING.value:
+            return False
+        self._payments[payment_id] = replace(
+            payment, status=PaymentStatus.PAID.value, paid_at=self._now()
+        )
+        return True
+
+    # --- Подписка ------------------------------------------------------
+
+    async def get_subscription(self, user_id: UserId) -> Subscription | None:
+        return self._subscriptions.get(user_id)
+
+    async def save_subscription(self, subscription: Subscription) -> None:
+        self._subscriptions[subscription.user_id] = subscription
+
+    async def cancel_subscription(self, user_id: UserId, at: datetime) -> bool:
+        current = self._subscriptions.get(user_id)
+        if current is None or current.status == SubscriptionStatus.CANCELLED.value:
+            return False
+        self._subscriptions[user_id] = replace(
+            current, status=SubscriptionStatus.CANCELLED.value, cancelled_at=at
+        )
+        return True
+
+    async def subscriptions_to_charge(
+        self, now: datetime, *, limit: int
+    ) -> list[Subscription]:
+        due = [
+            subscription
+            for subscription in self._subscriptions.values()
+            if subscription.status != SubscriptionStatus.CANCELLED.value
+            and subscription.next_charge_at <= now
+        ]
+        due.sort(key=lambda subscription: subscription.next_charge_at)
+        return due[:limit]
+
+    async def subscriptions_to_remind(
+        self, since: datetime, until: datetime, *, limit: int
+    ) -> list[Subscription]:
+        due = [
+            subscription
+            for subscription in self._subscriptions.values()
+            if subscription.status == SubscriptionStatus.ACTIVE.value
+            and since < subscription.next_charge_at <= until
+            and subscription.reminded_for != subscription.next_charge_at
+        ]
+        due.sort(key=lambda subscription: subscription.next_charge_at)
+        return due[:limit]
+
+    async def mark_reminded(self, user_id: UserId, charge_at: datetime) -> None:
+        current = self._subscriptions.get(user_id)
+        if current is not None:
+            self._subscriptions[user_id] = replace(current, reminded_for=charge_at)
+
+    async def subscriptions_to_check_price(
+        self, since: datetime, until: datetime, *, limit: int
+    ) -> list[Subscription]:
+        due = [
+            subscription
+            for subscription in self._subscriptions.values()
+            if subscription.status == SubscriptionStatus.ACTIVE.value
+            and since < subscription.next_charge_at <= until
+            and subscription.price_checked_for != subscription.next_charge_at
+        ]
+        due.sort(key=lambda subscription: subscription.next_charge_at)
+        return due[:limit]
+
+    async def mark_price_checked(self, user_id: UserId, charge_at: datetime) -> None:
+        current = self._subscriptions.get(user_id)
+        if current is not None:
+            self._subscriptions[user_id] = replace(current, price_checked_for=charge_at)
 
     # --- Диалог --------------------------------------------------------
 

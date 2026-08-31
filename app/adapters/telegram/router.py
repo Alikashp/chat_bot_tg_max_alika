@@ -8,7 +8,7 @@ MAX-адаптеру достаточно будет собрать такой �
 from __future__ import annotations
 
 from aiogram import Dispatcher
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, Message, PreCheckoutQuery
 
 from app.core import router, texts
 from app.core.models import Chat, IncomingMessage, MessengerKind
@@ -37,6 +37,11 @@ def build_dispatcher(deps: Deps) -> Dispatcher:
         incoming = callback_to_incoming(callback)
         if incoming is not None:
             await _dispatch(deps, incoming)
+
+    @dispatcher.pre_checkout_query()
+    async def on_pre_checkout(query: PreCheckoutQuery) -> None:
+        """Telegram спрашивает перед списанием и ждёт ответа секунды."""
+        await _dispatch(deps, pre_checkout_to_incoming(query))
 
     return dispatcher
 
@@ -78,6 +83,27 @@ def to_incoming(message: Message) -> IncomingMessage | None:
         return None
 
     chat = Chat(messenger=MessengerKind.TELEGRAM, chat_id=str(message.chat.id))
+
+    if message.successful_payment is not None:
+        # Деньги списаны. Заказ опознаём по payload, который сами же и
+        # положили в счёт.
+        #
+        # Продление приходит тем же payload'ом, что и первая оплата: Telegram
+        # ссылается на счёт подписки, а не на конкретный период. Отличает их
+        # пара признаков — is_recurring говорит, что это подписка вообще, а
+        # is_first_recurring, что это её первый платёж. Продление, стало
+        # быть, второе без первого; и только у него идентификатор списания
+        # ещё не встречался нам в базе.
+        payment = message.successful_payment
+        return IncomingMessage(
+            chat=chat,
+            external_user_id=str(message.from_user.id),
+            paid_order_id=payment.invoice_payload,
+            paid_renewal=bool(payment.is_recurring)
+            and not bool(payment.is_first_recurring),
+            paid_charge_id=payment.telegram_payment_charge_id,
+        )
+
     text = message.text or message.caption
     payload = _start_payload(text)
 
@@ -112,6 +138,21 @@ def callback_to_incoming(callback: CallbackQuery) -> IncomingMessage | None:
         external_user_id=str(callback.from_user.id),
         action=callback.data,
         callback_id=callback.id,
+    )
+
+
+def pre_checkout_to_incoming(query: PreCheckoutQuery) -> IncomingMessage:
+    """Переводит запрос перед списанием в общий вид.
+
+    Чата у запроса нет: Telegram спрашивает про платёж, а не про переписку.
+    Бот личный, поэтому идентификатор чата совпадает с пользователем.
+    """
+    chat = Chat(messenger=MessengerKind.TELEGRAM, chat_id=str(query.from_user.id))
+    return IncomingMessage(
+        chat=chat,
+        external_user_id=str(query.from_user.id),
+        pre_checkout_id=query.id,
+        pre_checkout_order_id=query.invoice_payload,
     )
 
 

@@ -75,12 +75,17 @@ def _is_authorized(request: web.Request, header: str, secret: str) -> bool:
 class Webhook:
     """Один вебхук: куда стучатся, чем подписано, кому отдавать."""
 
-    #: Имя мессенджера — только для логов.
+    #: Имя источника — только для логов.
     messenger: str
     path: str
-    #: Заголовок, в котором приходит секрет. У каждого мессенджера свой.
-    secret_header: str
-    secret: str
+    #: Заголовок, в котором приходит секрет, и сам секрет.
+    #:
+    #: ``None`` означает, что источник не подписывает свои запросы вовсе —
+    #: так устроены уведомления ЮKassa. Принимать такие уведомления можно
+    #: только там, где само уведомление ничего не решает: у нас оно лишь
+    #: повод переспросить провайдера по нашему ключу (см. CardPayments).
+    secret_header: str | None
+    secret: str | None
     submit: UpdateSubmitter
 
 
@@ -99,7 +104,9 @@ def create_app(
 
     def make_handler(webhook: Webhook) -> Callable[[web.Request], Any]:
         async def handler(request: web.Request) -> web.Response:
-            if not _is_authorized(request, webhook.secret_header, webhook.secret):
+            if webhook.secret_header is not None and not _is_authorized(
+                request, webhook.secret_header, webhook.secret or ""
+            ):
                 # Не подсказываем, что именно не так: это чужой запрос.
                 logger.warning("webhook_rejected", messenger=webhook.messenger)
                 return web.Response(status=HTTPStatus.FORBIDDEN)

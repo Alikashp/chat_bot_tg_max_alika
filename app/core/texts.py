@@ -12,9 +12,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 
 from app.core.models import TariffId
-from app.core.tariffs import PAID_TARIFFS, TARIFFS
+from app.core.tariffs import PAID_TARIFFS, RUB, STARS, TARIFFS
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,6 +33,14 @@ class Screen:
     #: мессенджере не читают. Поднимать это значение можно только там, где
     #: сравнение и есть смысл экрана, — и каждое такое место видно в тестах.
     max_lines: int = 5
+    #: Можно ли обращаться на «вы». По умолчанию нельзя (§2.9).
+    #:
+    #: Единственное исключение — строка согласия перед оплатой. Там человек
+    #: становится стороной договора, и слова «нажимая кнопку, ты соглашаешься
+    #: с офертой» звучали бы как приятельская просьба, а не как согласие с
+    #: условиями. Послабление касается только текста: подписи кнопок
+    #: остаются на «ты» в любом случае.
+    formal_address: bool = False
 
     @property
     def lines(self) -> list[str]:
@@ -60,6 +69,32 @@ def _messages(count: int) -> str:
 
 def _friends(count: int) -> str:
     return f"{count} {plural(count, 'друга', 'друзей', 'друзей')}"
+
+
+def _days(count: int) -> str:
+    return f"{count} {plural(count, 'день', 'дня', 'дней')}"
+
+
+#: Месяцы в родительном падеже: «до 30 сентября», а не «до 30 сентябрь».
+_MONTHS = (
+    "января",
+    "февраля",
+    "марта",
+    "апреля",
+    "мая",
+    "июня",
+    "июля",
+    "августа",
+    "сентября",
+    "октября",
+    "ноября",
+    "декабря",
+)
+
+
+def format_date(value: date) -> str:
+    """Дата по-человечески: «30 сентября»."""
+    return f"{value.day} {_MONTHS[value.month - 1]}"
 
 
 def _rubles(amount: int) -> str:
@@ -357,17 +392,23 @@ def profile(
     messages_limit: int,
     images_left: int,
     friends: int,
+    user_number: int | None = None,
 ) -> Screen:
-    """Четыре реальных числа и два выхода."""
-    return Screen(
-        text=(
-            f"Твой тариф: {TARIFF_TITLES[tariff_id]}\n"
-            f"Сообщений сегодня: {messages_used} из {messages_limit}\n"
-            f"Картинок: {images_left}\n"
-            f"Друзей позвал: {friends}"
-        ),
-        buttons=(MENU_TARIFFS, BUTTON_MY_LINK),
-    )
+    """Реальные числа и два выхода.
+
+    ``user_number`` — номер для поддержки. Появляется не везде: в Telegram
+    человека видно по @username, а в MAX username есть не у всех, и без
+    номера опознать написавшего нечем.
+    """
+    lines = [
+        f"Твой тариф: {TARIFF_TITLES[tariff_id]}",
+        f"Сообщений сегодня: {messages_used} из {messages_limit}",
+        f"Картинок: {images_left}",
+        f"Друзей позвал: {friends}",
+    ]
+    if user_number is not None:
+        lines.append(f"Твой номер: {user_number}")
+    return Screen(text="\n".join(lines), buttons=(MENU_TARIFFS, BUTTON_MY_LINK))
 
 
 # --- Рефералка (§2.7) ----------------------------------------------------
@@ -414,6 +455,12 @@ def friends_invited(count: int) -> str:
 # --- Тарифы (§2.8) -------------------------------------------------------
 
 PAYMENTS_SOON = "Оплата скоро заработает 🙏 А пока лимиты можно поднять бесплатно:"
+
+BUTTON_PAY_CARD = "💳 Картой"
+BUTTON_PAY_STARS = "⭐ Звёздами"
+BUTTON_PAY_OPEN = "💳 Перейти к оплате"
+BUTTON_OFFER = "📄 Оферта"
+BUTTON_PRIVACY = "🔒 Данные"
 
 
 def tariffs_screen() -> Screen:
@@ -469,6 +516,284 @@ TOO_BUSY = "Сейчас много запросов, попробуй чере�
 def too_busy() -> Screen:
     """Честный отказ при переполнении очереди. Лимит при этом не списывается."""
     return Screen(text=TOO_BUSY, buttons=(BUTTON_RETRY,))
+
+
+# --- Оплата и подписка (§2.8) --------------------------------------------
+
+
+#: Строка про согласие. Стоит на экране оформления заказа и нигде больше:
+#: именно здесь человек делает то, что превращает его в сторону договора.
+#:
+#: Единственное место во всём боте, где мы обращаемся на «вы». Так и должно
+#: быть: это не разговор, а условия, под которыми человек ставит подпись.
+CONSENT = "Нажимая кнопку оплаты, вы соглашаетесь с офертой и политикой данных."
+
+#: Что человек увидит на кнопке отмены и в напоминаниях.
+BUTTON_SUBSCRIPTION = "⚙️ Подписка"
+BUTTON_SUBSCRIPTION_OFF = "Отключить продление"
+
+
+def _price(amount: int, currency: str) -> str:
+    """Сумма так, как её увидит человек: «599 ₽» или «524 ⭐»."""
+    if currency == STARS:
+        return f"{amount} ⭐"
+    return f"{_rubles(amount)} ₽"
+
+
+def payment_methods(tariff_id: TariffId, *, price_rub: int, stars: int) -> Screen:
+    """Выбор способа оплаты.
+
+    Показывается только когда способов правда два. Когда он один, выбирать
+    нечего, и человек сразу попадает на экран заказа — туда, где условия.
+    """
+    return Screen(
+        text=(
+            f"Тариф «{TARIFF_TITLES[tariff_id]}» — {_rubles(price_rub)} ₽ в месяц.\n"
+            f"Звёздами Telegram — {stars} ⭐, чуть дороже.\n"
+            "Как удобнее платить?"
+        ),
+        buttons=(BUTTON_PAY_CARD, BUTTON_PAY_STARS),
+    )
+
+
+def payment_order(
+    tariff_id: TariffId,
+    *,
+    days: int,
+    amount: int,
+    currency: str,
+    next_charge: str,
+    recurring: bool,
+) -> Screen:
+    """Экран оформления заказа: всё, под чем человек подписывается.
+
+    Здесь и только здесь стоят одновременно: название тарифа, сумма, валюта,
+    периодичность, дата ближайшего списания, право отменить в любой момент и
+    ссылки на документы (§4.4 и §4.11 оферты). Кнопка оплаты — на этом же
+    экране: согласие даётся её нажатием, и разносить их по разным сообщениям
+    значило бы брать согласие вслепую.
+
+    ``recurring`` разделяет два разных договора. Подписка продлевается сама, и
+    об этом надо сказать до денег. Разовая оплата не продлевается, и обещать
+    продление было бы враньём — а именно оно случилось бы, оставь мы один
+    текст на оба случая.
+    """
+    if recurring:
+        lines = [
+            f"Подписка «{TARIFF_TITLES[tariff_id]}» — "
+            f"{_price(amount, currency)} каждые {_days(days)}.",
+            f"Следующее списание — {next_charge}.",
+            "Отключить продление можно в профиле в любой момент.",
+        ]
+    else:
+        lines = [
+            f"Тариф «{TARIFF_TITLES[tariff_id]}» — "
+            f"{_price(amount, currency)} на {_days(days)}.",
+            "Продлевать надо будет вручную — сам ничего не спишется.",
+        ]
+    lines.append(CONSENT)
+    return Screen(
+        text="\n".join(lines),
+        buttons=(BUTTON_PAY_OPEN, BUTTON_OFFER, BUTTON_PRIVACY),
+        formal_address=True,
+    )
+
+
+PAYMENT_FAILED = "Не получилось открыть оплату 🤷 Попробуй ещё раз или напиши нам."
+
+#: Что видит человек, если мессенджер спросил про заказ, которого у нас нет.
+#: Не экран бота, а поле ответа мессенджера, — но текст всё равно наш, и
+#: правила §2.9 на него распространяются.
+PAYMENT_REFUSED = "Счёт устарел. Открой тарифы и выбери ещё раз 🙏"
+
+
+def payment_refused() -> Screen:
+    return Screen(
+        text=PAYMENT_REFUSED,
+        next_step="человек возвращается к тарифам сам",
+    )
+
+
+def payment_failed() -> Screen:
+    """Провайдер не ответил. Денег с человека при этом не взяли."""
+    return Screen(text=PAYMENT_FAILED, buttons=_menu_buttons())
+
+
+def payment_done(tariff_id: TariffId, *, until: str, renewing: bool) -> Screen:
+    """Подтверждение после оплаты. Единственный экран, где важна точность.
+
+    ``renewing`` решает вторую строку. Сказать «продлится сам» там, где
+    продления не будет, — значит оставить человека без тарифа в тот день,
+    когда он на него рассчитывал.
+    """
+    tail = (
+        "Дальше продлевается сам — отключить можно в профиле 👇"
+        if renewing
+        else "Лимиты уже обновились — пиши 👇"
+    )
+    return Screen(
+        text=f"Готово! Тариф «{TARIFF_TITLES[tariff_id]}» включён до {until}.\n{tail}",
+        buttons=_menu_buttons(),
+    )
+
+
+def invoice(tariff_id: TariffId, *, days: int) -> tuple[str, str]:
+    """Заголовок и описание счёта в мессенджере.
+
+    Не Screen: это не экран бота, а поля счёта, которые рисует сам мессенджер.
+    Но текст всё равно наш, поэтому живёт здесь.
+    """
+    features = TARIFF_FEATURES[tariff_id]
+    return (
+        f"Тариф {TARIFF_TITLES[tariff_id]}",
+        f"{features[0]} · {features[1]}. Подписка на {_days(days)}.",
+    )
+
+
+# --- Управление подпиской (§4.14 оферты) ---------------------------------
+
+
+def subscription_none() -> Screen:
+    """Подписки нет. Экран всё равно нужен: кнопка в профиле ведёт сюда."""
+    return Screen(
+        text="Подписки пока нет 🙂 Платные тарифы — по кнопке 👇",
+        buttons=(MENU_TARIFFS, MENU_PROFILE),
+    )
+
+
+def subscription_active(
+    tariff_id: TariffId, *, days: int, amount: int, currency: str, next_charge: str
+) -> Screen:
+    """Действующая подписка: сколько, как часто и когда следующее списание."""
+    return Screen(
+        text=(
+            f"Подписка «{TARIFF_TITLES[tariff_id]}» — "
+            f"{_price(amount, currency)} каждые {_days(days)}.\n"
+            f"Следующее списание — {next_charge}."
+        ),
+        buttons=(BUTTON_SUBSCRIPTION_OFF, MENU_PROFILE),
+    )
+
+
+def subscription_failing(tariff_id: TariffId, *, amount: int, currency: str) -> Screen:
+    """Списание не прошло, но мы ещё пробуем (§4.16 оферты)."""
+    return Screen(
+        text=(
+            f"Не вышло списать {_price(amount, currency)} "
+            f"за тариф «{TARIFF_TITLES[tariff_id]}» 🤷\n"
+            "Проверь карту — попробуем ещё раз в ближайшие дни."
+        ),
+        buttons=(BUTTON_SUBSCRIPTION_OFF, MENU_PROFILE),
+    )
+
+
+def subscription_stopped(tariff_id: TariffId, *, until: str) -> Screen:
+    """Продление отключено, оплаченный срок дорабатывает (§4.15 оферты)."""
+    return Screen(
+        text=(
+            f"Продление отключено. Тариф «{TARIFF_TITLES[tariff_id]}» "
+            f"работает до {until}.\n"
+            "Вернуть можно в любой момент 👇"
+        ),
+        buttons=(MENU_TARIFFS, MENU_PROFILE),
+    )
+
+
+def subscription_cancelled(tariff_id: TariffId, *, until: str) -> Screen:
+    """Ответ сразу после отмены. Главное здесь — что оплаченное не пропало."""
+    return Screen(
+        text=(
+            f"Готово, больше не спишем 👌 Тариф «{TARIFF_TITLES[tariff_id]}» "
+            f"работает до {until}.\n"
+            "Вернуть подписку можно в любой момент 👇"
+        ),
+        buttons=(MENU_TARIFFS, MENU_PROFILE),
+    )
+
+
+def subscription_cancel_failed() -> Screen:
+    """Отключить продление не вышло.
+
+    Отдельный текст, а не общий «что-то пошло не так»: здесь важно, что
+    подписка осталась включённой. Умолчать об этом значило бы дать человеку
+    уйти в уверенности, что с него больше не спишут.
+    """
+    return Screen(
+        text="Не вышло отключить продление 🤷 Попробуй ещё раз или напиши нам.",
+        buttons=(BUTTON_SUBSCRIPTION_OFF, MENU_PROFILE),
+    )
+
+
+def subscription_reminder(
+    tariff_id: TariffId, *, amount: int, currency: str, on: str
+) -> Screen:
+    """Предупреждение за сутки до списания (§4.13 оферты).
+
+    Не реклама и не просьба: обязанность. Человек должен успеть передумать до
+    того, как деньги ушли, а не после.
+    """
+    return Screen(
+        text=(
+            f"Завтра, {on}, продлим тариф «{TARIFF_TITLES[tariff_id]}» — "
+            f"{_price(amount, currency)}.\n"
+            "Не нужно? Отключи продление 👇"
+        ),
+        buttons=(BUTTON_SUBSCRIPTION_OFF, MENU_PROFILE),
+    )
+
+
+def subscription_price_changed(
+    tariff_id: TariffId, *, was: int, now: int, currency: str, on: str
+) -> Screen:
+    """Предупреждение о новой цене за неделю до списания (§4.17 оферты)."""
+    return Screen(
+        text=(
+            f"Тариф «{TARIFF_TITLES[tariff_id]}» меняется в цене: было "
+            f"{_price(was, currency)}, станет {_price(now, currency)}.\n"
+            f"Спишем по-новому {on}. Не нужно? Отключи продление 👇"
+        ),
+        buttons=(BUTTON_SUBSCRIPTION_OFF, MENU_PROFILE),
+    )
+
+
+def subscription_renewed(
+    tariff_id: TariffId, *, amount: int, currency: str, until: str
+) -> Screen:
+    """Списание прошло, тариф продлён."""
+    return Screen(
+        text=(
+            f"Продлили тариф «{TARIFF_TITLES[tariff_id]}» — "
+            f"{_price(amount, currency)}. Работает до {until}.\n"
+            "Отключить продление — в профиле 👇"
+        ),
+        buttons=_menu_buttons(),
+    )
+
+
+def subscription_charge_failed(
+    tariff_id: TariffId, *, amount: int, currency: str, until: str
+) -> Screen:
+    """Списание не прошло, но оплаченный срок ещё идёт (§4.16 оферты)."""
+    return Screen(
+        text=(
+            f"Не вышло списать {_price(amount, currency)} "
+            f"за тариф «{TARIFF_TITLES[tariff_id]}» 🤷\n"
+            f"Проверь карту — попробуем ещё раз. Тариф работает до {until}."
+        ),
+        buttons=(MENU_TARIFFS, MENU_PROFILE),
+    )
+
+
+def subscription_ended(tariff_id: TariffId) -> Screen:
+    """Три дня попыток кончились: человек вернулся на бесплатные лимиты."""
+    return Screen(
+        text=(
+            f"Продлить тариф «{TARIFF_TITLES[tariff_id]}» не вышло — "
+            "вернули бесплатные лимиты.\n"
+            "Оформить снова можно в тарифах 👇"
+        ),
+        buttons=(BUTTON_OPEN_TARIFFS,),
+    )
 
 
 # --- Повтор и параллельная работа ----------------------------------------
@@ -566,11 +891,66 @@ def _all_screens() -> tuple[Screen, ...]:
             images_left=2,
             friends=3,
         ),
+        profile(
+            tariff_id=TariffId.FREE,
+            messages_used=12,
+            messages_limit=20,
+            images_left=2,
+            friends=3,
+            user_number=1234,
+        ),
         referral_offer(bonus_messages=50, bonus_images=5),
         referral_invite("https://t.me/mybot?start=ref_abc123"),
         referral_reward(),
         tariffs_screen(),
+        payment_methods(TariffId.PRO, price_rub=599, stars=524),
+        payment_order(
+            TariffId.PRO,
+            days=30,
+            amount=599,
+            currency=RUB,
+            next_charge="30 сентября",
+            recurring=True,
+        ),
+        payment_order(
+            TariffId.PRO,
+            days=30,
+            amount=599,
+            currency=RUB,
+            next_charge="30 сентября",
+            recurring=False,
+        ),
+        payment_failed(),
+        payment_refused(),
+        payment_done(TariffId.PRO, until="30 сентября", renewing=True),
+        payment_done(TariffId.PRO, until="30 сентября", renewing=False),
         payments_soon(),
+        subscription_none(),
+        subscription_active(
+            TariffId.PRO,
+            days=30,
+            amount=599,
+            currency=RUB,
+            next_charge="30 сентября",
+        ),
+        subscription_active(
+            TariffId.PRO, days=30, amount=524, currency=STARS, next_charge="30 сентября"
+        ),
+        subscription_failing(TariffId.PRO, amount=599, currency=RUB),
+        subscription_stopped(TariffId.PRO, until="30 сентября"),
+        subscription_cancelled(TariffId.PRO, until="30 сентября"),
+        subscription_cancel_failed(),
+        subscription_reminder(TariffId.PRO, amount=599, currency=RUB, on="30 сентября"),
+        subscription_price_changed(
+            TariffId.PRO, was=599, now=699, currency=RUB, on="30 сентября"
+        ),
+        subscription_renewed(
+            TariffId.PRO, amount=599, currency=RUB, until="30 октября"
+        ),
+        subscription_charge_failed(
+            TariffId.PRO, amount=599, currency=RUB, until="30 сентября"
+        ),
+        subscription_ended(TariffId.PRO),
         too_busy(),
         nothing_to_repeat(),
         still_working(),

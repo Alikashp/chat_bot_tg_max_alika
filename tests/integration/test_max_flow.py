@@ -30,7 +30,7 @@ from app.adapters.max import router as max_router
 from app.adapters.max.intake import dedup_key
 from app.adapters.max.messenger import MaxMessenger
 from app.adapters.storage.memory import InMemoryStorage
-from app.core import texts
+from app.core import support, texts
 from app.core.actions import Action, preset_action
 from app.core.limits import current_day
 from app.core.models import MessengerKind
@@ -41,7 +41,14 @@ from app.infra.antiflood import FloodGuard
 from app.infra.dedup import Deduplicator
 from app.infra.queue import JobQueue
 from app.infra.server import MAX_SECRET_HEADER, Webhook, create_app
-from tests.fakes import PNG_BYTES, FakeImages, FakeLLM, FakeLogger, FrozenClock
+from tests.fakes import (
+    PNG_BYTES,
+    FakeCards,
+    FakeImages,
+    FakeLLM,
+    FakeLogger,
+    FrozenClock,
+)
 
 
 def _today() -> Any:
@@ -250,9 +257,20 @@ async def harness() -> AsyncIterator[Harness]:
         messenger=MaxMessenger(bot, http),  # type: ignore[arg-type]
         llm=llm,
         images=images,
-        settings=CoreSettings(bot_username="testbot", referral_link_host=MAX_HOST),
+        settings=CoreSettings(
+            bot_username="testbot",
+            referral_link_host=MAX_HOST,
+            # Так же собирает настройки MAX и app/main.py.
+            show_user_number=True,
+            offer_url="https://telegra.ph/offer",
+            privacy_url="https://telegra.ph/privacy",
+            docs_version="2026-08-31",
+        ),
         logger=FakeLogger(),
         guard=FloodGuard(limit=1),
+        cards=FakeCards(),
+        # Звёзд в MAX нет — и это не пропуск в тесте, а свойство мессенджера.
+        stars=None,
         now=clock,
     )
 
@@ -332,6 +350,7 @@ async def test_a_deeplink_gift_reaches_the_invited_user(harness: Harness) -> Non
         messenger=MessengerKind.MAX,
         external_id="1000",
         referral_code="friend01",
+        support_number=support.generate_number(),
         daily_image_quota=3,
     )
 
@@ -342,6 +361,15 @@ async def test_a_deeplink_gift_reaches_the_invited_user(harness: Harness) -> Non
     refreshed = await harness.storage.get_user_by_id(inviter.id)
     assert refreshed is not None
     assert refreshed.bonus_images == 5
+
+
+async def test_the_profile_carries_the_support_number(started: Harness) -> None:
+    """В MAX это единственный способ опознать написавшего в поддержку."""
+    await started.press(Action.MENU_PROFILE)
+
+    user = await started.user()
+    assert f"Твой номер: {user.support_number}" in started.texts_said()[0]
+    assert 100_000 <= user.support_number <= 999_999, "номер должен быть случайным"
 
 
 # --- Чат и картинки ------------------------------------------------------

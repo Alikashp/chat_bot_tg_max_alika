@@ -74,18 +74,38 @@ def test_only_free_is_free() -> None:
 def test_stars_price_is_forty_percent_higher(
     tariff_id: TariffId, expected: int
 ) -> None:
-    """§2.8: в звёздах цены на 40% выше — это комиссия."""
-    assert stars_price(tariff_of(tariff_id), markup=1.4) == expected
+    """§2.8: в звёздах цены на 40% выше — это комиссия Telegram."""
+    price = stars_price(tariff_of(tariff_id), markup=1.4, rub_per_star=1.0)
+
+    assert price == expected
+
+
+def test_the_star_rate_is_not_the_markup() -> None:
+    """Две разные величины, и путать их нельзя.
+
+    Наценка — наше решение про комиссию. Курс — сколько рублей стоит звезда,
+    величина внешняя. При курсе 1.6 ₽ и наценке 40% Лайт за 299 ₽ стоит
+    299 × 1.4 / 1.6 ≈ 262 звезды, а вовсе не 419.
+    """
+    assert stars_price(tariff_of(TariffId.LITE), markup=1.4, rub_per_star=1.6) == 262
 
 
 def test_stars_price_rounds_up() -> None:
-    """Округление вниз означало бы платить комиссию из своего кармана."""
-    assert stars_price(tariff_of(TariffId.LITE), markup=1.001) == 300
+    """Дробных звёзд не бывает, а округление вниз — разница из своего кармана."""
+    price = stars_price(tariff_of(TariffId.LITE), markup=1.001, rub_per_star=1.0)
+
+    assert price == 300
 
 
 def test_markup_below_one_is_rejected() -> None:
     with pytest.raises(ValueError, match="наценка"):
-        stars_price(tariff_of(TariffId.LITE), markup=0.9)
+        stars_price(tariff_of(TariffId.LITE), markup=0.9, rub_per_star=1.0)
+
+
+def test_a_free_star_rate_is_rejected() -> None:
+    """Ноль означал бы деление на ноль на первой же покупке."""
+    with pytest.raises(ValueError, match="курс"):
+        stars_price(tariff_of(TariffId.LITE), markup=1.4, rub_per_star=0)
 
 
 def test_registry_is_immutable() -> None:

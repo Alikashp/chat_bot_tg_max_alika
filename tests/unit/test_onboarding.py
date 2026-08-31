@@ -11,7 +11,7 @@ from __future__ import annotations
 import contextlib
 
 from app.adapters.storage.memory import InMemoryStorage
-from app.core import texts
+from app.core import support, texts
 from app.core.models import Chat, MessengerKind, User
 from app.core.scenarios import onboarding
 from app.core.scenarios.deps import Deps, Session
@@ -183,6 +183,7 @@ async def test_existing_user_earns_nothing_on_a_second_start(
         messenger=MessengerKind.TELEGRAM,
         external_id="200",
         referral_code="code200",
+        support_number=support.generate_number(),
         daily_image_quota=3,
     )
 

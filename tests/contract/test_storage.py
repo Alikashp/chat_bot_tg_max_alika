@@ -22,11 +22,13 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from app.adapters.storage.memory import InMemoryStorage
 from app.adapters.storage.postgres import PostgresStorage, create_engine
 from app.adapters.storage.schema import metadata
+from app.core import support
 from app.core.models import (
     ChatTurn,
     DialogState,
     MessengerKind,
     Role,
+    Subscription,
     TariffId,
     User,
 )
@@ -34,6 +36,10 @@ from app.ports.storage import Storage
 
 DAY = date(2026, 8, 28)
 NEXT_DAY = date(2026, 8, 29)
+
+#: Момент, от которого считаются сроки подписки. С зоной: наивное время
+#: PostgreSQL примет, а сравнить с ним потом не даст.
+MOMENT = datetime(2026, 8, 28, 12, 0, tzinfo=UTC)
 
 
 #: Куда ходить за настоящей базой. Без переменной тесты по PostgreSQL
@@ -61,7 +67,10 @@ async def postgres_engine() -> AsyncIterator[AsyncEngine | None]:
         # Чистим перед тестом, а не после: если предыдущий упал, его мусор не
         # должен утащить за собой следующий.
         await connection.execute(
-            text("TRUNCATE referrals, dialogs, usage, users RESTART IDENTITY CASCADE")
+            text(
+                "TRUNCATE subscriptions, payments, referrals, dialogs, usage, users "
+                "RESTART IDENTITY CASCADE"
+            )
         )
     try:
         yield engine
@@ -98,6 +107,7 @@ async def _make_user(storage: Storage, external_id: str = "1") -> User:
         messenger=MessengerKind.TELEGRAM,
         external_id=external_id,
         referral_code=f"code{external_id}",
+        support_number=support.generate_number(),
         daily_image_quota=3,
     )
 
@@ -131,17 +141,54 @@ async def test_same_external_id_in_other_messenger_is_another_user(
         messenger=MessengerKind.MAX,
         external_id="7",
         referral_code="code-max-7",
+        support_number=support.generate_number(),
         daily_image_quota=3,
     )
 
     assert telegram_user.id != max_user.id
 
 
-async def test_duplicate_external_id_is_rejected(storage: Storage) -> None:
-    await _make_user(storage, "5")
+async def test_a_second_registration_returns_the_same_person(
+    storage: Storage,
+) -> None:
+    """Два первых обновления от нового человека приходят почти одновременно.
 
-    with pytest.raises(ValueError):
-        await _make_user(storage, "5")
+    Оба видят «его ещё нет» и оба заводят. Раньше второй получал ошибку, и
+    человек вместо ответа видел «что-то пошло не так» на первом же касании.
+    """
+    first = await _make_user(storage, "twice")
+    second = await storage.create_user(
+        messenger=MessengerKind.TELEGRAM,
+        external_id="twice",
+        referral_code="другой-код",
+        support_number=support.generate_number(),
+        daily_image_quota=3,
+    )
+
+    assert second.id == first.id
+    assert second.referral_code == first.referral_code, "код менять нельзя"
+
+
+async def test_concurrent_registrations_create_one_person(storage: Storage) -> None:
+    """То же самое, но параллельно — как оно и происходит в жизни.
+
+    Написан ради PostgreSQL: в памяти внутри операции нет ни одного await, и
+    гонки не получается. В базе её разрешает ON CONFLICT DO NOTHING.
+    """
+    people = await asyncio.gather(
+        *(
+            storage.create_user(
+                messenger=MessengerKind.TELEGRAM,
+                external_id="race",
+                referral_code=f"code-{index}",
+                support_number=support.generate_number(),
+                daily_image_quota=3,
+            )
+            for index in range(5)
+        )
+    )
+
+    assert len({person.id for person in people}) == 1
 
 
 async def test_duplicate_referral_code_is_rejected(storage: Storage) -> None:
@@ -152,6 +199,7 @@ async def test_duplicate_referral_code_is_rejected(storage: Storage) -> None:
             messenger=MessengerKind.TELEGRAM,
             external_id="2",
             referral_code="code1",
+            support_number=support.generate_number(),
             daily_image_quota=3,
         )
 
@@ -390,3 +438,326 @@ async def test_referrals_are_counted_since_moment(storage: Storage) -> None:
         )
         == 0
     )
+
+
+# --- Оплата --------------------------------------------------------------
+
+
+async def test_a_created_payment_is_found_by_id(storage: Storage) -> None:
+    user = await _make_user(storage, "pay-1")
+
+    order = await storage.create_payment(
+        user_id=user.id,
+        tariff=TariffId.PRO,
+        method="card",
+        amount=599,
+        currency="RUB",
+        docs_version="2026-08-31",
+    )
+    found = await storage.get_payment(order.id)
+
+    assert found is not None
+    assert found.user_id == user.id
+    assert found.amount == 599
+    assert found.status == "pending"
+
+
+async def test_an_unknown_payment_is_none(storage: Storage) -> None:
+    assert await storage.get_payment("нет такого заказа") is None
+
+
+async def test_two_payments_never_share_an_id(storage: Storage) -> None:
+    """Идентификатор служит ключом идемпотентности у провайдера."""
+    user = await _make_user(storage, "pay-2")
+
+    first = await storage.create_payment(
+        user_id=user.id,
+        tariff=TariffId.PRO,
+        method="card",
+        amount=599,
+        currency="RUB",
+        docs_version="2026-08-31",
+    )
+    second = await storage.create_payment(
+        user_id=user.id,
+        tariff=TariffId.PRO,
+        method="card",
+        amount=599,
+        currency="RUB",
+        docs_version="2026-08-31",
+    )
+
+    assert first.id != second.id
+
+
+async def test_the_provider_id_is_remembered(storage: Storage) -> None:
+    user = await _make_user(storage, "pay-3")
+    order = await storage.create_payment(
+        user_id=user.id,
+        tariff=TariffId.LITE,
+        method="card",
+        amount=299,
+        currency="RUB",
+        docs_version="2026-08-31",
+    )
+
+    await storage.attach_external_id(order.id, "2d0a1b")
+
+    found = await storage.get_payment(order.id)
+    assert found is not None
+    assert found.external_id == "2d0a1b"
+
+
+async def test_a_payment_is_marked_paid_once(storage: Storage) -> None:
+    """Второй раз — False. На этом держится защита от двойной выдачи."""
+    user = await _make_user(storage, "pay-4")
+    order = await storage.create_payment(
+        user_id=user.id,
+        tariff=TariffId.PRO,
+        method="stars",
+        amount=524,
+        currency="XTR",
+        docs_version="2026-08-31",
+    )
+
+    assert await storage.mark_paid(order.id) is True
+    assert await storage.mark_paid(order.id) is False
+
+    found = await storage.get_payment(order.id)
+    assert found is not None
+    assert found.status == "paid"
+    assert found.paid_at is not None
+
+
+async def test_an_unknown_payment_cannot_be_marked_paid(storage: Storage) -> None:
+    assert await storage.mark_paid("выдуманный заказ") is False
+
+
+async def test_concurrent_confirmations_grant_only_once(storage: Storage) -> None:
+    """Уведомления об оплате приходят пачкой и обрабатываются параллельно.
+
+    Написан специально ради PostgreSQL: в памяти внутри операции нет ни одного
+    await, и атомарность получается сама собой. В базе её обеспечивает условие
+    на статус внутри самого UPDATE.
+    """
+    user = await _make_user(storage, "pay-5")
+    order = await storage.create_payment(
+        user_id=user.id,
+        tariff=TariffId.MAX,
+        method="card",
+        amount=1490,
+        currency="RUB",
+        docs_version="2026-08-31",
+    )
+
+    results = await asyncio.gather(*(storage.mark_paid(order.id) for _ in range(10)))
+
+    assert results.count(True) == 1, "подписка выдана бы несколько раз"
+
+
+async def test_one_provider_payment_cannot_close_two_orders(storage: Storage) -> None:
+    """Иначе одна оплата включала бы две подписки.
+
+    Проверка на стороне хранилища, а не в коде сценария: «мы аккуратно
+    проверили» — обещание, ограничение уникальности — гарантия.
+    """
+    user = await _make_user(storage, "pay-6")
+    first = await storage.create_payment(
+        user_id=user.id,
+        tariff=TariffId.PRO,
+        method="card",
+        amount=599,
+        currency="RUB",
+        docs_version="2026-08-31",
+    )
+    second = await storage.create_payment(
+        user_id=user.id,
+        tariff=TariffId.PRO,
+        method="card",
+        amount=599,
+        currency="RUB",
+        docs_version="2026-08-31",
+    )
+
+    assert await storage.attach_external_id(first.id, "2d0a1b") is True
+    assert await storage.attach_external_id(second.id, "2d0a1b") is False
+
+    found = await storage.get_payment(second.id)
+    assert found is not None
+    assert found.external_id is None
+
+
+# --- Подписка ------------------------------------------------------------
+
+
+async def _make_subscription(
+    storage: Storage,
+    user: User,
+    *,
+    status: str = "active",
+    next_charge_at: datetime | None = None,
+    amount: int = 599,
+    currency: str = "RUB",
+) -> Subscription:
+    subscription = Subscription(
+        user_id=user.id,
+        tariff=TariffId.PRO,
+        method="card",
+        status=status,
+        amount=amount,
+        currency=currency,
+        next_charge_at=next_charge_at or MOMENT,
+        created_at=MOMENT,
+        payment_method_id="card-1",
+    )
+    await storage.save_subscription(subscription)
+    return subscription
+
+
+async def test_a_saved_subscription_is_read_back(storage: Storage) -> None:
+    user = await _make_user(storage, "sub-1")
+
+    await _make_subscription(storage, user)
+    found = await storage.get_subscription(user.id)
+
+    assert found is not None
+    assert found.tariff is TariffId.PRO
+    assert found.amount == 599
+    assert found.currency == "RUB"
+    assert found.payment_method_id == "card-1"
+
+
+async def test_a_user_without_a_subscription_has_none(storage: Storage) -> None:
+    user = await _make_user(storage, "sub-2")
+
+    assert await storage.get_subscription(user.id) is None
+
+
+async def test_saving_twice_keeps_one_subscription(storage: Storage) -> None:
+    """Две строки на человека означали бы два списания в месяц."""
+    user = await _make_user(storage, "sub-3")
+
+    await _make_subscription(storage, user)
+    await _make_subscription(storage, user, amount=1490)
+
+    found = await storage.get_subscription(user.id)
+    assert found is not None
+    assert found.amount == 1490
+
+
+async def test_cancelling_stops_future_charges(storage: Storage) -> None:
+    user = await _make_user(storage, "sub-4")
+    await _make_subscription(storage, user)
+
+    assert await storage.cancel_subscription(user.id, MOMENT) is True
+
+    found = await storage.get_subscription(user.id)
+    assert found is not None
+    assert found.status == "cancelled"
+    assert found.cancelled_at is not None
+
+
+async def test_cancelling_twice_changes_nothing(storage: Storage) -> None:
+    """Второе нажатие «отключить» не должно выглядеть как новая отмена."""
+    user = await _make_user(storage, "sub-5")
+    await _make_subscription(storage, user)
+
+    assert await storage.cancel_subscription(user.id, MOMENT) is True
+    assert await storage.cancel_subscription(user.id, MOMENT) is False
+
+
+async def test_cancelling_a_missing_subscription_is_false(storage: Storage) -> None:
+    user = await _make_user(storage, "sub-6")
+
+    assert await storage.cancel_subscription(user.id, MOMENT) is False
+
+
+async def test_only_due_subscriptions_are_charged(storage: Storage) -> None:
+    due = await _make_user(storage, "sub-7")
+    later = await _make_user(storage, "sub-8")
+    await _make_subscription(storage, due, next_charge_at=MOMENT - timedelta(hours=1))
+    await _make_subscription(storage, later, next_charge_at=MOMENT + timedelta(days=5))
+
+    found = await storage.subscriptions_to_charge(MOMENT, limit=10)
+
+    assert [each.user_id for each in found] == [due.id]
+
+
+async def test_a_cancelled_subscription_is_never_charged(storage: Storage) -> None:
+    """Оплаченный срок дорабатывает, но новых денег с человека не берут."""
+    user = await _make_user(storage, "sub-9")
+    await _make_subscription(
+        storage, user, status="cancelled", next_charge_at=MOMENT - timedelta(days=1)
+    )
+
+    assert await storage.subscriptions_to_charge(MOMENT, limit=10) == []
+
+
+async def test_reminders_go_out_once_per_charge(storage: Storage) -> None:
+    """Пропустить обязательное предупреждение нельзя, повторить — раздражает."""
+    user = await _make_user(storage, "sub-10")
+    charge_at = MOMENT + timedelta(hours=12)
+    await _make_subscription(storage, user, next_charge_at=charge_at)
+
+    first = await storage.subscriptions_to_remind(
+        MOMENT, MOMENT + timedelta(days=1), limit=10
+    )
+    await storage.mark_reminded(user.id, charge_at)
+    second = await storage.subscriptions_to_remind(
+        MOMENT, MOMENT + timedelta(days=1), limit=10
+    )
+
+    assert [each.user_id for each in first] == [user.id]
+    assert second == []
+
+
+async def test_a_new_charge_needs_a_new_reminder(storage: Storage) -> None:
+    """Отметка привязана к дате списания, а не к самому факту напоминания."""
+    user = await _make_user(storage, "sub-11")
+    charge_at = MOMENT + timedelta(hours=12)
+    await _make_subscription(storage, user, next_charge_at=charge_at)
+    await storage.mark_reminded(user.id, charge_at)
+
+    await _make_subscription(
+        storage, user, next_charge_at=charge_at + timedelta(days=30)
+    )
+    due = await storage.subscriptions_to_remind(
+        MOMENT, charge_at + timedelta(days=31), limit=10
+    )
+
+    assert [each.user_id for each in due] == [user.id]
+
+
+async def test_the_price_is_checked_once_per_charge(storage: Storage) -> None:
+    """Иначе сверка повторялась бы каждый проход всю неделю до списания."""
+    user = await _make_user(storage, "sub-12")
+    charge_at = MOMENT + timedelta(days=5)
+    await _make_subscription(storage, user, next_charge_at=charge_at)
+
+    first = await storage.subscriptions_to_check_price(
+        MOMENT, MOMENT + timedelta(days=7), limit=10
+    )
+    await storage.mark_price_checked(user.id, charge_at)
+    second = await storage.subscriptions_to_check_price(
+        MOMENT, MOMENT + timedelta(days=7), limit=10
+    )
+
+    assert [each.user_id for each in first] == [user.id]
+    assert second == []
+
+
+async def test_an_overdue_charge_gets_no_tomorrow_reminder(storage: Storage) -> None:
+    """У просроченного списания «завтра» уже прошло — предупреждать поздно.
+
+    Такими занимается проход списаний: он переносит срок и предупреждает
+    заново. Попади они сюда, человек получил бы письмо про завтрашние деньги
+    в тот же час, когда их снимут.
+    """
+    user = await _make_user(storage, "sub-13")
+    await _make_subscription(storage, user, next_charge_at=MOMENT - timedelta(hours=1))
+
+    due = await storage.subscriptions_to_remind(
+        MOMENT, MOMENT + timedelta(days=1), limit=10
+    )
+
+    assert due == []

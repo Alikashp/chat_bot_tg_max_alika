@@ -20,6 +20,7 @@ from app.core.models import (
     Photo,
 )
 from app.ports.ai import ImageQuality
+from app.ports.payments import PaymentIntent
 
 #: Минимальный настоящий PNG: восемь байт сигнатуры плюс немного тела.
 #: Проверка формата смотрит именно на сигнатуру, поэтому подделка обязана
@@ -283,3 +284,110 @@ class FakeGuard:
 
     def active(self, key: str) -> int:
         return self._active.get(key, 0)
+
+
+class FakeCards:
+    """Провайдер оплаты картой с заранее заданным поведением."""
+
+    def __init__(self, *, recurring: bool = False) -> None:
+        self.created: list[tuple[str, int]] = []
+        self.charged: list[tuple[str, int, str]] = []
+        #: О каких платежах спрашивали «оплачено ли». Нужен там, где важно
+        #: не только что спросили, а у кого именно.
+        self.asked: list[str] = []
+        self.error: Exception | None = None
+        #: Умеет ли провайдер повторные списания.
+        self.recurring = recurring
+        #: Что провайдер отвечает на вопрос «оплачено ли».
+        self.paid: bool = True
+        #: Ссылка, которую он возвращает. None — провайдер её не дал.
+        self.confirmation_url: str | None = "https://pay.example/checkout"
+        #: Сохранённый способ оплаты. None — сохранить не удалось.
+        self.saved_method: str | None = "card-1"
+        #: Проходит ли повторное списание.
+        self.charge_succeeds: bool = True
+        #: Просили ли сохранить способ оплаты при последнем платеже.
+        self.saved_requested: bool = False
+
+    async def create_payment(
+        self,
+        *,
+        order_id: str,
+        amount_rub: int,
+        description: str,
+        save_method: bool = False,
+    ) -> PaymentIntent:
+        if self.error is not None:
+            raise self.error
+        self.saved_requested = save_method
+        self.created.append((order_id, amount_rub))
+        return PaymentIntent(
+            external_id=f"ext-{len(self.created)}",
+            confirmation_url=self.confirmation_url,
+        )
+
+    async def charge_saved(
+        self,
+        *,
+        order_id: str,
+        amount_rub: int,
+        description: str,
+        payment_method_id: str,
+    ) -> str | None:
+        if self.error is not None:
+            raise self.error
+        self.charged.append((order_id, amount_rub, payment_method_id))
+        if not self.charge_succeeds:
+            return None
+        return f"charge-{len(self.charged)}"
+
+    async def saved_method_of(self, external_id: str) -> str | None:
+        return self.saved_method
+
+    async def is_paid(self, external_id: str, *, expected_rub: int) -> bool:
+        self.asked.append(external_id)
+        return self.paid
+
+
+@dataclass
+class SentInvoice:
+    title: str
+    order_id: str
+    stars: int
+    period_days: int
+
+
+class FakeStars:
+    """Оплата звёздами: записывает счета, отмены и предварительные ответы."""
+
+    def __init__(self) -> None:
+        self.invoices: list[SentInvoice] = []
+        self.approvals: list[tuple[str, bool]] = []
+        self.cancelled: list[tuple[str, str]] = []
+        self.error: Exception | None = None
+        #: Сбой отмены — отдельно от сбоя выставления счёта.
+        self.cancel_error: Exception | None = None
+
+    async def subscription_link(
+        self,
+        *,
+        title: str,
+        description: str,
+        order_id: str,
+        stars: int,
+        period_days: int,
+    ) -> str:
+        if self.error is not None:
+            raise self.error
+        self.invoices.append(SentInvoice(title, order_id, stars, period_days))
+        return f"https://t.me/invoice/{order_id}"
+
+    async def cancel(self, *, user_id: str, charge_id: str) -> None:
+        if self.cancel_error is not None:
+            raise self.cancel_error
+        self.cancelled.append((user_id, charge_id))
+
+    async def approve(
+        self, request_id: str, *, ok: bool, reason: str | None = None
+    ) -> None:
+        self.approvals.append((request_id, ok))

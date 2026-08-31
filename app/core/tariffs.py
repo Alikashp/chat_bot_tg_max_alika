@@ -11,11 +11,22 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import datetime
 from enum import StrEnum
+from math import ceil
 from types import MappingProxyType
 
 from app.core.models import TariffId
 from app.ports.ai import ImageQuality
+
+#: Валюты, в которых мы берём деньги.
+#:
+#: Звёзды — не деньги в привычном смысле, но учёт им нужен тот же: код
+#: валюты уезжает и в заказ, и в подписку, и в то, как показывается сумма.
+#: Одно место на весь проект, потому что разойтись здесь означало бы
+#: показать одну цену, а списать другую.
+RUB = "RUB"
+STARS = "XTR"
 
 
 class ModelTier(StrEnum):
@@ -103,13 +114,37 @@ def tariff_of(tariff_id: TariffId) -> Tariff:
     return TARIFFS[tariff_id]
 
 
-def stars_price(tariff: Tariff, markup: float) -> int:
-    """Цена в звёздах Telegram — дороже на комиссию (§2.8).
+def stars_price(tariff: Tariff, *, markup: float, rub_per_star: float) -> int:
+    """Цена в звёздах Telegram (§2.8).
 
-    Округляем вверх до целого: платёжные системы дробных единиц не принимают,
-    а округление вниз означало бы платить комиссию из своего кармана.
+    Два разных умножения, и путать их нельзя. Наценка — наше решение: Telegram
+    берёт комиссию со звёздных платежей, и §2.8 требует поднять цену на 40%,
+    чтобы её не платить из своего кармана. Курс — внешняя величина: звезда не
+    равна рублю, и сколько она стоит, знает только прайс Telegram.
+
+    Округляем вверх: дробных звёзд не бывает, а округление вниз означало бы
+    отдавать разницу самим.
     """
     if markup < 1:
         raise ValueError("наценка не может быть меньше единицы")
-    raw = tariff.price_rub * markup
-    return int(raw) if raw == int(raw) else int(raw) + 1
+    if rub_per_star <= 0:
+        raise ValueError("курс звезды должен быть больше нуля")
+    return ceil(tariff.price_rub * markup / rub_per_star)
+
+
+def active_tariff(
+    user_tariff: TariffId, expires_at: datetime | None, now: datetime
+) -> TariffId:
+    """Какой тариф действует прямо сейчас.
+
+    Оплаченный тариф не вечен: у него есть срок, и после него человек
+    возвращается на бесплатный. Без этой проверки одна оплата давала бы
+    подписку навсегда — запись в базе есть, а читать её было бы некому.
+
+    Бесплатный тариф не истекает: срока у него нет.
+    """
+    if user_tariff is TariffId.FREE:
+        return TariffId.FREE
+    if expires_at is None or expires_at <= now:
+        return TariffId.FREE
+    return user_tariff

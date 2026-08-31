@@ -63,6 +63,9 @@ class User:
     external_id: str
     tariff: TariffId
     referral_code: str
+    #: Номер для поддержки. Случайный: по внутреннему идентификатору строки
+    #: было бы видно, сколько всего людей в сервисе. См. core/support.py.
+    support_number: int
     created_at: datetime
     daily_image_quota: int
     referred_by: UserId | None = None
@@ -74,6 +77,72 @@ class User:
     pending: str | None = None
     #: Что повторить по кнопке «Ещё раз». См. core/retry_context.py.
     retry_context: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class Payment:
+    """Заказ на подписку.
+
+    Заводится до обращения к провайдеру и живёт дальше него: по нему потом
+    сверяется уведомление об оплате. Без своей записи мы верили бы на слово
+    тому, кто постучался на вебхук.
+    """
+
+    id: str
+    user_id: UserId
+    tariff: TariffId
+    method: str
+    amount: int
+    currency: str
+    status: str
+    created_at: datetime
+    #: Идентификатор платежа у провайдера. Появляется после его создания.
+    external_id: str | None = None
+    paid_at: datetime | None = None
+    #: Редакция документов, принятая при оформлении заказа.
+    docs_version: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class Subscription:
+    """Регулярная подписка пользователя.
+
+    Одна на человека: смена тарифа — это та же подписка с другим тарифом, а
+    не вторая рядом. Иначе с одного человека списывали бы дважды.
+
+    ``next_charge_at`` — момент следующего списания. У карты по нему работает
+    планировщик; у звёзд списывает сам Telegram, и дата нужна, чтобы честно
+    показать её человеку и предупредить заранее.
+    """
+
+    user_id: UserId
+    tariff: TariffId
+    method: str
+    status: str
+    #: Сколько списываем и в чём. Хранится, а не считается по тарифу: цена
+    #: тарифа меняется, а списываем мы ровно то, на что человек согласился,
+    #: пока не предупредим об изменении (§4.17 оферты). У звёзд это ещё и
+    #: единственный способ узнать сумму: её зафиксировал сам Telegram.
+    amount: int
+    currency: str
+    next_charge_at: datetime
+    created_at: datetime
+    #: Способ оплаты, сохранённый провайдером. Реквизитов карты у нас нет —
+    #: только выданный им идентификатор.
+    payment_method_id: str | None = None
+    #: Идентификатор платежа у мессенджера. Нужен, чтобы отменить подписку
+    #: на звёздах: Telegram отменяет её по первому платежу.
+    charge_id: str | None = None
+    #: За какое списание уже предупредили. Хранится дата самого списания, а
+    #: не время отправки: так напоминание не уйдёт дважды и не потеряется.
+    reminded_for: datetime | None = None
+    #: За какое списание уже сверили цену с тарифом (§4.17). Отметка ставится
+    #: и когда цена не менялась: иначе сверка повторялась бы каждый тик
+    #: планировщика все семь дней до списания.
+    price_checked_for: datetime | None = None
+    #: С какого момента списания не проходят. Пусто — всё в порядке.
+    failed_since: datetime | None = None
+    cancelled_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -185,3 +254,16 @@ class IncomingMessage:
     action: str | None = None
     start_payload: str | None = None
     callback_id: str | None = None
+    #: Заказ, который мессенджер объявил оплаченным (звёзды Telegram).
+    paid_order_id: str | None = None
+    #: Очередное списание по подписке, а не первая оплата. Мессенджер
+    #: ссылается тем же заказом, что и в первый раз, поэтому без этого
+    #: признака продление выглядело бы как повтор уже оплаченного и
+    #: пропадало бы вместе с оплаченным периодом.
+    paid_renewal: bool = False
+    #: Идентификатор конкретного списания. У каждого периода свой — по нему
+    #: продление отличается от собственного повтора.
+    paid_charge_id: str | None = None
+    #: Запрос «готовы ли принять оплату» вместе с заказом, о котором спросили.
+    pre_checkout_id: str | None = None
+    pre_checkout_order_id: str | None = None

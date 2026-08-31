@@ -190,6 +190,77 @@ class Settings(BaseSettings):
     #: (docs/research.md §1.7).
     max_api_timeout_seconds: Annotated[float, Field(gt=0, le=120)] = 30.0
 
+    # --- Оплата ----------------------------------------------------------
+
+    #: Магазин и ключ ЮKassa для Telegram. Пустые означают «оплата картой не
+    #: настроена»: бот работает, но платить можно только звёздами.
+    yookassa_shop_id: str = ""
+    yookassa_secret_key: str = ""
+
+    #: Магазин и ключ ЮKassa для MAX.
+    #:
+    #: Магазин отдельный, потому что ЮKassa регистрирует каждое приложение
+    #: само по себе: у бота в MAX свой идентификатор и свой ключ. Подставлять
+    #: сюда телеграмный нельзя — деньги ушли бы в чужой магазин, и разбирать
+    #: это пришлось бы возвратами. Поэтому подмены и нет: не задан — в MAX
+    #: карта просто не показывается.
+    max_yookassa_shop_id: str = ""
+    max_yookassa_secret_key: str = ""
+
+    #: Адрес API. Меняется на тестовый магазин при отладке.
+    yookassa_base_url: str = "https://api.yookassa.ru/v3"
+
+    yookassa_timeout_seconds: Annotated[float, Field(gt=0, le=60)] = 20.0
+
+    #: Куда ЮKassa вернёт человека после оплаты. Пустой — соберём ссылку на
+    #: самого бота: возвращать человека в переписку правильнее, чем на
+    #: посторонний сайт. Своя переменная у каждого мессенджера, потому что
+    #: возвращать надо туда, откуда человек пришёл.
+    yookassa_return_url: str = ""
+    max_yookassa_return_url: str = ""
+
+    #: Сколько рублей стоит одна звезда Telegram. Величина внешняя: курс
+    #: задаёт Telegram, и меняется он без нашего участия.
+    rub_per_star: Annotated[float, Field(gt=0, le=100)] = 1.6
+
+    #: На сколько дней выдаётся подписка после оплаты.
+    subscription_days: Annotated[int, Field(ge=1, le=366)] = 30
+
+    #: Умеет ли магазин ЮKassa автоплатежи (списания по сохранённой карте).
+    #:
+    #: Возможность подключается отдельно и не всякому магазину. Пока она не
+    #: включена, оплата картой остаётся разовой: продления не будет, и
+    #: обещать его на экране нельзя. Отсюда и переменная — включить подписку
+    #: на карте должно быть можно, не выкладывая код.
+    yookassa_recurring: bool = False
+
+    #: То же для магазина MAX: автоплатежи подключают отдельно каждому
+    #: магазину, и одобрить их могут в разное время.
+    max_yookassa_recurring: bool = False
+
+    #: Как часто планировщик проверяет, кому пора списать и кого предупредить.
+    #: Раз в час: реже — рискуем опоздать с суточным предупреждением, чаще —
+    #: незачем, все сроки здесь измеряются днями.
+    billing_interval_seconds: Annotated[int, Field(ge=60, le=86_400)] = 3_600
+
+    #: Сколько подписок разбирать за один проход. Ограничение нужно, чтобы
+    #: разовый наплыв не превратился в час непрерывных запросов к провайдеру:
+    #: остаток разберётся следующим проходом.
+    billing_batch: Annotated[int, Field(ge=1, le=1_000)] = 100
+
+    #: Адреса опубликованных оферты и политики обработки данных.
+    #: Пока не заданы, оплата в боте не показывается вовсе: брать деньги, не
+    #: показав условия, нельзя.
+    offer_url: str = ""
+    privacy_url: str = ""
+
+    #: Редакция документов — например, «2026-08-31». Пишется в заказ и в лог,
+    #: чтобы потом было видно, с чем именно человек соглашался.
+    docs_version: str = ""
+
+    #: Наценка на оплату звёздами (§2.8: на 40% выше).
+    stars_markup: Annotated[float, Field(ge=1.0, le=3.0)] = 1.4
+
     @field_validator("public_url")
     @classmethod
     def _require_https(cls, value: HttpUrl) -> HttpUrl:
@@ -249,6 +320,40 @@ class Settings(BaseSettings):
     @property
     def max_webhook_url(self) -> str:
         return f"{str(self.public_url).rstrip('/')}{self.max_webhook_path}"
+
+    @property
+    def documents_ready(self) -> bool:
+        """Опубликованы ли оферта и политика. Без них оплата не показывается."""
+        return bool(self.offer_url and self.privacy_url and self.docs_version)
+
+    @property
+    def cards_enabled(self) -> bool:
+        """Настроена ли оплата картой в Telegram."""
+        return bool(self.yookassa_shop_id and self.yookassa_secret_key)
+
+    @property
+    def max_cards_enabled(self) -> bool:
+        """Настроена ли оплата картой в MAX.
+
+        Отдельно от телеграмной и без подмены одной другой: магазины у ЮKassa
+        разные, и списать в чужой значило бы взять деньги не туда.
+        """
+        return bool(self.max_yookassa_shop_id and self.max_yookassa_secret_key)
+
+    @property
+    def yookassa_webhook_path(self) -> str:
+        """Путь вебхука ЮKassa.
+
+        Секрета у их уведомлений нет вовсе, поэтому путь сделан длинным и
+        неугадываемым: он не даёт никаких прав, но избавляет от шума на
+        очевидном адресе. Настоящая проверка — переспрос провайдера по нашему
+        ключу, см. CardPayments.is_paid.
+        """
+        return "/webhook/yookassa/notifications"
+
+    @property
+    def yookassa_webhook_url(self) -> str:
+        return f"{str(self.public_url).rstrip('/')}{self.yookassa_webhook_path}"
 
     @property
     def images_api_key(self) -> str:

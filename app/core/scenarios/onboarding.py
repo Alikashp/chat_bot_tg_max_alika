@@ -13,13 +13,14 @@ from __future__ import annotations
 
 from datetime import timedelta
 
-from app.core import referral, texts
+from app.core import referral, support, texts
 from app.core.models import Chat, MessengerKind, User
 from app.core.scenarios.deps import Deps, Session
 
-#: Сколько попыток подобрать незанятый реферальный код. Коллизия на 10^12
-#: вариантов маловероятна, но «маловероятно» и «невозможно» — разные вещи,
-#: а падение на регистрации стоит нам пользователя.
+#: Сколько попыток подобрать незанятые код и номер. Коллизия маловероятна,
+#: но «маловероятно» и «невозможно» — разные вещи, а падение на регистрации
+#: стоит нам пользователя. Номер шестизначный, и его пространство куда
+#: скромнее кодового, так что запас попыток нужен именно ему.
 _CODE_ATTEMPTS = 5
 
 #: Окно, за которое считается суточный лимит наград (§2.7).
@@ -40,7 +41,7 @@ async def start(
     """
     existing = await deps.storage.get_user(messenger, external_id)
     if existing is not None:
-        session = Session(user=existing, chat=chat, day=deps.today())
+        session = Session(user=existing, chat=chat, day=deps.today(), now=deps.now())
         await _greet(deps, session, from_presentations=False, gifted=False)
         return session
 
@@ -48,7 +49,7 @@ async def start(
     user = await _create_user(
         deps, messenger, external_id, from_presentations=from_presentations
     )
-    session = Session(user=user, chat=chat, day=deps.today())
+    session = Session(user=user, chat=chat, day=deps.today(), now=deps.now())
 
     gifted = await _apply_referral(deps, session, payload)
     if gifted:
@@ -56,7 +57,9 @@ async def start(
         # правду, а не то, что было до подарка.
         refreshed = await deps.storage.get_user_by_id(user.id)
         if refreshed is not None:
-            session = Session(user=refreshed, chat=chat, day=session.day)
+            session = Session(
+                user=refreshed, chat=chat, day=session.day, now=session.now
+            )
 
     await _greet(deps, session, from_presentations=from_presentations, gifted=gifted)
     return session
@@ -82,6 +85,7 @@ async def _create_user(
                 messenger=messenger,
                 external_id=external_id,
                 referral_code=referral.generate_code(),
+                support_number=support.generate_number(),
                 daily_image_quota=quota,
             )
         except ValueError as error:

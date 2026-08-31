@@ -29,6 +29,15 @@ TARGET = SOURCE / "html"
 #: Полужирный. Внутри документов встречается только он.
 _BOLD = re.compile(r"\*\*(.+?)\*\*")
 
+#: Адреса документов друг на друга. Делаем их ссылками здесь, а не надеемся,
+#: что редактор распознает их сам: взаимные ссылки — обязательное условие
+#: договора, и оставлять их работоспособность на усмотрение редактора нельзя.
+_URL = re.compile(r"https?://[^\s<]+")
+
+#: Знаки, которые примыкают к адресу, но в него не входят: точка в конце
+#: предложения — часть предложения, а не часть ссылки.
+_TRAILING = ".,;:)"
+
 _PAGE = """<!doctype html>
 <meta charset="utf-8">
 <title>{title}</title>
@@ -103,8 +112,17 @@ def to_html(markdown: str) -> tuple[str, str]:
 
 
 def _inline(text: str) -> str:
-    """Экранирует HTML и разворачивает полужирный."""
-    return _BOLD.sub(r"<b>\1</b>", html.escape(text))
+    """Экранирует HTML, разворачивает полужирный и делает адреса ссылками."""
+    escaped = html.escape(text)
+    linked = _URL.sub(_link, escaped)
+    return _BOLD.sub(r"<b>\1</b>", linked)
+
+
+def _link(match: re.Match[str]) -> str:
+    """Оборачивает адрес в ссылку, оставив примыкающую пунктуацию снаружи."""
+    url = match.group(0).rstrip(_TRAILING)
+    tail = match.group(0)[len(url) :]
+    return f'<a href="{url}">{url}</a>{tail}'
 
 
 def main() -> int:

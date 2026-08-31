@@ -78,10 +78,10 @@ class InMemoryStorage:
         daily_image_quota: int,
         referred_by: UserId | None = None,
     ) -> User:
-        if (messenger, external_id) in self._by_external:
-            raise ValueError(
-                f"пользователь {messenger.value}:{external_id} уже существует"
-            )
+        existing = self._by_external.get((messenger, external_id))
+        if existing is not None:
+            # Не ошибка: кто-то успел завести его первым.
+            return self._users[existing]
         if referral_code in self._by_referral_code:
             raise ValueError(f"реферальный код {referral_code} уже занят")
 

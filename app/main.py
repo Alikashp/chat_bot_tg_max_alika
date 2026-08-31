@@ -237,16 +237,21 @@ def build_cards(
 
 
 def build_core_settings(
-    settings: Settings, bot_username: str, *, referral_link_host: str
+    settings: Settings,
+    bot_username: str,
+    *,
+    referral_link_host: str,
+    show_user_number: bool = False,
 ) -> CoreSettings:
     """Продуктовые настройки ядра из настроек приложения.
 
-    У каждого мессенджера свой экземпляр: имя бота и хост ссылки у них разные,
-    всё остальное одинаковое.
+    У каждого мессенджера свой экземпляр: имя бота, хост ссылки и показ
+    номера у них разные, всё остальное одинаковое.
     """
     return CoreSettings(
         bot_username=bot_username,
         referral_link_host=referral_link_host,
+        show_user_number=show_user_number,
         model_economy=settings.model_economy,
         model_standard=settings.model_standard,
         dialog_max_turns=settings.dialog_max_turns,
@@ -428,7 +433,14 @@ async def _build_max(
     http = create_client(settings.max_api_timeout_seconds)
     deps = build_deps(
         MaxMessenger(bot, http),
-        build_core_settings(settings, me.username, referral_link_host=MAX_HOST),
+        build_core_settings(
+            settings,
+            me.username,
+            referral_link_host=MAX_HOST,
+            # В MAX username есть не у всех, и без номера опознать
+            # написавшего в поддержку нечем.
+            show_user_number=True,
+        ),
     )
 
     async def handle(raw_update: dict[str, Any]) -> None:

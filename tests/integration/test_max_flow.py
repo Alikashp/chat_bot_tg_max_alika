@@ -257,7 +257,12 @@ async def harness() -> AsyncIterator[Harness]:
         messenger=MaxMessenger(bot, http),  # type: ignore[arg-type]
         llm=llm,
         images=images,
-        settings=CoreSettings(bot_username="testbot", referral_link_host=MAX_HOST),
+        settings=CoreSettings(
+            bot_username="testbot",
+            referral_link_host=MAX_HOST,
+            # Так же собирает настройки MAX и app/main.py.
+            show_user_number=True,
+        ),
         logger=FakeLogger(),
         guard=FloodGuard(limit=1),
         cards=FakeCards(),
@@ -352,6 +357,14 @@ async def test_a_deeplink_gift_reaches_the_invited_user(harness: Harness) -> Non
     refreshed = await harness.storage.get_user_by_id(inviter.id)
     assert refreshed is not None
     assert refreshed.bonus_images == 5
+
+
+async def test_the_profile_carries_the_support_number(started: Harness) -> None:
+    """В MAX это единственный способ опознать написавшего в поддержку."""
+    await started.press(Action.MENU_PROFILE)
+
+    user = await started.user()
+    assert f"Твой номер: {int(user.id)}" in started.texts_said()[0]
 
 
 # --- Чат и картинки ------------------------------------------------------

@@ -464,6 +464,8 @@ async def test_profile_opens_by_callback(started: Harness) -> None:
     said = started.texts_said()[0]
     assert texts.TARIFF_TITLES[(await started.user()).tariff] in said
     assert "Сообщений сегодня: 0 из 20" in said
+    # Номер здесь лишний: в Telegram человека видно по @username.
+    assert "Твой номер" not in said
     # Индикатор на кнопке гасится до работы, а не после.
     assert started.calls_of(AnswerCallbackQuery)
 

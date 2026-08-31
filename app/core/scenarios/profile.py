@@ -19,11 +19,12 @@ async def show(deps: Deps, session: Session) -> None:
     friends = await deps.storage.count_referrals(session.user.id)
 
     screen = texts.profile(
-        tariff_id=session.user.tariff,
+        tariff_id=session.tariff.id,
         messages_used=usage.messages_used,
         messages_limit=daily_messages(session.tariff),
         images_left=images.total_left,
         friends=friends,
+        user_number=(int(session.user.id) if deps.settings.show_user_number else None),
     )
     await deps.messenger.send_text(
         session.chat, screen.text, keyboard=keyboards.profile()

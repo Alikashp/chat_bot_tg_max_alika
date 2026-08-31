@@ -131,19 +131,37 @@ class PostgresStorage:
                 daily_image_quota=daily_image_quota,
                 referred_by=referred_by,
             )
+            # Гонка за нового человека разрешается базой, а не проверкой в
+            # коде: два первых обновления обрабатываются параллельно, и оба
+            # видят «его ещё нет». Побеждает один, второй ничего не пишет.
+            .on_conflict_do_nothing(
+                index_elements=[users.c.messenger, users.c.external_id]
+            )
             .returning(users)
         )
         async with self._session() as session, session.begin():
             try:
-                row = (await session.execute(query)).mappings().one()
+                row = (await session.execute(query)).mappings().one_or_none()
             except IntegrityError as error:
+                # Сюда попадаем только на занятом реферальном коде: конфликт
+                # по паре (messenger, external_id) выше разрешён молчанием.
                 # Порт обещает ValueError, а не диалектное исключение: ядро не
                 # должно знать, что под ним PostgreSQL.
                 raise ValueError(
-                    f"пользователь {messenger.value}:{external_id} "
-                    f"или код {referral_code} уже заняты"
+                    f"реферальный код {referral_code} уже занят"
                 ) from error
-        return _to_user(row)
+
+        if row is not None:
+            return _to_user(row)
+
+        # Ничего не вставилось — значит человек уже заведён параллельно.
+        found = await self.get_user(messenger, external_id)
+        if found is None:
+            raise ValueError(
+                f"пользователь {messenger.value}:{external_id} не найден "
+                "после конфликта вставки"
+            )
+        return found
 
     async def set_tariff(
         self,

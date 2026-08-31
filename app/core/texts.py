@@ -384,17 +384,23 @@ def profile(
     messages_limit: int,
     images_left: int,
     friends: int,
+    user_number: int | None = None,
 ) -> Screen:
-    """Четыре реальных числа и два выхода."""
-    return Screen(
-        text=(
-            f"Твой тариф: {TARIFF_TITLES[tariff_id]}\n"
-            f"Сообщений сегодня: {messages_used} из {messages_limit}\n"
-            f"Картинок: {images_left}\n"
-            f"Друзей позвал: {friends}"
-        ),
-        buttons=(MENU_TARIFFS, BUTTON_MY_LINK),
-    )
+    """Реальные числа и два выхода.
+
+    ``user_number`` — номер для поддержки. Появляется не везде: в Telegram
+    человека видно по @username, а в MAX username есть не у всех, и без
+    номера опознать написавшего нечем.
+    """
+    lines = [
+        f"Твой тариф: {TARIFF_TITLES[tariff_id]}",
+        f"Сообщений сегодня: {messages_used} из {messages_limit}",
+        f"Картинок: {images_left}",
+        f"Друзей позвал: {friends}",
+    ]
+    if user_number is not None:
+        lines.append(f"Твой номер: {user_number}")
+    return Screen(text="\n".join(lines), buttons=(MENU_TARIFFS, BUTTON_MY_LINK))
 
 
 # --- Рефералка (§2.7) ----------------------------------------------------
@@ -669,6 +675,14 @@ def _all_screens() -> tuple[Screen, ...]:
             messages_limit=20,
             images_left=2,
             friends=3,
+        ),
+        profile(
+            tariff_id=TariffId.FREE,
+            messages_used=12,
+            messages_limit=20,
+            images_left=2,
+            friends=3,
+            user_number=1234,
         ),
         referral_offer(bonus_messages=50, bonus_images=5),
         referral_invite("https://t.me/mybot?start=ref_abc123"),

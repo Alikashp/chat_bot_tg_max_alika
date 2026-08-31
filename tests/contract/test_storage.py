@@ -137,11 +137,45 @@ async def test_same_external_id_in_other_messenger_is_another_user(
     assert telegram_user.id != max_user.id
 
 
-async def test_duplicate_external_id_is_rejected(storage: Storage) -> None:
-    await _make_user(storage, "5")
+async def test_a_second_registration_returns_the_same_person(
+    storage: Storage,
+) -> None:
+    """Два первых обновления от нового человека приходят почти одновременно.
 
-    with pytest.raises(ValueError):
-        await _make_user(storage, "5")
+    Оба видят «его ещё нет» и оба заводят. Раньше второй получал ошибку, и
+    человек вместо ответа видел «что-то пошло не так» на первом же касании.
+    """
+    first = await _make_user(storage, "twice")
+    second = await storage.create_user(
+        messenger=MessengerKind.TELEGRAM,
+        external_id="twice",
+        referral_code="другой-код",
+        daily_image_quota=3,
+    )
+
+    assert second.id == first.id
+    assert second.referral_code == first.referral_code, "код менять нельзя"
+
+
+async def test_concurrent_registrations_create_one_person(storage: Storage) -> None:
+    """То же самое, но параллельно — как оно и происходит в жизни.
+
+    Написан ради PostgreSQL: в памяти внутри операции нет ни одного await, и
+    гонки не получается. В базе её разрешает ON CONFLICT DO NOTHING.
+    """
+    people = await asyncio.gather(
+        *(
+            storage.create_user(
+                messenger=MessengerKind.TELEGRAM,
+                external_id="race",
+                referral_code=f"code-{index}",
+                daily_image_quota=3,
+            )
+            for index in range(5)
+        )
+    )
+
+    assert len({person.id for person in people}) == 1
 
 
 async def test_duplicate_referral_code_is_rejected(storage: Storage) -> None:

@@ -7,14 +7,15 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+from datetime import timedelta
+
 import pytest
 
 from app.adapters.storage.memory import InMemoryStorage
 from app.core import texts
 from app.core.actions import parse_preset_action
-from app.core.models import (
-    Photo,
-)
+from app.core.models import Photo, TariffId
 from app.core.scenarios import (
     chat,
     images,
@@ -464,3 +465,45 @@ async def test_a_refused_photo_keeps_a_way_out(
     keyboard = messenger.text_edits[0].keyboard
     assert keyboard is not None
     assert len(keyboard.rows) == len(registry.PRESETS)
+
+
+# --- Номер для поддержки -------------------------------------------------
+
+
+async def test_the_profile_shows_the_number_where_it_is_needed(
+    deps: Deps, session: Session, messenger: FakeMessenger
+) -> None:
+    """В MAX username есть не у всех — без номера написавшего не опознать."""
+    with_number = replace(deps, settings=replace(deps.settings, show_user_number=True))
+
+    await profile.show(with_number, session)
+
+    assert f"Твой номер: {int(session.user.id)}" in messenger.last_text.text
+
+
+async def test_the_profile_hides_the_number_where_it_is_not(
+    deps: Deps, session: Session, messenger: FakeMessenger
+) -> None:
+    """В Telegram человека видно по @username, лишняя строка ни к чему."""
+    await profile.show(deps, session)
+
+    assert "Твой номер" not in messenger.last_text.text
+
+
+async def test_the_profile_shows_the_tariff_that_actually_works(
+    deps: Deps, session: Session, storage: InMemoryStorage, messenger: FakeMessenger
+) -> None:
+    """После окончания подписки профиль обязан говорить правду.
+
+    Иначе человек видит «Твой тариф: Про», а лимиты у него бесплатные, и
+    первый же вопрос в поддержку — про это расхождение.
+    """
+    await storage.set_tariff(
+        session.user.id, TariffId.PRO, deps.now() - timedelta(seconds=1)
+    )
+    expired = await storage.get_user_by_id(session.user.id)
+    assert expired is not None
+
+    await profile.show(deps, replace(session, user=expired))
+
+    assert "Твой тариф: Бесплатный" in messenger.last_text.text

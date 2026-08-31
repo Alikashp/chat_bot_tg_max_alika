@@ -12,13 +12,13 @@ from dataclasses import replace
 from datetime import timedelta
 
 from app.adapters.storage.memory import InMemoryStorage
-from app.core import texts
+from app.core import support, texts
 from app.core.models import TariffId, User
 from app.core.scenarios import payments
 from app.core.scenarios.deps import Deps, Session
 from app.core.tariffs import tariff_of
 from app.ports.payments import PaymentMethod, PaymentStatus
-from tests.fakes import FakeCards, FakeMessenger, FakeStars
+from tests.fakes import FakeCards, FakeLogger, FakeMessenger, FakeStars
 
 PRO = TariffId.PRO
 
@@ -33,8 +33,10 @@ async def test_both_methods_are_offered_when_both_are_configured(
 
     keyboard = messenger.last_text.keyboard
     assert keyboard is not None
-    labels = [button.text for row in keyboard.rows for button in row]
-    assert labels == [texts.BUTTON_PAY_CARD, texts.BUTTON_PAY_STARS]
+    assert [button.text for button in keyboard.rows[0]] == [
+        texts.BUTTON_PAY_CARD,
+        texts.BUTTON_PAY_STARS,
+    ]
 
 
 async def test_the_star_price_is_named_before_paying(
@@ -46,13 +48,75 @@ async def test_the_star_price_is_named_before_paying(
     assert "⭐" in messenger.last_text.text
 
 
-async def test_a_single_method_is_not_a_choice(
-    deps: Deps, session: Session, stars: FakeStars
+async def test_the_terms_are_shown_even_with_a_single_method(
+    deps: Deps, session: Session, messenger: FakeMessenger, stars: FakeStars
 ) -> None:
-    """В MAX карт нет альтернативы — не заставляем нажимать лишний раз."""
+    """Раньше единственный способ вёл к счёту сразу, экономя нажатие.
+
+    Так больше нельзя: этот экран — единственное место, где человек видит
+    условия до того, как отдаст деньги. Одно нажатие дешевле, чем деньги,
+    взятые без показанной оферты.
+    """
     await payments.choose_method(replace(deps, cards=None), session, PRO)
 
-    assert len(stars.invoices) == 1
+    assert stars.invoices == []
+    assert texts.CONSENT in messenger.last_text.text
+    keyboard = messenger.last_text.keyboard
+    assert keyboard is not None
+    assert [button.text for button in keyboard.rows[0]] == [texts.BUTTON_PAY_STARS]
+
+
+async def test_the_screen_links_to_both_documents(
+    deps: Deps, session: Session, messenger: FakeMessenger
+) -> None:
+    """Согласие без возможности прочитать — не согласие."""
+    await payments.choose_method(deps, session, PRO)
+
+    keyboard = messenger.last_text.keyboard
+    assert keyboard is not None
+    links = {button.text: button.url for button in keyboard.rows[1]}
+    assert links == {
+        texts.BUTTON_OFFER: deps.settings.offer_url,
+        texts.BUTTON_PRIVACY: deps.settings.privacy_url,
+    }
+
+
+async def test_payment_is_hidden_until_the_documents_are_published(
+    deps: Deps, session: Session, messenger: FakeMessenger, stars: FakeStars
+) -> None:
+    """Брать деньги, не показав условия, нельзя — значит и кнопки быть не должно."""
+    without_docs = replace(
+        deps, settings=replace(deps.settings, offer_url="", docs_version="")
+    )
+
+    await payments.choose_method(without_docs, session, PRO)
+
+    assert messenger.texts_said() == [texts.PAYMENTS_SOON]
+    assert stars.invoices == []
+
+
+async def test_the_consent_is_recorded_with_the_order(
+    deps: Deps, session: Session, storage: InMemoryStorage, stars: FakeStars
+) -> None:
+    """Версия документов живёт вместе с заказом столько же, сколько платёж."""
+    await payments.start_stars(deps, session, PRO)
+
+    order = await storage.get_payment(stars.invoices[0].order_id)
+    assert order is not None
+    assert order.docs_version == deps.settings.docs_version
+
+
+async def test_the_consent_is_written_to_the_log(
+    deps: Deps, session: Session, logger: FakeLogger, stars: FakeStars
+) -> None:
+    """Кто, когда, по какой редакции и за какой заказ — одной записью."""
+    await payments.start_stars(deps, session, PRO)
+
+    consent = [entry for entry in logger.events if entry.event == "consent_accepted"]
+    assert len(consent) == 1
+    assert consent[0].fields["user_id"] == int(session.user.id)
+    assert consent[0].fields["payment_id"] == stars.invoices[0].order_id
+    assert consent[0].fields["docs_version"] == deps.settings.docs_version
 
 
 async def test_without_any_provider_there_is_no_dead_end(
@@ -172,6 +236,7 @@ async def test_someone_elses_order_is_refused(
         messenger=session.user.messenger,
         external_id="999",
         referral_code="stranger",
+        support_number=support.generate_number(),
         daily_image_quota=3,
     )
     order = await storage.create_payment(
@@ -180,6 +245,7 @@ async def test_someone_elses_order_is_refused(
         method=PaymentMethod.STARS.value,
         amount=100,
         currency="XTR",
+        docs_version="2026-08-31",
     )
 
     await payments.approve(deps, "req-1", order.id, user=session.user)
@@ -367,6 +433,7 @@ async def test_a_payment_we_cannot_record_is_never_offered(
         method=PaymentMethod.CARD.value,
         amount=599,
         currency="RUB",
+        docs_version="2026-08-31",
     )
     await storage.attach_external_id(taken.id, "ext-1")
 

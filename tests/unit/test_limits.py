@@ -34,6 +34,7 @@ def make_user(
         external_id="1",
         tariff=tariff,
         referral_code="code",
+        support_number=123456,
         created_at=datetime(2026, 8, 1, tzinfo=UTC),
         daily_image_quota=daily_image_quota,
         bonus_messages=bonus_messages,

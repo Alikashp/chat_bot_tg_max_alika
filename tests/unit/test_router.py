@@ -95,7 +95,7 @@ async def test_buy_action_asks_how_to_pay(
 ) -> None:
     await handle(deps, incoming(action=buy_action("pro")))
 
-    assert "Чем платим?" in messenger.last_text.text
+    assert texts.CONSENT in messenger.last_text.text
 
 
 async def test_an_unconfigured_payment_is_an_honest_stub(

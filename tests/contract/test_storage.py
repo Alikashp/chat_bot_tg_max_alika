@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from app.adapters.storage.memory import InMemoryStorage
 from app.adapters.storage.postgres import PostgresStorage, create_engine
 from app.adapters.storage.schema import metadata
+from app.core import support
 from app.core.models import (
     ChatTurn,
     DialogState,
@@ -98,6 +99,7 @@ async def _make_user(storage: Storage, external_id: str = "1") -> User:
         messenger=MessengerKind.TELEGRAM,
         external_id=external_id,
         referral_code=f"code{external_id}",
+        support_number=support.generate_number(),
         daily_image_quota=3,
     )
 
@@ -131,6 +133,7 @@ async def test_same_external_id_in_other_messenger_is_another_user(
         messenger=MessengerKind.MAX,
         external_id="7",
         referral_code="code-max-7",
+        support_number=support.generate_number(),
         daily_image_quota=3,
     )
 
@@ -150,6 +153,7 @@ async def test_a_second_registration_returns_the_same_person(
         messenger=MessengerKind.TELEGRAM,
         external_id="twice",
         referral_code="другой-код",
+        support_number=support.generate_number(),
         daily_image_quota=3,
     )
 
@@ -169,6 +173,7 @@ async def test_concurrent_registrations_create_one_person(storage: Storage) -> N
                 messenger=MessengerKind.TELEGRAM,
                 external_id="race",
                 referral_code=f"code-{index}",
+                support_number=support.generate_number(),
                 daily_image_quota=3,
             )
             for index in range(5)
@@ -186,6 +191,7 @@ async def test_duplicate_referral_code_is_rejected(storage: Storage) -> None:
             messenger=MessengerKind.TELEGRAM,
             external_id="2",
             referral_code="code1",
+            support_number=support.generate_number(),
             daily_image_quota=3,
         )
 
@@ -438,6 +444,7 @@ async def test_a_created_payment_is_found_by_id(storage: Storage) -> None:
         method="card",
         amount=599,
         currency="RUB",
+        docs_version="2026-08-31",
     )
     found = await storage.get_payment(order.id)
 
@@ -461,6 +468,7 @@ async def test_two_payments_never_share_an_id(storage: Storage) -> None:
         method="card",
         amount=599,
         currency="RUB",
+        docs_version="2026-08-31",
     )
     second = await storage.create_payment(
         user_id=user.id,
@@ -468,6 +476,7 @@ async def test_two_payments_never_share_an_id(storage: Storage) -> None:
         method="card",
         amount=599,
         currency="RUB",
+        docs_version="2026-08-31",
     )
 
     assert first.id != second.id
@@ -481,6 +490,7 @@ async def test_the_provider_id_is_remembered(storage: Storage) -> None:
         method="card",
         amount=299,
         currency="RUB",
+        docs_version="2026-08-31",
     )
 
     await storage.attach_external_id(order.id, "2d0a1b")
@@ -499,6 +509,7 @@ async def test_a_payment_is_marked_paid_once(storage: Storage) -> None:
         method="stars",
         amount=524,
         currency="XTR",
+        docs_version="2026-08-31",
     )
 
     assert await storage.mark_paid(order.id) is True
@@ -528,6 +539,7 @@ async def test_concurrent_confirmations_grant_only_once(storage: Storage) -> Non
         method="card",
         amount=1490,
         currency="RUB",
+        docs_version="2026-08-31",
     )
 
     results = await asyncio.gather(*(storage.mark_paid(order.id) for _ in range(10)))
@@ -548,6 +560,7 @@ async def test_one_provider_payment_cannot_close_two_orders(storage: Storage) ->
         method="card",
         amount=599,
         currency="RUB",
+        docs_version="2026-08-31",
     )
     second = await storage.create_payment(
         user_id=user.id,
@@ -555,6 +568,7 @@ async def test_one_provider_payment_cannot_close_two_orders(storage: Storage) ->
         method="card",
         amount=599,
         currency="RUB",
+        docs_version="2026-08-31",
     )
 
     assert await storage.attach_external_id(first.id, "2d0a1b") is True

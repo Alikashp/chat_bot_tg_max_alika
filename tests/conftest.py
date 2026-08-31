@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from app.adapters.storage.memory import InMemoryStorage
+from app.core import support
 from app.core.models import Chat, MessengerKind, User
 from app.core.scenarios.deps import Deps, Session
 from app.core.settings import CoreSettings
@@ -76,7 +77,13 @@ def clock() -> FrozenClock:
 
 @pytest.fixture
 def settings() -> CoreSettings:
-    return CoreSettings(bot_username="testbot")
+    return CoreSettings(
+        bot_username="testbot",
+        # Оплата не показывается, пока документы не опубликованы, — как и в бою.
+        offer_url="https://telegra.ph/offer",
+        privacy_url="https://telegra.ph/privacy",
+        docs_version="2026-08-31",
+    )
 
 
 @pytest.fixture
@@ -112,6 +119,7 @@ async def user(storage: InMemoryStorage) -> User:
         messenger=MessengerKind.TELEGRAM,
         external_id="1",
         referral_code="code1",
+        support_number=support.generate_number(),
         daily_image_quota=3,
     )
 

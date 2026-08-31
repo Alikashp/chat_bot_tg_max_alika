@@ -75,6 +75,7 @@ class InMemoryStorage:
         messenger: MessengerKind,
         external_id: str,
         referral_code: str,
+        support_number: int,
         daily_image_quota: int,
         referred_by: UserId | None = None,
     ) -> User:
@@ -84,6 +85,10 @@ class InMemoryStorage:
             return self._users[existing]
         if referral_code in self._by_referral_code:
             raise ValueError(f"реферальный код {referral_code} уже занят")
+        if any(
+            other.support_number == support_number for other in self._users.values()
+        ):
+            raise ValueError(f"номер {support_number} уже занят")
 
         user = User(
             id=UserId(next(self._ids)),
@@ -91,6 +96,7 @@ class InMemoryStorage:
             external_id=external_id,
             tariff=TariffId.FREE,
             referral_code=referral_code,
+            support_number=support_number,
             created_at=self._now(),
             daily_image_quota=daily_image_quota,
             referred_by=referred_by,
@@ -184,6 +190,7 @@ class InMemoryStorage:
         method: str,
         amount: int,
         currency: str,
+        docs_version: str,
     ) -> Payment:
         payment = Payment(
             id=str(uuid4()),
@@ -194,6 +201,7 @@ class InMemoryStorage:
             currency=currency,
             status=PaymentStatus.PENDING.value,
             created_at=self._now(),
+            docs_version=docs_version,
         )
         self._payments[payment.id] = payment
         return payment

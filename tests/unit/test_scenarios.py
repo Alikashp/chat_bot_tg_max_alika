@@ -478,7 +478,10 @@ async def test_the_profile_shows_the_number_where_it_is_needed(
 
     await profile.show(with_number, session)
 
-    assert f"Твой номер: {int(session.user.id)}" in messenger.last_text.text
+    assert f"Твой номер: {session.user.support_number}" in messenger.last_text.text
+    # Не внутренний идентификатор строки: по нему было бы видно, сколько
+    # всего людей в сервисе.
+    assert session.user.support_number != int(session.user.id)
 
 
 async def test_the_profile_hides_the_number_where_it_is_not(

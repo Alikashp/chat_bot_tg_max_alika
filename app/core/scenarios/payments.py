@@ -39,27 +39,37 @@ _STARS = "XTR"
 
 
 async def choose_method(deps: Deps, session: Session, tariff_id: TariffId) -> None:
-    """Спрашивает, чем платить.
+    """Показывает, что покупается, за сколько и на каких условиях.
 
-    Способы перечисляются по тому, какие вообще есть: карта настраивается
-    ключами провайдера, звёзды бывают только в Telegram. Если не настроено
-    ничего — честная заглушка вместо выбора из пустого списка.
+    Экран показывается всегда — даже когда способ оплаты один. Раньше в этом
+    случае мы сразу выставляли счёт, экономя человеку нажатие; теперь нельзя:
+    это единственное место, где до списания денег видно условия и ссылки на
+    них. Одно нажатие дешевле, чем деньги, взятые без показанной оферты.
     """
+    if not deps.settings.documents_ready:
+        # Документы не опубликованы. Брать деньги, не показав условия, нельзя
+        # ни юридически, ни по-человечески.
+        deps.logger.warning("payment_documents_missing", user_id=int(session.user.id))
+        await _payments_not_ready(deps, session)
+        return
+
     stars = _stars_price(deps, tariff_id) if deps.stars is not None else None
     if deps.cards is None and stars is None:
         await _payments_not_ready(deps, session)
         return
 
-    if deps.cards is None:
-        # Единственный способ — не выбор. Не заставляем нажимать лишний раз.
-        await start_stars(deps, session, tariff_id)
-        return
-
     screen = texts.payment_methods(
-        tariff_id, days=deps.settings.subscription_days, stars=stars
+        tariff_id,
+        days=deps.settings.subscription_days,
+        cards=deps.cards is not None,
+        stars=stars,
     )
     await deps.messenger.send_text(
-        session.chat, screen.text, keyboard=_method_keyboard(tariff_id, stars=stars)
+        session.chat,
+        screen.text,
+        keyboard=_method_keyboard(
+            deps, tariff_id, cards=deps.cards is not None, stars=stars
+        ),
     )
 
 
@@ -70,10 +80,11 @@ async def start_card(deps: Deps, session: Session, tariff_id: TariffId) -> None:
         return
 
     tariff = tariff_of(tariff_id)
-    order = await deps.storage.create_payment(
-        user_id=session.user.id,
-        tariff=tariff_id,
-        method=PaymentMethod.CARD.value,
+    order = await _open_order(
+        deps,
+        session,
+        tariff_id,
+        method=PaymentMethod.CARD,
         amount=tariff.price_rub,
         currency=_RUB,
     )
@@ -128,10 +139,11 @@ async def start_stars(deps: Deps, session: Session, tariff_id: TariffId) -> None
         return
 
     stars = _stars_price(deps, tariff_id)
-    order = await deps.storage.create_payment(
-        user_id=session.user.id,
-        tariff=tariff_id,
-        method=PaymentMethod.STARS.value,
+    order = await _open_order(
+        deps,
+        session,
+        tariff_id,
+        method=PaymentMethod.STARS,
         amount=stars,
         currency=_STARS,
     )
@@ -220,8 +232,10 @@ async def confirm(deps: Deps, order_id: str) -> Payment | None:
     deps.logger.info(
         "payment_confirmed",
         user_id=int(order.user_id),
+        payment_id=order.id,
         tariff=order.tariff.value,
         method=order.method,
+        docs_version=order.docs_version,
     )
     return replace(order, paid_at=deps.now())
 
@@ -266,6 +280,41 @@ def _new_expiry(
     return now + days
 
 
+async def _open_order(
+    deps: Deps,
+    session: Session,
+    tariff_id: TariffId,
+    *,
+    method: PaymentMethod,
+    amount: int,
+    currency: str,
+) -> Payment:
+    """Заводит заказ и записывает согласие с документами.
+
+    Запись двойная и намеренно. В заказе версия документов живёт пять лет —
+    столько же, сколько данные о платежах; в логе она оказывается сразу, с
+    отметкой времени, и туда же попадает всё остальное, чем потом придётся
+    объясняться: кто, когда, за что и по какой редакции.
+    """
+    order = await deps.storage.create_payment(
+        user_id=session.user.id,
+        tariff=tariff_id,
+        method=method.value,
+        amount=amount,
+        currency=currency,
+        docs_version=deps.settings.docs_version,
+    )
+    deps.logger.info(
+        "consent_accepted",
+        user_id=int(session.user.id),
+        payment_id=order.id,
+        docs_version=deps.settings.docs_version,
+        tariff=tariff_id.value,
+        method=method.value,
+    )
+    return order
+
+
 def _stars_price(deps: Deps, tariff_id: TariffId) -> int:
     return stars_price(
         tariff_of(tariff_id),
@@ -274,21 +323,35 @@ def _stars_price(deps: Deps, tariff_id: TariffId) -> int:
     )
 
 
-def _method_keyboard(tariff_id: TariffId, *, stars: int | None) -> Keyboard:
-    buttons = [
-        Button(
-            text=texts.BUTTON_PAY_CARD,
-            action=method_action(PaymentMethod.CARD.value, tariff_id.value),
+def _method_keyboard(
+    deps: Deps, tariff_id: TariffId, *, cards: bool, stars: int | None
+) -> Keyboard:
+    """Кнопки оплаты, а под ними — ссылки на документы.
+
+    Ссылки отдельным рядом: они не действие, а то, с чем можно свериться
+    перед действием, и ставить их в один ряд с «оплатить» значило бы
+    приглашать промахнуться.
+    """
+    pay: list[Button] = []
+    if cards:
+        pay.append(
+            Button(
+                text=texts.BUTTON_PAY_CARD,
+                action=method_action(PaymentMethod.CARD.value, tariff_id.value),
+            )
         )
-    ]
     if stars is not None:
-        buttons.append(
+        pay.append(
             Button(
                 text=texts.BUTTON_PAY_STARS,
                 action=method_action(PaymentMethod.STARS.value, tariff_id.value),
             )
         )
-    return Keyboard.row(*buttons)
+    documents = (
+        Button(text=texts.BUTTON_OFFER, url=deps.settings.offer_url),
+        Button(text=texts.BUTTON_PRIVACY, url=deps.settings.privacy_url),
+    )
+    return Keyboard(rows=(tuple(pay), documents))
 
 
 async def _payments_not_ready(deps: Deps, session: Session) -> None:

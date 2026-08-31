@@ -13,13 +13,14 @@ from __future__ import annotations
 
 from datetime import timedelta
 
-from app.core import referral, texts
+from app.core import referral, support, texts
 from app.core.models import Chat, MessengerKind, User
 from app.core.scenarios.deps import Deps, Session
 
-#: Сколько попыток подобрать незанятый реферальный код. Коллизия на 10^12
-#: вариантов маловероятна, но «маловероятно» и «невозможно» — разные вещи,
-#: а падение на регистрации стоит нам пользователя.
+#: Сколько попыток подобрать незанятые код и номер. Коллизия маловероятна,
+#: но «маловероятно» и «невозможно» — разные вещи, а падение на регистрации
+#: стоит нам пользователя. Номер шестизначный, и его пространство куда
+#: скромнее кодового, так что запас попыток нужен именно ему.
 _CODE_ATTEMPTS = 5
 
 #: Окно, за которое считается суточный лимит наград (§2.7).
@@ -84,6 +85,7 @@ async def _create_user(
                 messenger=messenger,
                 external_id=external_id,
                 referral_code=referral.generate_code(),
+                support_number=support.generate_number(),
                 daily_image_quota=quota,
             )
         except ValueError as error:

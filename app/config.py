@@ -214,6 +214,16 @@ class Settings(BaseSettings):
     #: На сколько дней выдаётся подписка после оплаты.
     subscription_days: Annotated[int, Field(ge=1, le=366)] = 30
 
+    #: Адреса опубликованных оферты и политики обработки данных.
+    #: Пока не заданы, оплата в боте не показывается вовсе: брать деньги, не
+    #: показав условия, нельзя.
+    offer_url: str = ""
+    privacy_url: str = ""
+
+    #: Редакция документов — например, «2026-08-31». Пишется в заказ и в лог,
+    #: чтобы потом было видно, с чем именно человек соглашался.
+    docs_version: str = ""
+
     #: Наценка на оплату звёздами (§2.8: на 40% выше).
     stars_markup: Annotated[float, Field(ge=1.0, le=3.0)] = 1.4
 
@@ -276,6 +286,11 @@ class Settings(BaseSettings):
     @property
     def max_webhook_url(self) -> str:
         return f"{str(self.public_url).rstrip('/')}{self.max_webhook_path}"
+
+    @property
+    def documents_ready(self) -> bool:
+        """Опубликованы ли оферта и политика. Без них оплата не показывается."""
+        return bool(self.offer_url and self.privacy_url and self.docs_version)
 
     @property
     def cards_enabled(self) -> bool:

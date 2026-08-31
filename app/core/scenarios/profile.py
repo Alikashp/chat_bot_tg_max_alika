@@ -24,7 +24,9 @@ async def show(deps: Deps, session: Session) -> None:
         messages_limit=daily_messages(session.tariff),
         images_left=images.total_left,
         friends=friends,
-        user_number=(int(session.user.id) if deps.settings.show_user_number else None),
+        user_number=(
+            session.user.support_number if deps.settings.show_user_number else None
+        ),
     )
     await deps.messenger.send_text(
         session.chat, screen.text, keyboard=keyboards.profile()

@@ -325,7 +325,12 @@ async def harness() -> AsyncIterator[Harness]:
         messenger=TelegramMessenger(bot),
         llm=llm,
         images=images,
-        settings=CoreSettings(bot_username="testbot"),
+        settings=CoreSettings(
+            bot_username="testbot",
+            offer_url="https://telegra.ph/offer",
+            privacy_url="https://telegra.ph/privacy",
+            docs_version="2026-08-31",
+        ),
         logger=logger,
         guard=FloodGuard(limit=1),
         cards=cards,
@@ -670,7 +675,8 @@ async def test_paying_with_stars_turns_the_tariff_on(started: Harness) -> None:
     ли заказ по payload, выдан ли тариф ровно один раз.
     """
     await started.press(buy_action(TariffId.PRO.value))
-    assert "Чем платим?" in started.texts_said()[0]
+    # Условия показаны до денег, со ссылками на документы.
+    assert texts.CONSENT in started.texts_said()[0]
     started.forget()
 
     await started.press(method_action(PaymentMethod.STARS.value, TariffId.PRO.value))

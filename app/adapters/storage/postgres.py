@@ -117,6 +117,7 @@ class PostgresStorage:
         messenger: MessengerKind,
         external_id: str,
         referral_code: str,
+        support_number: int,
         daily_image_quota: int,
         referred_by: UserId | None = None,
     ) -> User:
@@ -127,6 +128,7 @@ class PostgresStorage:
                 external_id=external_id,
                 tariff=TariffId.FREE.value,
                 referral_code=referral_code,
+                support_number=support_number,
                 created_at=self._now(),
                 daily_image_quota=daily_image_quota,
                 referred_by=referred_by,
@@ -297,6 +299,7 @@ class PostgresStorage:
         method: str,
         amount: int,
         currency: str,
+        docs_version: str,
     ) -> Payment:
         payment = Payment(
             id=str(uuid4()),
@@ -307,6 +310,7 @@ class PostgresStorage:
             currency=currency,
             status=PaymentStatus.PENDING.value,
             created_at=self._now(),
+            docs_version=docs_version,
         )
         async with self._session() as session, session.begin():
             await session.execute(
@@ -319,6 +323,7 @@ class PostgresStorage:
                     currency=currency,
                     status=payment.status,
                     created_at=payment.created_at,
+                    docs_version=docs_version,
                 )
             )
         return payment
@@ -464,6 +469,7 @@ def _to_payment(row: Any) -> Payment:
         created_at=row.created_at,
         external_id=row.external_id,
         paid_at=row.paid_at,
+        docs_version=row.docs_version,
     )
 
 
@@ -475,6 +481,7 @@ def _to_user(row: Any) -> User:
         external_id=row["external_id"],
         tariff=TariffId(row["tariff"]),
         referral_code=row["referral_code"],
+        support_number=row["support_number"],
         created_at=row["created_at"],
         daily_image_quota=row["daily_image_quota"],
         referred_by=None if row["referred_by"] is None else UserId(row["referred_by"]),

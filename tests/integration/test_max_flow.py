@@ -30,7 +30,7 @@ from app.adapters.max import router as max_router
 from app.adapters.max.intake import dedup_key
 from app.adapters.max.messenger import MaxMessenger
 from app.adapters.storage.memory import InMemoryStorage
-from app.core import texts
+from app.core import support, texts
 from app.core.actions import Action, preset_action
 from app.core.limits import current_day
 from app.core.models import MessengerKind
@@ -262,6 +262,9 @@ async def harness() -> AsyncIterator[Harness]:
             referral_link_host=MAX_HOST,
             # Так же собирает настройки MAX и app/main.py.
             show_user_number=True,
+            offer_url="https://telegra.ph/offer",
+            privacy_url="https://telegra.ph/privacy",
+            docs_version="2026-08-31",
         ),
         logger=FakeLogger(),
         guard=FloodGuard(limit=1),
@@ -347,6 +350,7 @@ async def test_a_deeplink_gift_reaches_the_invited_user(harness: Harness) -> Non
         messenger=MessengerKind.MAX,
         external_id="1000",
         referral_code="friend01",
+        support_number=support.generate_number(),
         daily_image_quota=3,
     )
 
@@ -364,7 +368,8 @@ async def test_the_profile_carries_the_support_number(started: Harness) -> None:
     await started.press(Action.MENU_PROFILE)
 
     user = await started.user()
-    assert f"Твой номер: {int(user.id)}" in started.texts_said()[0]
+    assert f"Твой номер: {user.support_number}" in started.texts_said()[0]
+    assert 100_000 <= user.support_number <= 999_999, "номер должен быть случайным"
 
 
 # --- Чат и картинки ------------------------------------------------------

@@ -259,6 +259,9 @@ def build_core_settings(
         stars_markup=settings.stars_markup,
         rub_per_star=settings.rub_per_star,
         subscription_days=settings.subscription_days,
+        offer_url=settings.offer_url,
+        privacy_url=settings.privacy_url,
+        docs_version=settings.docs_version,
     )
 
 
@@ -613,6 +616,7 @@ async def run() -> None:
             "database": "ready",
             "max": "ready" if wiring.max is not None else "not_configured",
             "cards": "ready" if wiring.settlement is not None else "not_configured",
+            "documents": "ready" if settings.documents_ready else "not_configured",
         }
 
     app = create_app(webhooks=webhooks, health=health)

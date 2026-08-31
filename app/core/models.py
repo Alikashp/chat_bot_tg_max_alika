@@ -63,6 +63,9 @@ class User:
     external_id: str
     tariff: TariffId
     referral_code: str
+    #: Номер для поддержки. Случайный: по внутреннему идентификатору строки
+    #: было бы видно, сколько всего людей в сервисе. См. core/support.py.
+    support_number: int
     created_at: datetime
     daily_image_quota: int
     referred_by: UserId | None = None
@@ -96,6 +99,8 @@ class Payment:
     #: Идентификатор платежа у провайдера. Появляется после его создания.
     external_id: str | None = None
     paid_at: datetime | None = None
+    #: Редакция документов, принятая при оформлении заказа.
+    docs_version: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

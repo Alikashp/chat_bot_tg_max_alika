@@ -451,6 +451,8 @@ PAYMENTS_SOON = "Оплата скоро заработает 🙏 А пока �
 BUTTON_PAY_CARD = "💳 Картой"
 BUTTON_PAY_STARS = "⭐ Звёздами"
 BUTTON_PAY_OPEN = "💳 Перейти к оплате"
+BUTTON_OFFER = "📄 Оферта"
+BUTTON_PRIVACY = "🔒 Данные"
 
 
 def tariffs_screen() -> Screen:
@@ -511,22 +513,40 @@ def too_busy() -> Screen:
 # --- Оплата (§2.8) -------------------------------------------------------
 
 
+#: Строка про согласие. Стоит на экране оплаты и нигде больше: именно здесь
+#: человек делает то, что превращает его в сторону договора.
+CONSENT = "Нажимая кнопку оплаты, ты соглашаешься с офертой и политикой данных."
+
+
 def payment_methods(
-    tariff_id: TariffId, *, days: int, stars: int | None = None
+    tariff_id: TariffId,
+    *,
+    days: int,
+    cards: bool = True,
+    stars: int | None = None,
 ) -> Screen:
-    """Выбор способа оплаты. Цена названа сразу, чтобы не было сюрприза."""
+    """Экран оплаты: что покупаем, за сколько и на каких условиях.
+
+    Показывается всегда, даже когда способ оплаты один. Дело не в выборе:
+    это единственное место, где человек видит условия до того, как отдаст
+    деньги, и отсюда же на них ведут ссылки.
+    """
     tariff = TARIFFS[tariff_id]
     lines = [
-        f"{TARIFF_TITLES[tariff_id]} — {_rubles(tariff.price_rub)} ₽ на {_days(days)}.",
-        "Чем платим?",
+        f"{TARIFF_TITLES[tariff_id]} — {_rubles(tariff.price_rub)} ₽ на {_days(days)}."
     ]
-    buttons = [BUTTON_PAY_CARD]
+    buttons = []
+    if cards:
+        buttons.append(BUTTON_PAY_CARD)
     if stars is not None:
         # Про наценку говорим прямо: цену в звёздах человек всё равно увидит
         # на счёте, и лучше он узнает её здесь, чем удивится там.
-        lines.insert(1, f"Звёздами Telegram — {stars} ⭐, чуть дороже.")
+        lines.append(f"Звёздами Telegram — {stars} ⭐, чуть дороже.")
         buttons.append(BUTTON_PAY_STARS)
-    return Screen(text="\n".join(lines), buttons=tuple(buttons))
+    lines.append(CONSENT)
+    return Screen(
+        text="\n".join(lines), buttons=(*buttons, BUTTON_OFFER, BUTTON_PRIVACY)
+    )
 
 
 PAYMENT_LINK = "Оплата откроется по кнопке 👇 После оплаты тариф включится сам."
@@ -690,6 +710,7 @@ def _all_screens() -> tuple[Screen, ...]:
         tariffs_screen(),
         payment_methods(TariffId.PRO, days=30),
         payment_methods(TariffId.PRO, days=30, stars=524),
+        payment_methods(TariffId.PRO, days=30, cards=False, stars=524),
         payment_link(),
         payment_failed(),
         payment_refused(),

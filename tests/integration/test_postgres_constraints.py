@@ -49,12 +49,17 @@ async def _make_users(engine: AsyncEngine, count: int) -> list[int]:
             row = await connection.execute(
                 text(
                     "INSERT INTO users "
-                    "(messenger, external_id, tariff, referral_code, created_at, "
-                    " daily_image_quota) "
-                    "VALUES ('telegram', :ext, 'free', :code, :now, 3) "
+                    "(messenger, external_id, tariff, referral_code, "
+                    " support_number, created_at, daily_image_quota) "
+                    "VALUES ('telegram', :ext, 'free', :code, :number, :now, 3) "
                     "RETURNING id"
                 ),
-                {"ext": str(index), "code": f"code{index}", "now": datetime.now(UTC)},
+                {
+                    "ext": str(index),
+                    "code": f"code{index}",
+                    "number": 100_000 + index,
+                    "now": datetime.now(UTC),
+                },
             )
             ids.append(int(row.scalar_one()))
     return ids
@@ -122,9 +127,9 @@ async def test_same_external_id_twice_in_one_messenger_is_impossible(
             await connection.execute(
                 text(
                     "INSERT INTO users "
-                    "(messenger, external_id, tariff, referral_code, created_at, "
-                    " daily_image_quota) "
-                    "VALUES ('telegram', '0', 'free', 'another', :now, 3)"
+                    "(messenger, external_id, tariff, referral_code, "
+                    " support_number, created_at, daily_image_quota) "
+                    "VALUES ('telegram', '0', 'free', 'another', 900001, :now, 3)"
                 ),
                 {"now": datetime.now(UTC)},
             )
@@ -140,9 +145,9 @@ async def test_the_same_id_in_another_messenger_is_a_different_person(
         await connection.execute(
             text(
                 "INSERT INTO users "
-                "(messenger, external_id, tariff, referral_code, created_at, "
-                " daily_image_quota) "
-                "VALUES ('max', '0', 'free', 'max-code', :now, 3)"
+                "(messenger, external_id, tariff, referral_code, "
+                " support_number, created_at, daily_image_quota) "
+                "VALUES ('max', '0', 'free', 'max-code', 900003, :now, 3)"
             ),
             {"now": datetime.now(UTC)},
         )

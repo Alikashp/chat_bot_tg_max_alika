@@ -59,7 +59,7 @@ from app.infra.server import (
     Webhook,
     create_app,
 )
-from app.ports.payments import StarsPayments
+from app.ports.payments import CardPayments, StarsPayments
 
 logger = get_logger(__name__)
 
@@ -91,6 +91,9 @@ class MaxWiring:
     http: httpx.AsyncClient
     deps: Deps
     handle: Callable[[dict[str, Any]], Awaitable[None]]
+    #: Клиенты, заведённые под MAX помимо ``http``: у его магазина ЮKassa
+    #: свой. Закрывать их надо вместе со всеми остальными.
+    http_clients: tuple[httpx.AsyncClient, ...] = ()
 
 
 @dataclass(slots=True)
@@ -118,6 +121,11 @@ def _payment_notice_key(notification: dict[str, Any]) -> str | None:
     """Ключ дедупликации уведомления об оплате — наш идентификатор заказа."""
     order_id = order_id_of(notification)
     return f"yk:{order_id}" if order_id is not None else None
+
+
+def _ready(configured: bool) -> str:
+    """Как /health называет настроенное и ненастроенное."""
+    return "ready" if configured else "not_configured"
 
 
 def _utc_now() -> datetime:
@@ -216,15 +224,33 @@ def build_providers(
 
 
 def build_cards(
-    settings: Settings, *, return_url: str
+    settings: Settings,
+    *,
+    messenger: MessengerKind,
+    return_url: str,
 ) -> tuple[YooKassaPayments | None, httpx.AsyncClient | None]:
-    """Провайдер оплаты картой, если он настроен.
+    """Провайдер оплаты картой для одного мессенджера, если он настроен.
 
-    Без ключей возвращает None: бот при этом работает, но платить можно
-    только звёздами, а без них — честная заглушка «оплата скоро».
+    Магазин у каждого мессенджера свой: ЮKassa регистрирует приложения по
+    отдельности, и у бота в MAX собственные идентификатор и ключ. Подставить
+    один вместо другого нельзя — деньги ушли бы в чужой магазин, — поэтому
+    ненастроенный магазин означает ровно то, что означает: картой здесь не
+    платят. Бот при этом работает: в Telegram остаются звёзды, в MAX —
+    честная заглушка «оплата скоро».
     """
-    if not settings.cards_enabled:
-        logger.info("cards_not_configured")
+    if messenger is MessengerKind.MAX:
+        enabled = settings.max_cards_enabled
+        shop_id = settings.max_yookassa_shop_id
+        secret_key = settings.max_yookassa_secret_key
+        recurring = settings.max_yookassa_recurring
+    else:
+        enabled = settings.cards_enabled
+        shop_id = settings.yookassa_shop_id
+        secret_key = settings.yookassa_secret_key
+        recurring = settings.yookassa_recurring
+
+    if not enabled:
+        logger.info("cards_not_configured", messenger=messenger.value)
         return None, None
 
     client = create_client(settings.yookassa_timeout_seconds)
@@ -232,13 +258,14 @@ def build_cards(
         YooKassaPayments(
             client,
             base_url=settings.yookassa_base_url,
-            shop_id=settings.yookassa_shop_id,
-            secret_key=settings.yookassa_secret_key,
+            shop_id=shop_id,
+            secret_key=secret_key,
             return_url=return_url,
-            # Автоплатежи включаются в кабинете ЮKassa отдельно. Пока их нет,
-            # оплата картой остаётся разовой — и на экране заказа так и
-            # написано: обещать продление, которого не будет, нельзя.
-            recurring=settings.yookassa_recurring,
+            # Автоплатежи включаются в кабинете ЮKassa отдельно и каждому
+            # магазину свои. Пока их нет, оплата картой остаётся разовой — и
+            # на экране заказа так и написано: обещать продление, которого не
+            # будет, нельзя.
+            recurring=recurring,
         ),
         client,
     )
@@ -298,6 +325,7 @@ async def build_wiring(settings: Settings) -> Wiring:
     # Возвращаем человека в переписку с ботом, а не на посторонний сайт.
     cards, cards_client = build_cards(
         settings,
+        messenger=MessengerKind.TELEGRAM,
         return_url=settings.yookassa_return_url or f"{TELEGRAM_HOST}/{me.username}",
     )
     if cards_client is not None:
@@ -308,6 +336,7 @@ async def build_wiring(settings: Settings) -> Wiring:
         core_settings: CoreSettings,
         *,
         stars: StarsPayments | None = None,
+        cards: CardPayments | None = cards,
     ) -> Deps:
         """Одни и те же зависимости, разный мессенджер и его настройки."""
         return Deps(
@@ -331,6 +360,8 @@ async def build_wiring(settings: Settings) -> Wiring:
     )
 
     max_wiring = await _build_max(settings, build_deps)
+    if max_wiring is not None and max_wiring.http_clients:
+        http_clients = (*http_clients, *max_wiring.http_clients)
 
     by_messenger = {MessengerKind.TELEGRAM: deps}
     if max_wiring is not None:
@@ -343,25 +374,30 @@ async def build_wiring(settings: Settings) -> Wiring:
         http_clients=http_clients,
         max=max_wiring,
         settlement=(
-            _build_settlement(cards, by_messenger) if cards is not None else None
+            _build_settlement(by_messenger)
+            if any(each.cards is not None for each in by_messenger.values())
+            else None
         ),
         billing=Billing(by_messenger=by_messenger, batch=settings.billing_batch),
     )
 
 
-def _build_settlement(
-    cards: YooKassaPayments,
-    by_messenger: dict[MessengerKind, Deps],
-) -> Settlement:
+def _build_settlement(by_messenger: dict[MessengerKind, Deps]) -> Settlement:
     """Приём уведомлений об оплате картой.
 
     Уведомление здесь — только повод переспросить: статус читается у ЮKassa
     нашим ключом. Иначе любой, кто узнал адрес вебхука, выдавал бы себе
     подписки: их уведомления не подписаны ничем.
 
-    Отвечать человеку надо в тот мессенджер, из которого он пришёл, поэтому
-    зависимости выбираются по самому пользователю, а не по тому, куда
-    постучались.
+    Отсюда и порядок действий. Сначала по заказу находится человек, по
+    человеку — его мессенджер, а по мессенджеру — тот самый магазин, в
+    котором он платил: магазины у Telegram и MAX разные, и спросить чужим
+    ключом про чужой платёж значит получить «нет такого» и не выдать
+    оплаченный тариф. В тот же мессенджер уходит и ответ — отвечать надо
+    туда, откуда человек пришёл, а не туда, откуда постучались.
+
+    Оба магазина шлют уведомления на один адрес, и различать их незачем:
+    заказ называет себя сам, а всё остальное мы выясняем у провайдера.
     """
     any_deps = next(iter(by_messenger.values()))
 
@@ -376,21 +412,27 @@ def _build_settlement(
             logger.warning("payment_notice_unknown_order")
             return
 
-        if not await cards.is_paid(order.external_id, expected_rub=order.amount):
-            logger.info("payment_notice_not_paid")
-            return
-
         user = await any_deps.storage.get_user_by_id(order.user_id)
         if user is None:
             logger.error("payment_user_missing", user_id=int(order.user_id))
             return
 
         deps = by_messenger.get(user.messenger)
-        if deps is None:
-            # Человек пришёл из мессенджера, который сейчас выключен. Тариф
-            # всё равно выдаём — деньги получены; не скажем только об этом.
-            logger.warning("payment_messenger_disabled", user_id=int(user.id))
-            deps = any_deps
+        if deps is None or deps.cards is None:
+            # Мессенджер выключен или карта в нём не настроена. Проверить
+            # оплату нечем: ключ от магазина живёт вместе с мессенджером.
+            # Выдавать тариф по одному уведомлению нельзя — оно ничего не
+            # доказывает, — поэтому оставляем заказ ждать и пишем в лог.
+            logger.error(
+                "payment_notice_without_provider",
+                user_id=int(user.id),
+                messenger=user.messenger.value,
+            )
+            return
+
+        if not await deps.cards.is_paid(order.external_id, expected_rub=order.amount):
+            logger.info("payment_notice_not_paid")
+            return
 
         confirmed = await payments.confirm(deps, order_id)
         if confirmed is None:
@@ -403,7 +445,7 @@ def _build_settlement(
 
 async def _build_max(
     settings: Settings,
-    build_deps: Callable[[Any, CoreSettings], Deps],
+    build_deps: Callable[..., Deps],
 ) -> MaxWiring | None:
     """Собирает MAX-бота, если он настроен.
 
@@ -437,6 +479,16 @@ async def _build_max(
     logger.info("max_bot_identified", bot_id=me.user_id)
 
     http = create_client(settings.max_api_timeout_seconds)
+
+    # Магазин ЮKassa у MAX свой: ЮKassa регистрирует приложения по
+    # отдельности. Телеграмный сюда не подставляем ни при каких условиях —
+    # деньги ушли бы в чужой магазин, а человек об этом не узнал бы.
+    cards, cards_client = build_cards(
+        settings,
+        messenger=MessengerKind.MAX,
+        return_url=(settings.max_yookassa_return_url or f"{MAX_HOST}/{me.username}"),
+    )
+
     deps = build_deps(
         MaxMessenger(bot, http),
         build_core_settings(
@@ -447,12 +499,19 @@ async def _build_max(
             # написавшего в поддержку нечем.
             show_user_number=True,
         ),
+        cards=cards,
     )
 
     async def handle(raw_update: dict[str, Any]) -> None:
         await max_router.handle_update(deps, raw_update)
 
-    return MaxWiring(bot=bot, http=http, deps=deps, handle=handle)
+    return MaxWiring(
+        bot=bot,
+        http=http,
+        deps=deps,
+        handle=handle,
+        http_clients=() if cards_client is None else (cards_client,),
+    )
 
 
 async def _register_webhook(bot: Bot, settings: Settings) -> None:
@@ -618,9 +677,13 @@ async def run() -> None:
             "dedup_keys": len(dedup),
             "database": "ready",
             "max": "ready" if wiring.max is not None else "not_configured",
-            "cards": "ready" if wiring.settlement is not None else "not_configured",
-            "documents": "ready" if settings.documents_ready else "not_configured",
-            "recurring": "ready" if settings.yookassa_recurring else "not_configured",
+            # Магазины ЮKassa у мессенджеров разные, и настроить их можно
+            # порознь — значит и показывать надо порознь.
+            "cards": _ready(settings.cards_enabled),
+            "cards_max": _ready(settings.max_cards_enabled and wiring.max is not None),
+            "documents": _ready(settings.documents_ready),
+            "recurring": _ready(settings.yookassa_recurring),
+            "recurring_max": _ready(settings.max_yookassa_recurring),
         }
 
     app = create_app(webhooks=webhooks, health=health)

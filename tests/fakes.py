@@ -292,6 +292,9 @@ class FakeCards:
     def __init__(self, *, recurring: bool = False) -> None:
         self.created: list[tuple[str, int]] = []
         self.charged: list[tuple[str, int, str]] = []
+        #: О каких платежах спрашивали «оплачено ли». Нужен там, где важно
+        #: не только что спросили, а у кого именно.
+        self.asked: list[str] = []
         self.error: Exception | None = None
         #: Умеет ли провайдер повторные списания.
         self.recurring = recurring
@@ -342,6 +345,7 @@ class FakeCards:
         return self.saved_method
 
     async def is_paid(self, external_id: str, *, expected_rub: int) -> bool:
+        self.asked.append(external_id)
         return self.paid
 
 

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -33,7 +34,7 @@ from app.adapters.storage.memory import InMemoryStorage
 from app.core import support, texts
 from app.core.actions import Action, preset_action
 from app.core.limits import current_day
-from app.core.models import MessengerKind
+from app.core.models import MessengerKind, TariffId
 from app.core.referral import MAX_HOST
 from app.core.scenarios.deps import Deps
 from app.core.settings import CoreSettings
@@ -450,6 +451,38 @@ async def test_a_preset_applies_to_a_photo(started: Harness) -> None:
     await started.send_photo()
 
     assert started.images.edited, "фото не ушло провайдеру"
+    assert started.bot.edits[-1].images, "результат не заменил ожидание"
+
+
+async def test_a_locked_preset_leads_to_the_tariffs(started: Harness) -> None:
+    """Замок в MAX работает так же: платят тут через ЮKassa, а не звёздами."""
+    await started.press(preset_action("figurine"))
+
+    assert started.texts_said()[-1] == texts.PRESET_LOCKED
+
+
+async def test_two_photos_survive_a_link_full_of_colons(started: Harness) -> None:
+    """Ссылка на фото в MAX — обычный адрес, и она уезжает в ожидание целиком.
+
+    Настоящий случай, который в Telegram не проверить: там file_id не
+    содержит ни двоеточий, ни косых черт, а здесь их полно.
+    """
+    await started.storage.set_tariff(
+        (await started.user()).id,
+        TariffId.LITE,
+        expires_at=datetime(2026, 12, 1, tzinfo=UTC),
+    )
+    adult = "https://cdn.max.ru/photo/1?sig=ab%2Fcd:1&expires=1780000000"
+    child = "https://cdn.max.ru/photo/2?sig=ef%2Fgh:2&expires=1780000000"
+
+    await started.press(preset_action("polaroid_child"))
+    await started.send_photo(adult)
+    assert started.images.edited == [], "работать ещё нечем: снимок один"
+    assert started.texts_said()[-1] == "Отлично. Теперь кинь детское фото 👶"
+
+    await started.send_photo(child)
+    assert len(started.images.edited) == 1, "два снимка — один запрос провайдеру"
+    assert len(started.images.edited_sources[0]) == 2
     assert started.bot.edits[-1].images, "результат не заменил ожидание"
 
 

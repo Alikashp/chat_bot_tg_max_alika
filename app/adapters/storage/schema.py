@@ -48,7 +48,10 @@ users = Table(
     Column("bonus_images", Integer, nullable=False, server_default="0"),
     Column("tariff_expires_at", DateTime(timezone=True), nullable=True),
     # Чего бот ждёт от пользователя следующим сообщением (см. core/pending.py).
-    Column("pending", String(64), nullable=True),
+    # Text, а не String: у приколов с двумя фото ожидание несёт ещё и ссылки
+    # на уже присланные снимки, а ссылка в MAX — это http-адрес, и его длину
+    # задаём не мы.
+    Column("pending", Text, nullable=True),
     # Что повторить по кнопке «Ещё раз» (см. core/retry_context.py).
     # Text, а не String: внутри лежит описание картинки, а оно бывает
     # длиной в абзац.

@@ -56,23 +56,26 @@ def _context(session: Session, expected: RetryKind) -> RetryContext | None:
 
 
 async def _repeat_preset(deps: Deps, session: Session, context: RetryContext) -> None:
-    """Применяет тот же прикол к тому же фото."""
+    """Применяет тот же прикол к тем же фото."""
     preset = (
         registry.PRESETS.get(context.preset_id)
         if context.preset_id is not None
         else None
     )
-    if preset is None or context.source_photo is None:
-        # Пресет из контекста могли убрать из реестра между версиями, а фото
-        # у мессенджера — протухнуть. Отправлять человека в тупик нельзя:
-        # показываем меню приколов, оттуда всё доступно.
+    if preset is None or len(context.source_photos) != preset.photos_required:
+        # Пресет из контекста могли убрать из реестра между версиями или
+        # переделать под другое число снимков. Отправлять человека в тупик
+        # нельзя: показываем меню приколов, оттуда всё доступно.
         await presets.show_menu(deps, session)
         return
 
-    photo = await deps.messenger.download_photo(
-        context.source_photo, max_bytes=deps.settings.max_photo_bytes
-    )
-    await presets.apply(deps, session, preset, photo, context.source_photo)
+    photos = await presets.download_sources(deps, session, context.source_photos)
+    if photos is None:
+        # Ссылка у мессенджера протухла. Сценарий уже сказал об этом человеку
+        # и показал, с чего начать заново, — падать тут нечему.
+        return
+
+    await presets.apply(deps, session, preset, photos, context.source_photos)
 
 
 async def _nothing_to_repeat(deps: Deps, session: Session) -> None:

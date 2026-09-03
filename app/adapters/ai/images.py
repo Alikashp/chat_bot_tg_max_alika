@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from base64 import b64decode
 from binascii import Error as Base64Error
+from collections.abc import Sequence
 from typing import Any
 
 import httpx
@@ -75,12 +76,12 @@ class OpenAIImages:
         return _to_photo(await self._caller.call(call))
 
     async def edit(
-        self, source: Photo, instruction: str, *, quality: ImageQuality
+        self, sources: Sequence[Photo], instruction: str, *, quality: ImageQuality
     ) -> Photo:
-        """Переделывает присланное фото по инструкции.
+        """Переделывает присланные фото по инструкции.
 
-        Отправляется multipart, а не JSON: Images API принимает исходное
-        изображение файлом. Заголовок Content-Type не выставляем — httpx сам
+        Отправляется multipart, а не JSON: Images API принимает исходные
+        изображения файлами. Заголовок Content-Type не выставляем — httpx сам
         соберёт его вместе с границей раздела частей.
 
         Два параметра отличают правку от рисования заново, и оба здесь
@@ -94,10 +95,14 @@ class OpenAIImages:
         ``size`` для правки — «auto», то есть пропорции исходника. Фиксированный
         квадрат означал бы, что портретный снимок с телефона модель
         перекомпонует под 1:1, а вместе с кадром переедет и лицо.
+
+        Порядок ``sources`` уезжает провайдеру как есть: инструкция ссылается
+        на снимки по номерам, а детали первого он вытягивает сильнее прочих.
         """
-        files = {
-            "image": (source.filename, source.data, source.mime_type),
-        }
+        if not sources:
+            raise ValueError("нужно хотя бы одно исходное фото")
+
+        files = _files(sources)
         data = {
             "model": self._model,
             "prompt": instruction,
@@ -122,6 +127,31 @@ class OpenAIImages:
             )
 
         return _to_photo(await self._caller.call(call))
+
+
+def _files(sources: Sequence[Photo]) -> list[tuple[str, tuple[str, bytes, str]]]:
+    """Части multipart с исходными фото.
+
+    Одно фото уходит полем ``image``, несколько — полем ``image[]``. Images API
+    принимает массив и под коротким именем, но одиночный запрос — это все
+    приколы, кроме одного, и путь у них остаётся ровно тот, что уже работает
+    в бою. Менять его ради единообразия значило бы проверять на пользователях
+    то, что и так проверено.
+
+    Имена частей при этом нумеруются. Из MAX оба снимка приезжают под одним и
+    тем же ``photo.jpg``, а между нами и Images API стоит шлюз, про разбор
+    внутри которого мы ничего не знаем. Одинаковые имена — единственное, чем
+    он мог бы склеить две части в одну, и человек получил бы полароид, на
+    котором он дважды взрослый.
+    """
+    if len(sources) == 1:
+        first = sources[0]
+        return [("image", (first.filename, first.data, first.mime_type))]
+
+    return [
+        ("image[]", (f"{number}-{source.filename}", source.data, source.mime_type))
+        for number, source in enumerate(sources, start=1)
+    ]
 
 
 def _to_photo(payload: dict[str, Any]) -> Photo:

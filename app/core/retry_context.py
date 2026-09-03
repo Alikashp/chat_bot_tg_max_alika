@@ -38,8 +38,11 @@ class RetryContext:
     prompt: str = ""
     #: Какой прикол применяли.
     preset_id: str | None = None
-    #: Исходное фото пользователя — чтобы применить прикол ещё раз.
-    source_photo: str | None = None
+    #: Исходные фото пользователя — чтобы применить прикол ещё раз. Порядок
+    #: тот же, в каком они уезжали провайдеру: у «я и я в детстве» первым
+    #: идёт взрослый снимок, и поменять их местами значит получить другой
+    #: результат.
+    source_photos: tuple[str, ...] = ()
     #: Готовая картинка — чтобы переслать её с подписью и ссылкой.
     result_photo: str | None = None
 
@@ -77,10 +80,26 @@ def decode(raw: str | None) -> RetryContext | None:
         kind=kind,
         prompt=_text(payload.get("prompt")) or "",
         preset_id=_text(payload.get("preset_id")),
-        source_photo=_text(payload.get("source_photo")),
+        source_photos=_photos(payload),
         result_photo=_text(payload.get("result_photo")),
     )
 
 
 def _text(value: object) -> str | None:
     return value if isinstance(value, str) and value else None
+
+
+def _photos(payload: dict[str, object]) -> tuple[str, ...]:
+    """Исходные фото из записи любого возраста.
+
+    Пока прикол работал с одним снимком, поле называлось source_photo и было
+    строкой. Записи в этом виде лежат у всех, кто хоть раз пользовался
+    приколами, и терять их незачем: человек нажмёт «Ещё раз» под картинкой,
+    которую получил вчера, и кнопка обязана сработать.
+    """
+    stored = payload.get("source_photos")
+    if isinstance(stored, list):
+        return tuple(ref for ref in stored if isinstance(ref, str) and ref)
+
+    single = _text(payload.get("source_photo"))
+    return (single,) if single is not None else ()

@@ -76,6 +76,27 @@ def preset_result() -> Keyboard:
     )
 
 
+def preset_cancel() -> Keyboard:
+    """Отмена на шаге «пришли ещё одно фото» (§2.4).
+
+    Действие то же, что у «Другого прикола»: и то и другое забывает
+    собранные снимки и возвращает к списку. Отдельного действия здесь нет
+    намеренно — оно вело бы ровно на тот же экран, а два имени у одного
+    поведения расходятся на первой же правке. Разная у кнопок только
+    подпись, и это как раз то, что человеку нужно: на середине сбора фото
+    он ищет глазами «Отмена», а не «Другой прикол».
+    """
+    return Keyboard.row(Button(text=texts.BUTTON_CANCEL, action=Action.PRESET_ANOTHER))
+
+
+def preset_locked() -> Keyboard:
+    """Прикол под замком: тарифы и возврат к списку. Тупика быть не должно."""
+    return Keyboard.row(
+        Button(text=texts.BUTTON_OPEN_TARIFFS, action=Action.OPEN_TARIFFS),
+        Button(text=texts.BUTTON_ANOTHER_PRESET, action=Action.PRESET_ANOTHER),
+    )
+
+
 def presets_menu(presets: tuple[tuple[str, str], ...]) -> Keyboard:
     """Меню приколов. На вход — пары «подпись, идентификатор» из реестра.
 

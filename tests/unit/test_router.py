@@ -7,13 +7,14 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import UTC, datetime
 
 import pytest
 
 from app.adapters.storage.memory import InMemoryStorage
 from app.core import pending, texts
 from app.core.actions import Action, buy_action, preset_action
-from app.core.models import Chat, IncomingMessage, MessengerKind, User
+from app.core.models import Chat, IncomingMessage, MessengerKind, TariffId, User
 from app.core.router import handle
 from app.core.scenarios.deps import Deps
 from tests.fakes import FakeGuard, FakeImages, FakeLLM, FakeMessenger
@@ -226,6 +227,64 @@ async def test_a_removed_preset_does_not_dead_end(
     await handle(deps, incoming(action=preset_action("no_such_preset")))
 
     assert messenger.texts_said() == [texts.PRESETS_ASK]
+
+
+# --- Прикол из двух фото -------------------------------------------------
+
+
+async def _open_everything(storage: InMemoryStorage, user: User) -> None:
+    """Даёт человеку платный тариф: под замком приколы не проверить."""
+    await storage.set_tariff(
+        user.id, TariffId.LITE, expires_at=datetime(2026, 12, 1, tzinfo=UTC)
+    )
+
+
+async def test_two_photos_reach_the_provider_as_one_request(
+    deps: Deps, user: User, storage: InMemoryStorage, images_: FakeImages
+) -> None:
+    """Два обращения, две закачки, один запрос провайдеру."""
+    await _open_everything(storage, user)
+
+    await handle(deps, incoming(action=preset_action("polaroid_child")))
+    await handle(deps, incoming(photo_ref="adult"))
+    assert images_.edited == []
+
+    await handle(deps, incoming(photo_ref="child"))
+    assert len(images_.edited) == 1
+    assert len(images_.edited_sources[0]) == 2
+
+
+async def test_cancelling_forgets_the_first_photo(
+    deps: Deps,
+    user: User,
+    storage: InMemoryStorage,
+    messenger: FakeMessenger,
+    images_: FakeImages,
+) -> None:
+    """Кнопка «Отмена» ведёт туда же, куда «Другой прикол», — и это её работа."""
+    await _open_everything(storage, user)
+
+    await handle(deps, incoming(action=preset_action("polaroid_child")))
+    await handle(deps, incoming(photo_ref="adult"))
+    await handle(deps, incoming(action=Action.PRESET_ANOTHER))
+
+    assert messenger.texts_said()[-1] == texts.PRESETS_ASK
+
+    # Следующее фото уже не считается вторым снимком отменённого прикола.
+    await handle(deps, incoming(photo_ref="another"))
+    assert images_.edited == []
+
+
+async def test_a_locked_preset_never_starts_collecting(
+    deps: Deps, user: User, messenger: FakeMessenger, images_: FakeImages
+) -> None:
+    """Бесплатный тариф: нажатие ведёт к тарифам, а фото после него — в меню."""
+    await handle(deps, incoming(action=preset_action("polaroid_child")))
+    assert messenger.texts_said()[-1] == texts.PRESET_LOCKED
+
+    await handle(deps, incoming(photo_ref="adult"))
+    assert messenger.texts_said()[-1] == texts.PRESETS_ASK
+    assert images_.edited == []
 
 
 # --- Непонятое -----------------------------------------------------------

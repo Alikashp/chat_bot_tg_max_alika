@@ -13,7 +13,7 @@ from datetime import timedelta
 import pytest
 
 from app.adapters.storage.memory import InMemoryStorage
-from app.core import texts
+from app.core import pending, texts
 from app.core.actions import parse_preset_action
 from app.core.models import Photo, TariffId
 from app.core.scenarios import (
@@ -31,6 +31,18 @@ from config.presets import PRESETS, Preset
 from tests.fakes import PNG_BYTES, FakeImages, FakeLLM, FakeMessenger
 
 PHOTO = Photo(data=PNG_BYTES)
+
+
+def _paid(session: Session) -> Session:
+    """Тот же человек с оплаченным и ещё не истёкшим тарифом."""
+    return replace(
+        session,
+        user=replace(
+            session.user,
+            tariff=TariffId.LITE,
+            tariff_expires_at=session.now + timedelta(days=30),
+        ),
+    )
 
 
 # --- Чат (§2.2) ----------------------------------------------------------
@@ -201,7 +213,7 @@ async def test_preset_works_in_one_step_from_photo_to_result(
     deps: Deps, session: Session, messenger: FakeMessenger
 ) -> None:
     """§2.4: кинул фото → получил результат. Никаких уточнений."""
-    await presets.apply(deps, session, PRESETS["lego"], PHOTO)
+    await presets.apply(deps, session, PRESETS["lego"], [PHOTO])
 
     assert messenger.texts_said() == [texts.PRESET_WORKING]
     assert len(messenger.photo_edits) == 1
@@ -210,7 +222,7 @@ async def test_preset_works_in_one_step_from_photo_to_result(
 async def test_preset_result_has_all_three_buttons(
     deps: Deps, session: Session, messenger: FakeMessenger
 ) -> None:
-    await presets.apply(deps, session, PRESETS["bad_day"], PHOTO)
+    await presets.apply(deps, session, PRESETS["bad_day"], [PHOTO])
 
     labels = [
         button.text
@@ -227,18 +239,24 @@ async def test_preset_result_has_all_three_buttons(
 async def test_preset_sends_its_own_instruction_to_the_provider(
     deps: Deps, session: Session, images_: FakeImages
 ) -> None:
-    await presets.apply(deps, session, PRESETS["lego"], PHOTO)
+    await presets.apply(deps, session, PRESETS["lego"], [PHOTO])
 
     instruction, _ = images_.edited[0]
     assert instruction == PRESETS["lego"].instruction
 
 
-@pytest.mark.parametrize("preset_id", ["lego", "bad_day"])
-async def test_both_presets_from_the_brief_work(
+@pytest.mark.parametrize("preset_id", list(PRESETS))
+async def test_every_preset_in_the_registry_works(
     deps: Deps, session: Session, messenger: FakeMessenger, preset_id: str
 ) -> None:
-    """Критерий приёмки №6."""
-    await presets.apply(deps, session, PRESETS[preset_id], PHOTO)
+    """Критерий приёмки №6 — и он про весь реестр, а не про два первых прикола.
+
+    Тариф платный: закрытые приколы иначе до обработки не доходят, а проверить
+    надо именно её. Число снимков берётся из той же записи в реестре.
+    """
+    preset = PRESETS[preset_id]
+
+    await presets.apply(deps, _paid(session), preset, [PHOTO] * preset.photos_required)
 
     assert len(messenger.photo_edits) == 1
 
@@ -253,7 +271,12 @@ async def test_menu_is_built_from_the_registry(
         for row in messenger.last_text.keyboard.rows  # type: ignore[union-attr]
         for button in row
     ]
-    assert labels == [preset.button for preset in PRESETS.values()]
+    # Порядок реестра сохраняется целиком, включая закрытые приколы: замок
+    # ставится поверх подписи, а не вместо места в списке.
+    assert labels == [
+        texts.locked_button(preset.button) if preset.paid_only else preset.button
+        for preset in PRESETS.values()
+    ]
 
 
 async def test_a_third_preset_needs_no_new_handler(
@@ -272,7 +295,7 @@ async def test_a_third_preset_needs_no_new_handler(
     extra = Preset(
         id="ghost",
         button="👻 Привидение",
-        invitation="Кинь фото — сделаю из тебя привидение",
+        invitations=("Кинь фото — сделаю из тебя привидение",),
         instruction="Turn the person into a friendly cartoon ghost.",
     )
     monkeypatch.setattr(registry, "PRESETS", {**PRESETS, "ghost": extra})
@@ -292,8 +315,47 @@ async def test_a_third_preset_needs_no_new_handler(
     ]
     assert parse_preset_action(actions[-1] or "") == "ghost"
 
-    await presets.apply(deps, session, extra, PHOTO)
+    await presets.apply(deps, session, extra, [PHOTO])
     assert images_.edited[-1][0] == extra.instruction
+
+
+async def test_a_two_photo_preset_needs_no_new_handler_either(
+    deps: Deps,
+    session: Session,
+    storage: InMemoryStorage,
+    messenger: FakeMessenger,
+    images_: FakeImages,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Критерий приёмки A1 для приколов, которым мало одного снимка.
+
+    Второе приглашение, лишний шаг и порядок снимков берутся из той же
+    записи в реестре. Если этот тест начнёт падать, значит «сколько фото» и
+    «какими словами просить второе» снова стали кодом.
+    """
+    extra = Preset(
+        id="twins",
+        button="👯 Двое",
+        invitations=("Кинь своё фото", "Теперь фото друга"),
+        instruction="Put both people in one frame.",
+    )
+    monkeypatch.setattr(registry, "PRESETS", {**PRESETS, "twins": extra})
+
+    await presets.pick(deps, session, extra)
+    assert messenger.last_text.text == "Кинь своё фото"
+
+    await presets.add_photo(deps, session, extra, PHOTO, "mine")
+    assert messenger.last_text.text == "Теперь фото друга"
+    assert images_.edited == []
+
+    user = await storage.get_user_by_id(session.user.id)
+    assert user is not None
+    awaited = pending.parse_await_preset(user.pending)
+    assert awaited is not None
+
+    await presets.add_photo(deps, session, extra, PHOTO, "theirs", awaited.collected)
+    assert images_.edited[-1][0] == extra.instruction
+    assert len(images_.edited_sources[-1]) == 2
 
 
 async def test_oversized_photo_is_refused_before_the_provider(
@@ -302,7 +364,7 @@ async def test_oversized_photo_is_refused_before_the_provider(
     """§3.5: ограничение размера до отправки провайдеру."""
     huge = Photo(data=PNG_BYTES + b"\x00" * deps.settings.max_photo_bytes)
 
-    await presets.apply(deps, session, PRESETS["lego"], huge)
+    await presets.apply(deps, session, PRESETS["lego"], [huge])
 
     assert messenger.last_text.text == texts.PHOTO_TOO_BIG
     assert images_.edited == []
@@ -314,7 +376,7 @@ async def test_non_image_is_refused_before_the_provider(
     """§3.5: проверка формата по сигнатуре, а не по заявленному типу."""
     fake = Photo(data="я не картинка".encode(), mime_type="image/png")
 
-    await presets.apply(deps, session, PRESETS["lego"], fake)
+    await presets.apply(deps, session, PRESETS["lego"], [fake])
 
     assert messenger.last_text.text == texts.PHOTO_NOT_AN_IMAGE
     assert images_.edited == []
@@ -459,7 +521,7 @@ async def test_a_refused_photo_keeps_a_way_out(
     """Тупика быть не должно даже на отказе: под текстом список приколов."""
     images_.error = ContentRefusedError("moderation_blocked")
 
-    await presets.apply(deps, session, registry.PRESETS["lego"], PHOTO, "src")
+    await presets.apply(deps, session, registry.PRESETS["lego"], [PHOTO], ["src"])
 
     assert messenger.text_edits[0].text == texts.PRESET_REFUSED
     keyboard = messenger.text_edits[0].keyboard
@@ -510,3 +572,292 @@ async def test_the_profile_shows_the_tariff_that_actually_works(
     await profile.show(deps, replace(session, user=expired))
 
     assert "Твой тариф: Бесплатный" in messenger.last_text.text
+
+
+# --- Замок на платных приколах -------------------------------------------
+
+
+@pytest.fixture
+def locked() -> Preset:
+    """Прикол, закрытый до покупки подписки."""
+    return PRESETS["figurine"]
+
+
+async def test_a_locked_preset_stays_in_the_menu(
+    deps: Deps, session: Session, messenger: FakeMessenger, locked: Preset
+) -> None:
+    """Замок — витрина, а не забор: прятать причину купить подписку незачем."""
+    await presets.show_menu(deps, session)
+
+    labels = [
+        button.text
+        for row in messenger.last_text.keyboard.rows  # type: ignore[union-attr]
+        for button in row
+    ]
+    assert texts.locked_button(locked.button) in labels
+    assert locked.button not in labels
+
+
+async def test_a_paid_tariff_takes_the_lock_off(
+    deps: Deps, session: Session, messenger: FakeMessenger, locked: Preset
+) -> None:
+    paid = _paid(session)
+
+    await presets.show_menu(deps, paid)
+
+    labels = [
+        button.text
+        for row in messenger.last_text.keyboard.rows  # type: ignore[union-attr]
+        for button in row
+    ]
+    assert locked.button in labels
+    assert texts.locked_button(locked.button) not in labels
+
+
+async def test_an_expired_tariff_puts_the_lock_back(
+    deps: Deps, session: Session, messenger: FakeMessenger, locked: Preset
+) -> None:
+    """Замок снимает действующий тариф, а не записанный когда-то."""
+    expired = replace(
+        session,
+        user=replace(
+            session.user,
+            tariff=TariffId.PRO,
+            tariff_expires_at=session.now - timedelta(days=1),
+        ),
+    )
+
+    await presets.show_menu(deps, expired)
+
+    labels = [
+        button.text
+        for row in messenger.last_text.keyboard.rows  # type: ignore[union-attr]
+        for button in row
+    ]
+    assert texts.locked_button(locked.button) in labels
+
+
+async def test_tapping_a_locked_preset_offers_the_tariffs(
+    deps: Deps, session: Session, messenger: FakeMessenger, locked: Preset
+) -> None:
+    """Человек сам показал, за что готов заплатить, — лучший момент продать."""
+    await presets.pick(deps, session, locked)
+
+    assert messenger.last_text.text == texts.PRESET_LOCKED
+    labels = [
+        button.text
+        for row in messenger.last_text.keyboard.rows  # type: ignore[union-attr]
+        for button in row
+    ]
+    assert labels == [texts.BUTTON_OPEN_TARIFFS, texts.BUTTON_ANOTHER_PRESET]
+
+
+async def test_a_locked_preset_does_not_start_waiting_for_a_photo(
+    deps: Deps,
+    session: Session,
+    storage: InMemoryStorage,
+    locked: Preset,
+) -> None:
+    """Иначе следующее фото ушло бы в обработку в обход замка."""
+    await presets.pick(deps, session, locked)
+
+    user = await storage.get_user_by_id(session.user.id)
+    assert user is not None
+    assert user.pending is None
+
+
+async def test_a_paid_user_gets_asked_for_the_photo(
+    deps: Deps,
+    session: Session,
+    storage: InMemoryStorage,
+    messenger: FakeMessenger,
+    locked: Preset,
+) -> None:
+    paid = _paid(session)
+
+    await presets.pick(deps, paid, locked)
+
+    assert messenger.last_text.text == locked.invitations[0]
+    user = await storage.get_user_by_id(session.user.id)
+    assert user is not None
+    assert pending.parse_await_preset(user.pending) == pending.AwaitedPreset("figurine")
+
+
+# --- Прикол из двух фото -------------------------------------------------
+
+
+@pytest.fixture
+def two_photos() -> Preset:
+    return PRESETS["polaroid_child"]
+
+
+@pytest.fixture
+def paid(session: Session) -> Session:
+    """Тариф, на котором открыты все приколы."""
+    return _paid(session)
+
+
+async def test_the_first_photo_only_asks_for_the_second(
+    deps: Deps,
+    paid: Session,
+    messenger: FakeMessenger,
+    images_: FakeImages,
+    two_photos: Preset,
+) -> None:
+    """Работать ещё нечем: одного снимка для этого прикола мало."""
+    await presets.add_photo(deps, paid, two_photos, PHOTO, "adult-ref")
+
+    assert messenger.last_text.text == two_photos.invitations[1]
+    assert images_.edited == []
+
+
+async def test_the_second_photo_step_can_be_cancelled(
+    deps: Deps, paid: Session, messenger: FakeMessenger, two_photos: Preset
+) -> None:
+    """Человек уже что-то отдал боту — уйти молча он не должен быть обязан."""
+    await presets.add_photo(deps, paid, two_photos, PHOTO, "adult-ref")
+
+    labels = [
+        button.text
+        for row in messenger.last_text.keyboard.rows  # type: ignore[union-attr]
+        for button in row
+    ]
+    assert labels == [texts.BUTTON_CANCEL]
+
+
+async def test_the_first_photo_is_remembered_until_the_second_arrives(
+    deps: Deps, paid: Session, storage: InMemoryStorage, two_photos: Preset
+) -> None:
+    await presets.add_photo(deps, paid, two_photos, PHOTO, "adult-ref")
+
+    user = await storage.get_user_by_id(paid.user.id)
+    assert user is not None
+    assert pending.parse_await_preset(user.pending) == pending.AwaitedPreset(
+        "polaroid_child", ("adult-ref",)
+    )
+
+
+async def test_both_photos_go_to_the_provider_in_one_request(
+    deps: Deps,
+    paid: Session,
+    images_: FakeImages,
+    messenger: FakeMessenger,
+    two_photos: Preset,
+) -> None:
+    """Порядок существенный: инструкция ссылается на снимки по номерам."""
+    child = Photo(data=PNG_BYTES, filename="child.png")
+
+    await presets.add_photo(deps, paid, two_photos, child, "child-ref", ("adult-ref",))
+
+    assert len(images_.edited) == 1
+    assert len(images_.edited_sources[0]) == 2
+    # Взрослый снимок первым — провайдер вытягивает детали первого сильнее.
+    assert messenger.downloaded == ["adult-ref"]
+    assert images_.edited_sources[0][1] is child
+
+
+async def test_a_lost_first_photo_starts_the_collection_over(
+    deps: Deps,
+    paid: Session,
+    storage: InMemoryStorage,
+    messenger: FakeMessenger,
+    images_: FakeImages,
+    two_photos: Preset,
+) -> None:
+    """В MAX ссылка на снимок живёт не вечно, а человек может уйти надолго."""
+    messenger.fail_download = RuntimeError("ссылка протухла")
+
+    await presets.add_photo(deps, paid, two_photos, PHOTO, "child-ref", ("adult-ref",))
+
+    assert messenger.last_text.text == texts.PRESET_PHOTO_LOST
+    assert images_.edited == []
+    user = await storage.get_user_by_id(paid.user.id)
+    assert user is not None
+    assert user.pending is None
+
+
+async def test_a_lost_first_photo_is_not_reported_as_a_breakdown(
+    deps: Deps, paid: Session, messenger: FakeMessenger, two_photos: Preset
+) -> None:
+    """Обрабатывать было нечего — говорить об ошибке обработки было бы неправдой."""
+    messenger.fail_download = RuntimeError("ссылка протухла")
+
+    await presets.add_photo(deps, paid, two_photos, PHOTO, "child-ref", ("adult-ref",))
+
+    assert texts.PRESET_ERROR not in messenger.texts_said()
+
+
+async def test_the_second_photo_is_not_asked_for_without_images_left(
+    deps: Deps,
+    paid: Session,
+    storage: InMemoryStorage,
+    messenger: FakeMessenger,
+    two_photos: Preset,
+) -> None:
+    """Иначе человек прислал бы второй снимок впустую."""
+    await storage.add_usage(paid.user.id, paid.day, messages=0, images=40)
+
+    await presets.add_photo(deps, paid, two_photos, PHOTO, "adult-ref")
+
+    assert messenger.last_text.text != two_photos.invitations[1]
+    user = await storage.get_user_by_id(paid.user.id)
+    assert user is not None
+    assert user.pending is None
+
+
+async def test_an_unsuitable_first_photo_does_not_move_the_step_on(
+    deps: Deps,
+    paid: Session,
+    storage: InMemoryStorage,
+    messenger: FakeMessenger,
+    two_photos: Preset,
+) -> None:
+    """§3.5: проверка формата до всего остального, и на каждом снимке."""
+    fake = Photo(data="я не картинка".encode(), mime_type="image/png")
+
+    await presets.add_photo(deps, paid, two_photos, fake, "adult-ref")
+
+    assert messenger.last_text.text == texts.PHOTO_NOT_AN_IMAGE
+    user = await storage.get_user_by_id(paid.user.id)
+    assert user is not None
+    assert user.pending is None
+
+
+async def test_a_finished_pair_is_forgotten_before_the_next_one(
+    deps: Deps,
+    paid: Session,
+    storage: InMemoryStorage,
+    images_: FakeImages,
+    two_photos: Preset,
+) -> None:
+    """Иначе следующий снимок приклеился бы к уже отработанному первому.
+
+    Прикол остаётся выбранным — человек может прислать подряд ещё одну пару, —
+    но собранное обнуляется: два снимка отработаны, третий начинает новую пару.
+    """
+    await presets.add_photo(deps, paid, two_photos, PHOTO, "adult", ("first",))
+
+    user = await storage.get_user_by_id(paid.user.id)
+    assert user is not None
+    assert pending.parse_await_preset(user.pending) == pending.AwaitedPreset(
+        "polaroid_child"
+    )
+
+
+async def test_a_failed_pair_is_forgotten_too(
+    deps: Deps,
+    paid: Session,
+    storage: InMemoryStorage,
+    images_: FakeImages,
+    two_photos: Preset,
+) -> None:
+    """Провайдер упал — отработанный снимок всё равно не должен ждать напарника."""
+    images_.error = RuntimeError("провайдер лёг")
+
+    await presets.add_photo(deps, paid, two_photos, PHOTO, "adult", ("first",))
+
+    user = await storage.get_user_by_id(paid.user.id)
+    assert user is not None
+    assert pending.parse_await_preset(user.pending) == pending.AwaitedPreset(
+        "polaroid_child"
+    )

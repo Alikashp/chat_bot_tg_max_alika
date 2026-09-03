@@ -200,6 +200,9 @@ class FakeImages:
         self.error = error
         self.generated: list[tuple[str, ImageQuality]] = []
         self.edited: list[tuple[str, ImageQuality]] = []
+        #: Исходники каждой правки — по ним видно и сколько фото уехало, и в
+        #: каком порядке. Порядок у «я и я в детстве» меняет результат.
+        self.edited_sources: list[tuple[Photo, ...]] = []
 
     async def generate(self, prompt: str, *, quality: ImageQuality) -> Photo:
         self.generated.append((prompt, quality))
@@ -208,9 +211,10 @@ class FakeImages:
         return Photo(data=PNG_BYTES)
 
     async def edit(
-        self, source: Photo, instruction: str, *, quality: ImageQuality
+        self, sources: Sequence[Photo], instruction: str, *, quality: ImageQuality
     ) -> Photo:
         self.edited.append((instruction, quality))
+        self.edited_sources.append(tuple(sources))
         if self.error is not None:
             raise self.error
         return Photo(data=PNG_BYTES)

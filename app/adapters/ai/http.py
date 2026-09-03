@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 
 import httpx
@@ -60,7 +61,9 @@ async def request_json(
     *,
     headers: dict[str, str],
     json: dict[str, Any] | None = None,
-    files: dict[str, Any] | None = None,
+    # Части multipart списком пар, а не словарём: одно поле может
+    # повторяться — так уезжают несколько исходных фото в image[].
+    files: Sequence[tuple[str, Any]] | None = None,
     data: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Делает запрос и возвращает разобранный JSON.

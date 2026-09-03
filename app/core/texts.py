@@ -126,6 +126,7 @@ BUTTON_DRAW_AGAIN = "🔄 Ещё раз"
 BUTTON_SHARE = "📤 Поделиться"
 BUTTON_SEND_TO_FRIEND = "📤 Отправить другу"
 BUTTON_ANOTHER_PRESET = "🎭 Другой прикол"
+BUTTON_CANCEL = "✖️ Отмена"
 BUTTON_OPEN_TARIFFS = "⭐ Открыть тарифы"
 BUTTON_MY_LINK = "🎁 Моя ссылка"
 BUTTON_INVITE_FOR_IMAGES = "🎁 Позвать друга → +5 картинок сразу"
@@ -306,14 +307,60 @@ def image_refused() -> Screen:
 
 PRESETS_ASK = "Выбери, что сделаем с фото:"
 
+#: Чем помечен прикол, который откроется только на платном тарифе.
+#:
+#: В конце подписи, а не в начале: каждый прикол начинается со своей картинки,
+#: и два значка подряд читаются как один непонятный. Замок и без того говорит
+#: сам за себя — объяснять его отдельной строкой на экране незачем.
+LOCK_MARK = " 🔒"
+
+
+def locked_button(button: str) -> str:
+    """Подпись прикола с замком — для того, у кого он ещё не открыт."""
+    return f"{button}{LOCK_MARK}"
+
 
 def presets_menu(preset_buttons: tuple[str, ...]) -> Screen:
     return Screen(text=PRESETS_ASK, buttons=preset_buttons)
 
 
-def preset_ask_photo(invitation: str) -> Screen:
-    """Приглашение прислать фото. Текст берётся из реестра пресетов."""
+def preset_ask_photo(invitation: str, *, cancellable: bool = False) -> Screen:
+    """Приглашение прислать фото. Текст берётся из реестра пресетов.
+
+    ``cancellable`` — просим не первое фото, а следующее. Кнопка отмены на
+    этом шаге обязательна: человек уже что-то отдал боту, и уйти из режима
+    молча означало бы гадать, засчитан присланный снимок или нет.
+    """
+    if cancellable:
+        return Screen(text=invitation, buttons=(BUTTON_CANCEL,))
     return Screen(text=invitation, next_step="ждём фото от пользователя")
+
+
+#: Прикол закрыт замком, а тариф бесплатный.
+#:
+#: Не отказ, а предложение: человек нажал ровно на то, за что мы просим
+#: деньги, и это лучший момент показать ему тарифы. Второй выход обязателен —
+#: покупать прямо сейчас он не обязан.
+PRESET_LOCKED = "Этот прикол открывается на платном тарифе 🔒"
+
+
+def preset_locked() -> Screen:
+    return Screen(
+        text=PRESET_LOCKED,
+        buttons=(BUTTON_OPEN_TARIFFS, BUTTON_ANOTHER_PRESET),
+    )
+
+
+#: Первое фото у мессенджера уже не забрать.
+#:
+#: В MAX ссылка на снимок живёт не вечно, и между первым фото и вторым человек
+#: может уйти надолго. Честнее сказать, что снимок потерялся, чем показать
+#: ошибку обработки: обрабатывать было нечего.
+PRESET_PHOTO_LOST = "Первое фото потерялось 🤷 Давай начнём заново"
+
+
+def preset_photo_lost(preset_buttons: tuple[str, ...]) -> Screen:
+    return Screen(text=PRESET_PHOTO_LOST, buttons=preset_buttons)
 
 
 PRESET_WORKING = "Делаю… ~15 сек"
@@ -878,8 +925,11 @@ def _all_screens() -> tuple[Screen, ...]:
         image_refused(),
         image_result(),
         share_caption("mybot", "https://t.me/mybot?start=ref_abc123"),
-        presets_menu(("🧱 Лего", "🏚 Плохой день")),
+        presets_menu(("🧱 Лего", locked_button("🧸 Фигурка в коробке"))),
         preset_ask_photo("Кинь фото — сделаю из тебя лего"),
+        preset_ask_photo("Отлично. Теперь кинь детское фото 👶", cancellable=True),
+        preset_locked(),
+        preset_photo_lost(("🧱 Лего", "🏚 Плохой день")),
         preset_working(),
         preset_error(),
         preset_refused(("🧱 Лего", "🏚 Плохой день")),

@@ -137,16 +137,24 @@ def check_screen(screen: Screen) -> list[Violation]:
 
 
 def check_presets() -> list[Violation]:
-    """Тексты пресетов — та же планка, что и у остальных экранов."""
+    """Тексты пресетов — та же планка, что и у остальных экранов.
+
+    Приглашений у пресета столько, сколько ему нужно фото, и каждое человек
+    читает как отдельное сообщение. Проверяем все: пропущенное второе — это
+    шаг, на котором бот молча ждёт снимок.
+    """
     violations: list[Violation] = []
     for preset in PRESETS.values():
         where = f"пресет {preset.id}"
         violations.extend(check_wording(f"{where} → кнопка", preset.button))
-        violations.extend(check_wording(f"{where} → приглашение", preset.invitation))
-        if not preset.invitation.strip():
-            violations.append(
-                Violation(where, "тупик", "нет приглашения прислать фото")
+        for number, invitation in enumerate(preset.invitations, start=1):
+            violations.extend(
+                check_wording(f"{where} → приглашение {number}", invitation)
             )
+            if not invitation.strip():
+                violations.append(
+                    Violation(where, "тупик", f"приглашение {number} пустое")
+                )
     return violations
 
 

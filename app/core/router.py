@@ -257,7 +257,7 @@ def _tariff(tariff_id: str) -> TariffId | None:
 
 
 async def _pick_preset(deps: Deps, session: Session, preset_id: str) -> None:
-    """Выбран прикол: запоминаем и просим фото."""
+    """Выбран прикол."""
     preset = registry.PRESETS.get(preset_id)
     if preset is None:
         # Пресет убрали из реестра между версиями, а кнопка у человека в
@@ -265,8 +265,7 @@ async def _pick_preset(deps: Deps, session: Session, preset_id: str) -> None:
         await presets.show_menu(deps, session)
         return
 
-    await deps.storage.set_pending(session.user.id, pending.await_preset(preset.id))
-    await presets.ask_for_photo(deps, session, preset)
+    await presets.pick(deps, session, preset)
 
 
 # --- Содержимое ----------------------------------------------------------
@@ -274,15 +273,15 @@ async def _pick_preset(deps: Deps, session: Session, preset_id: str) -> None:
 
 async def _handle_photo(deps: Deps, session: Session, photo_ref: str) -> None:
     """Пришло фото."""
-    preset_id = pending.parse_await_preset(session.user.pending)
-    preset = registry.PRESETS.get(preset_id) if preset_id is not None else None
-    if preset is None:
+    awaited = pending.parse_await_preset(session.user.pending)
+    preset = registry.PRESETS.get(awaited.preset_id) if awaited is not None else None
+    if preset is None or awaited is None:
         # Фото без выбранного прикола. Молчать нельзя, а угадывать нечего —
         # показываем, что с фото вообще можно сделать.
         await presets.show_menu(deps, session)
         return
 
-    async def download_and_apply(d: Deps, s: Session) -> None:
+    async def download_and_add(d: Deps, s: Session) -> None:
         try:
             photo = await d.messenger.download_photo(
                 photo_ref, max_bytes=d.settings.max_photo_bytes
@@ -292,15 +291,16 @@ async def _handle_photo(deps: Deps, session: Session, photo_ref: str) -> None:
             # ни лимита, ни запроса к провайдеру (§3.5).
             await _say(d, s, texts.PHOTO_TOO_BIG)
             return
-        await presets.apply(d, s, preset, photo, photo_ref)
+        await presets.add_photo(d, s, preset, photo, photo_ref, awaited.collected)
 
     # Скачивание внутри ограничителя, а не до него: иначе десяток фото
     # подряд означал бы десяток закачек, из которых пригодится одна.
     #
     # Ожидание фото не сбрасываем: человек может прислать подряд несколько
     # снимков под тот же прикол, и переспрашивать на каждом было бы глупо.
-    # Любое действие из меню и любой текст ожидание снимут.
-    await _guarded(deps, session, _image_key(session), download_and_apply)
+    # Любое действие из меню и любой текст ожидание снимут — в том числе
+    # «Отмена» на шаге, где ждём второй снимок.
+    await _guarded(deps, session, _image_key(session), download_and_add)
 
 
 async def _handle_text(deps: Deps, session: Session, text: str) -> None:

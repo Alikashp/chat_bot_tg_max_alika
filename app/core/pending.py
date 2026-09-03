@@ -8,29 +8,64 @@
 Хранится в базе, а не в памяти процесса: иначе выкатка посреди разговора
 превращает «Опиши, что нарисовать» в потерянный вопрос — человек пишет
 описание, а бот отвечает на него как на реплику в чате.
+
+У приколов, которым нужно два фото, ожидание несёт ещё и то, что уже прислали:
+между первым снимком и вторым проходит отдельное обращение, и помнить первый
+больше негде.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 #: Ждём описание будущей картинки (§2.3).
 AWAIT_IMAGE_PROMPT = "await:image"
 
-#: Ждём фото под выбранный прикол (§2.4). За префиксом — идентификатор пресета.
+#: Ждём фото под выбранный прикол (§2.4). За префиксом — идентификатор пресета
+#: и ссылки на уже присланные фото.
 _AWAIT_PRESET_PREFIX = "await:preset:"
 
+#: Чем разделены части.
+#:
+#: Перевод строки, а не двоеточие и не вертикальная черта: ссылка на фото в
+#: MAX — это обычный http-адрес, в котором есть и двоеточие, и косые черты, а
+#: file_id в Telegram — base64url. Символа перевода строки не бывает ни в том,
+#: ни в другом, поэтому разбор однозначен при любой ссылке.
+_SEPARATOR = "\n"
 
-def await_preset(preset_id: str) -> str:
+
+@dataclass(frozen=True, slots=True)
+class AwaitedPreset:
+    """Прикол, под который ждём фото, и то, что уже прислали."""
+
+    preset_id: str
+    #: Ссылки на присланные фото в порядке получения. Порядок существенный:
+    #: инструкция провайдеру ссылается на снимки по номерам.
+    collected: tuple[str, ...] = ()
+
+
+def await_preset(preset_id: str, collected: tuple[str, ...] = ()) -> str:
     """Состояние «ждём фото под такой-то прикол»."""
     if not preset_id:
         raise ValueError("нужен идентификатор пресета")
-    return f"{_AWAIT_PRESET_PREFIX}{preset_id}"
+    if _SEPARATOR in preset_id or any(_SEPARATOR in ref for ref in collected):
+        raise ValueError("перевода строки не должно быть ни в id, ни в ссылке")
+    return _AWAIT_PRESET_PREFIX + _SEPARATOR.join((preset_id, *collected))
 
 
-def parse_await_preset(pending: str | None) -> str | None:
-    """Возвращает идентификатор пресета, если ждём фото под него."""
+def parse_await_preset(pending: str | None) -> AwaitedPreset | None:
+    """Разбирает ожидание фото; None — если ждём не его.
+
+    Испорченное значение — не повод падать: оно могло остаться от прошлой
+    версии формата, и тогда честнее считать, что ожидания нет, чем гадать.
+    """
     if pending is None or not pending.startswith(_AWAIT_PRESET_PREFIX):
         return None
-    return pending.removeprefix(_AWAIT_PRESET_PREFIX) or None
+
+    preset_id, *collected = pending.removeprefix(_AWAIT_PRESET_PREFIX).split(_SEPARATOR)
+    if not preset_id or not all(collected):
+        return None
+    return AwaitedPreset(preset_id=preset_id, collected=tuple(collected))
 
 
 def is_awaiting_image_prompt(pending: str | None) -> bool:

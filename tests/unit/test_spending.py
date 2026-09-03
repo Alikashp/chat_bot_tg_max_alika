@@ -142,7 +142,7 @@ async def test_image_does_not_charge_when_delivery_fails(
 async def test_preset_charges_after_delivery(
     deps: Deps, session: Session, storage: InMemoryStorage
 ) -> None:
-    await presets.apply(deps, session, PRESETS["lego"], Photo(data=PNG_BYTES))
+    await presets.apply(deps, session, PRESETS["lego"], [Photo(data=PNG_BYTES)])
 
     assert await used(storage, session) == (0, 1)
 
@@ -152,7 +152,7 @@ async def test_preset_does_not_charge_when_the_provider_fails(
 ) -> None:
     images_.error = BoomError("провайдер лёг")
 
-    await presets.apply(deps, session, PRESETS["lego"], Photo(data=PNG_BYTES))
+    await presets.apply(deps, session, PRESETS["lego"], [Photo(data=PNG_BYTES)])
 
     assert await used(storage, session) == (0, 0)
 
@@ -162,7 +162,7 @@ async def test_rejected_photo_costs_nothing(
 ) -> None:
     """Отказ до обращения к провайдеру: ни лимита, ни запроса."""
     await presets.apply(
-        deps, session, PRESETS["lego"], Photo(data="это не картинка".encode())
+        deps, session, PRESETS["lego"], [Photo(data="это не картинка".encode())]
     )
 
     assert await used(storage, session) == (0, 0)

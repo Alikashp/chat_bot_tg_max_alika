@@ -244,7 +244,7 @@ async def test_editing_sends_the_source_photo_as_a_file() -> None:
     route = respx.post(EDIT_URL).mock(return_value=httpx.Response(200, json=_drawn()))
 
     await _images().edit(
-        Photo(data=PNG_BYTES, mime_type="image/png", filename="in.png"),
+        [Photo(data=PNG_BYTES, mime_type="image/png", filename="in.png")],
         "make it lego",
         quality=ImageQuality.LOW,
     )
@@ -386,7 +386,7 @@ async def test_editing_asks_the_model_to_keep_the_face() -> None:
     route = respx.post(EDIT_URL).mock(return_value=httpx.Response(200, json=_drawn()))
 
     await _images().edit(
-        Photo(data=PNG_BYTES, mime_type="image/png", filename="in.png"),
+        [Photo(data=PNG_BYTES, mime_type="image/png", filename="in.png")],
         "make it lego",
         quality=ImageQuality.MEDIUM,
     )
@@ -400,7 +400,7 @@ async def test_editing_keeps_the_shape_of_the_original() -> None:
     route = respx.post(EDIT_URL).mock(return_value=httpx.Response(200, json=_drawn()))
 
     await _images().edit(
-        Photo(data=PNG_BYTES, mime_type="image/png", filename="in.png"),
+        [Photo(data=PNG_BYTES, mime_type="image/png", filename="in.png")],
         "make it lego",
         quality=ImageQuality.MEDIUM,
     )
@@ -421,12 +421,79 @@ async def test_drawing_from_scratch_keeps_its_fixed_size() -> None:
 
 
 @respx.mock
+async def test_two_photos_go_in_one_request_as_an_array() -> None:
+    """Прикол «я и я в детстве» соединяет два снимка — значит, один запрос."""
+    route = respx.post(EDIT_URL).mock(return_value=httpx.Response(200, json=_drawn()))
+
+    await _images().edit(
+        [
+            Photo(data=PNG_BYTES, mime_type="image/png", filename="adult.png"),
+            Photo(data=PNG_BYTES, mime_type="image/png", filename="child.png"),
+        ],
+        "put them side by side",
+        quality=ImageQuality.MEDIUM,
+    )
+
+    assert len(route.calls) == 1
+    content = route.calls.last.request.content
+    assert content.count(b'name="image[]"') == 2
+    # Порядок сохраняется: детали первого снимка провайдер вытягивает сильнее.
+    assert content.index(b"adult.png") < content.index(b"child.png")
+    # Имена частей разные даже при одинаковых исходных: в MAX оба снимка
+    # приезжают под одним photo.jpg, а шлюз мог бы склеить их в одну часть.
+    assert b'filename="1-adult.png"' in content
+    assert b'filename="2-child.png"' in content
+
+
+@respx.mock
+async def test_photos_with_the_same_name_stay_two_parts() -> None:
+    """Ровно случай MAX: оба снимка приезжают под одним и тем же именем."""
+    route = respx.post(EDIT_URL).mock(return_value=httpx.Response(200, json=_drawn()))
+
+    await _images().edit(
+        [
+            Photo(data=PNG_BYTES, mime_type="image/jpeg", filename="photo.jpg"),
+            Photo(data=PNG_BYTES, mime_type="image/jpeg", filename="photo.jpg"),
+        ],
+        "put them side by side",
+        quality=ImageQuality.MEDIUM,
+    )
+
+    content = route.calls.last.request.content
+    assert content.count(b'name="image[]"') == 2
+    assert b'filename="1-photo.jpg"' in content
+    assert b'filename="2-photo.jpg"' in content
+
+
+@respx.mock
+async def test_one_photo_keeps_the_field_name_that_works_in_production() -> None:
+    """Одиночный запрос — это все приколы, кроме одного. Путь у них прежний."""
+    route = respx.post(EDIT_URL).mock(return_value=httpx.Response(200, json=_drawn()))
+
+    await _images().edit(
+        [Photo(data=PNG_BYTES, mime_type="image/png", filename="in.png")],
+        "make it lego",
+        quality=ImageQuality.LOW,
+    )
+
+    content = route.calls.last.request.content
+    assert b'name="image"' in content
+    assert b'name="image[]"' not in content
+
+
+async def test_editing_without_a_photo_is_refused() -> None:
+    """Правка без исходника — это рисование заново, а не правка."""
+    with pytest.raises(ValueError):
+        await _images().edit([], "make it lego", quality=ImageQuality.LOW)
+
+
+@respx.mock
 async def test_the_fidelity_parameter_can_be_switched_off() -> None:
     """Не всякий шлюз к Images API его пропускает, а неизвестное поле — это 400."""
     route = respx.post(EDIT_URL).mock(return_value=httpx.Response(200, json=_drawn()))
 
     await _images(input_fidelity="").edit(
-        Photo(data=PNG_BYTES, mime_type="image/png", filename="in.png"),
+        [Photo(data=PNG_BYTES, mime_type="image/png", filename="in.png")],
         "make it lego",
         quality=ImageQuality.LOW,
     )

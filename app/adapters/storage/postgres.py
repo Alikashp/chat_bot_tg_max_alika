@@ -33,6 +33,7 @@ from app.adapters.storage.schema import (
     users,
 )
 from app.core.models import (
+    NO_USERNAME,
     ChatTurn,
     DialogState,
     MessengerKind,
@@ -121,6 +122,7 @@ class PostgresStorage:
         referral_code: str,
         support_number: int,
         daily_image_quota: int,
+        username: str = NO_USERNAME,
     ) -> User:
         query = (
             insert(users)
@@ -132,6 +134,7 @@ class PostgresStorage:
                 support_number=support_number,
                 created_at=self._now(),
                 daily_image_quota=daily_image_quota,
+                username=username,
             )
             # Гонка за нового человека разрешается базой, а не проверкой в
             # коде: два первых обновления обрабатываются параллельно, и оба
@@ -183,6 +186,12 @@ class PostgresStorage:
         query = update(users).where(users.c.id == user_id).values(pending=pending)
         async with self._session() as session, session.begin():
             await session.execute(query)
+
+    async def set_username(self, user_id: UserId, username: str) -> None:
+        async with self._session() as session, session.begin():
+            await session.execute(
+                update(users).where(users.c.id == user_id).values(username=username)
+            )
 
     async def set_retry_context(self, user_id: UserId, context: str | None) -> None:
         query = update(users).where(users.c.id == user_id).values(retry_context=context)
@@ -669,6 +678,7 @@ def _to_user(row: Any) -> User:
         support_number=row["support_number"],
         created_at=row["created_at"],
         daily_image_quota=row["daily_image_quota"],
+        username=row["username"],
         bonus_messages=row["bonus_messages"],
         bonus_images=row["bonus_images"],
         tariff_expires_at=row["tariff_expires_at"],

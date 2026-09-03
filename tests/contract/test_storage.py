@@ -24,6 +24,7 @@ from app.adapters.storage.postgres import PostgresStorage, create_engine
 from app.adapters.storage.schema import metadata
 from app.core import support
 from app.core.models import (
+    NO_USERNAME,
     ChatTurn,
     DialogState,
     MessengerKind,
@@ -833,3 +834,54 @@ async def test_advancing_a_missing_subscription_is_false(storage: Storage) -> No
         )
         is False
     )
+
+
+# --- Имя пользователя ----------------------------------------------------
+
+
+async def test_a_user_without_a_name_is_marked_so(storage: Storage) -> None:
+    """Пустая ячейка не отличает «имени нет» от «мы его не записали»."""
+    user = await _make_user(storage, "name-1")
+
+    assert user.username == NO_USERNAME
+    found = await storage.get_user(MessengerKind.TELEGRAM, "name-1")
+    assert found is not None
+    assert found.username == NO_USERNAME
+
+
+async def test_the_name_is_kept_from_the_start(storage: Storage) -> None:
+    user = await storage.create_user(
+        messenger=MessengerKind.TELEGRAM,
+        external_id="name-2",
+        referral_code="codename2",
+        support_number=support.generate_number(),
+        daily_image_quota=3,
+        username="durov",
+    )
+
+    found = await storage.get_user_by_id(user.id)
+    assert found is not None
+    assert found.username == "durov"
+
+
+async def test_the_name_can_be_refreshed(storage: Storage) -> None:
+    """Имя меняют когда захотят: записанное однажды через месяц уже чужое."""
+    user = await _make_user(storage, "name-3")
+
+    await storage.set_username(user.id, "newname")
+
+    found = await storage.get_user_by_id(user.id)
+    assert found is not None
+    assert found.username == "newname"
+
+
+async def test_losing_the_name_is_recorded_too(storage: Storage) -> None:
+    """Человек снял себе имя — в базе это должно быть видно, а не забыто."""
+    user = await _make_user(storage, "name-4")
+    await storage.set_username(user.id, "hadaname")
+
+    await storage.set_username(user.id, NO_USERNAME)
+
+    found = await storage.get_user_by_id(user.id)
+    assert found is not None
+    assert found.username == NO_USERNAME

@@ -73,6 +73,16 @@ def to_incoming(raw_update: dict[str, Any]) -> IncomingMessage | None:
             return None
 
 
+def _username(raw: dict[str, Any], where: str) -> str | None:
+    """Имя пользователя из события; None — MAX его не назвал.
+
+    В MAX username есть не у всех, и отсутствие поля здесь — обычное дело,
+    а не сбой разбора.
+    """
+    name = _dig(raw, where, "username")
+    return name if isinstance(name, str) and name else None
+
+
 def _from_bot_started(raw: dict[str, Any]) -> IncomingMessage | None:
     """Запуск бота. Прямой аналог /start с payload (docs/research.md §1.5)."""
     chat_id = raw.get("chat_id")
@@ -86,6 +96,7 @@ def _from_bot_started(raw: dict[str, Any]) -> IncomingMessage | None:
     return IncomingMessage(
         chat=_chat(chat_id),
         external_user_id=str(user_id),
+        username=_username(raw, "user"),
         start_payload=payload if isinstance(payload, str) else "",
     )
 
@@ -111,6 +122,7 @@ def _from_message(raw: dict[str, Any]) -> IncomingMessage | None:
     return IncomingMessage(
         chat=_chat(chat_id),
         external_user_id=str(user_id),
+        username=_username(message, "sender"),
         text=text,
         photo_ref=_photo_url(body.get("attachments")),
     )
@@ -138,6 +150,7 @@ def _from_callback(raw: dict[str, Any]) -> IncomingMessage | None:
     return IncomingMessage(
         chat=_chat(chat_id if chat_id is not None else user_id),
         external_user_id=str(user_id),
+        username=_username(callback, "user"),
         action=payload,
         callback_id=str(callback_id) if callback_id else None,
     )

@@ -41,6 +41,9 @@ users = Table(
     Column("support_number", Integer, nullable=False),
     Column("created_at", DateTime(timezone=True), nullable=False),
     Column("daily_image_quota", Integer, nullable=False),
+    # Имя в мессенджере — для поддержки. NOT NULL со значением по умолчанию:
+    # «имени нет» — это тоже ответ, и пустая ячейка его не даёт.
+    Column("username", String(64), nullable=False, server_default="NONE"),
     Column("bonus_messages", Integer, nullable=False, server_default="0"),
     Column("bonus_images", Integer, nullable=False, server_default="0"),
     Column("tariff_expires_at", DateTime(timezone=True), nullable=True),

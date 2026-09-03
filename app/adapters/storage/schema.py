@@ -41,7 +41,6 @@ users = Table(
     Column("support_number", Integer, nullable=False),
     Column("created_at", DateTime(timezone=True), nullable=False),
     Column("daily_image_quota", Integer, nullable=False),
-    Column("referred_by", BigInteger, ForeignKey("users.id"), nullable=True),
     Column("bonus_messages", Integer, nullable=False, server_default="0"),
     Column("bonus_images", Integer, nullable=False, server_default="0"),
     Column("tariff_expires_at", DateTime(timezone=True), nullable=True),

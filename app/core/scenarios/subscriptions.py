@@ -191,7 +191,13 @@ async def check_price(deps: Deps, subscription: Subscription) -> None:
             screen.text,
             keyboard=keyboards.subscription_manage(),
         )
-        await deps.storage.save_subscription(replace(subscription, amount=price))
+        await deps.storage.advance_subscription(
+            subscription.user_id,
+            next_charge_at=subscription.next_charge_at,
+            status=subscription.status,
+            failed_since=subscription.failed_since,
+            amount=price,
+        )
         deps.logger.info(
             "subscription_price_changed", user_id=int(subscription.user_id)
         )
@@ -209,6 +215,16 @@ async def charge(deps: Deps, subscription: Subscription) -> None:
             "subscription_user_missing", user_id=int(subscription.user_id)
         )
         return
+
+    # Копия подписки прочитана в начале прохода, а до денег отсюда ещё
+    # несколько обращений наружу. За это время человек успевает отменить
+    # продление — и списать после этого значило бы взять деньги у того, кто
+    # от них отказался. Перечитываем перед самым платежом.
+    current = await deps.storage.get_subscription(subscription.user_id)
+    if current is None or current.status == SubscriptionStatus.CANCELLED.value:
+        deps.logger.info("subscription_cancelled_meanwhile", user_id=int(user.id))
+        return
+    subscription = current
 
     if subscription.method == PaymentMethod.STARS.value:
         await _await_stars(deps, subscription, user)
@@ -238,7 +254,13 @@ async def charge(deps: Deps, subscription: Subscription) -> None:
             subscription,
             next_charge_at=deps.now() + timedelta(hours=deps.settings.reminder_hours),
         )
-        await deps.storage.save_subscription(deferred)
+        if not await deps.storage.advance_subscription(
+            deferred.user_id,
+            next_charge_at=deferred.next_charge_at,
+            status=deferred.status,
+            failed_since=deferred.failed_since,
+        ):
+            return
         deps.logger.warning("subscription_charge_deferred", user_id=int(user.id))
         await remind(deps, deferred)
         return
@@ -269,8 +291,11 @@ async def charge(deps: Deps, subscription: Subscription) -> None:
             user_id=int(subscription.user_id),
             error=repr(error),
         )
-        await deps.storage.save_subscription(
-            replace(subscription, next_charge_at=_retry_at(deps))
+        await deps.storage.advance_subscription(
+            subscription.user_id,
+            next_charge_at=_retry_at(deps),
+            status=subscription.status,
+            failed_since=subscription.failed_since,
         )
         return
 
@@ -307,14 +332,15 @@ async def _charge_failed(deps: Deps, subscription: Subscription, user: User) -> 
         await _end(deps, subscription, user)
         return
 
-    await deps.storage.save_subscription(
-        replace(
-            subscription,
-            status=SubscriptionStatus.PAST_DUE.value,
-            failed_since=failed_since,
-            next_charge_at=_retry_at(deps),
-        )
-    )
+    if not await deps.storage.advance_subscription(
+        subscription.user_id,
+        next_charge_at=_retry_at(deps),
+        status=SubscriptionStatus.PAST_DUE.value,
+        failed_since=failed_since,
+    ):
+        # Подписку отменили, пока мы ходили к банку. Ни переносить, ни
+        # сообщать об отказе уже незачем.
+        return
     deps.logger.info("subscription_charge_failed", user_id=int(user.id))
 
     screen = texts.subscription_charge_failed(
@@ -339,13 +365,12 @@ async def _await_stars(deps: Deps, subscription: Subscription, user: User) -> No
     у нас действующей.
     """
     if subscription.failed_since is None:
-        await deps.storage.save_subscription(
-            replace(
-                subscription,
-                failed_since=deps.now(),
-                next_charge_at=subscription.next_charge_at
-                + timedelta(hours=deps.settings.stars_grace_hours),
-            )
+        await deps.storage.advance_subscription(
+            subscription.user_id,
+            next_charge_at=subscription.next_charge_at
+            + timedelta(hours=deps.settings.stars_grace_hours),
+            status=subscription.status,
+            failed_since=deps.now(),
         )
         return
 

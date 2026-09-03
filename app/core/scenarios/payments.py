@@ -396,6 +396,10 @@ async def _show_order(
         currency=currency,
         next_charge=texts.format_date(current_day(next_charge, deps.settings.timezone)),
         recurring=recurring,
+        # Только для рублёвой оплаты: у звёзд списывает мессенджер, и никакой
+        # банковской выписки, в которой человек мог бы не узнать платёж, не
+        # существует.
+        statement=deps.settings.bank_statement_name if currency == RUB else "",
     )
     await deps.messenger.send_text(
         session.chat,

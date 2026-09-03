@@ -447,11 +447,6 @@ def referral_reward() -> Screen:
     return Screen(text=REFERRAL_REWARD, buttons=_menu_buttons())
 
 
-def friends_invited(count: int) -> str:
-    """Строка про приглашённых друзей — для профиля."""
-    return _friends(count)
-
-
 # --- Тарифы (§2.8) -------------------------------------------------------
 
 PAYMENTS_SOON = "Оплата скоро заработает 🙏 А пока лимиты можно поднять бесплатно:"
@@ -564,6 +559,7 @@ def payment_order(
     currency: str,
     next_charge: str,
     recurring: bool,
+    statement: str = "",
 ) -> Screen:
     """Экран оформления заказа: всё, под чем человек подписывается.
 
@@ -577,6 +573,12 @@ def payment_order(
     об этом надо сказать до денег. Разовая оплата не продлевается, и обещать
     продление было бы враньём — а именно оно случилось бы, оставь мы один
     текст на оба случая.
+
+    ``statement`` — как платёж подпишется в банковской выписке. Строка нужна
+    затем, что через месяц человек увидит в приложении банка незнакомое
+    название и позвонит оспаривать списание. Показанная заранее, она этот
+    звонок предотвращает. Пусто — значит выписки не будет вовсе: у звёзд
+    списывает мессенджер, банк тут ни при чём.
     """
     if recurring:
         lines = [
@@ -591,6 +593,8 @@ def payment_order(
             f"{_price(amount, currency)} на {_days(days)}.",
             "Продлевать надо будет вручную — сам ничего не спишется.",
         ]
+    if statement:
+        lines.append(f"В выписке банка: {statement}")
     lines.append(CONSENT)
     return Screen(
         text="\n".join(lines),
@@ -911,6 +915,7 @@ def _all_screens() -> tuple[Screen, ...]:
             currency=RUB,
             next_charge="30 сентября",
             recurring=True,
+            statement="YM*ChatAIBot",
         ),
         payment_order(
             TariffId.PRO,
@@ -919,6 +924,15 @@ def _all_screens() -> tuple[Screen, ...]:
             currency=RUB,
             next_charge="30 сентября",
             recurring=False,
+            statement="YM*ChatAIBot",
+        ),
+        payment_order(
+            TariffId.PRO,
+            days=30,
+            amount=525,
+            currency=STARS,
+            next_charge="30 сентября",
+            recurring=True,
         ),
         payment_failed(),
         payment_refused(),

@@ -83,6 +83,7 @@ def settings() -> CoreSettings:
         offer_url="https://telegra.ph/offer",
         privacy_url="https://telegra.ph/privacy",
         docs_version="2026-08-31",
+        bank_statement_name="YM*ChatAIBot",
     )
 
 

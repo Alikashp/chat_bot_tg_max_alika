@@ -79,7 +79,6 @@ class InMemoryStorage:
         referral_code: str,
         support_number: int,
         daily_image_quota: int,
-        referred_by: UserId | None = None,
     ) -> User:
         existing = self._by_external.get((messenger, external_id))
         if existing is not None:
@@ -101,7 +100,6 @@ class InMemoryStorage:
             support_number=support_number,
             created_at=self._now(),
             daily_image_quota=daily_image_quota,
-            referred_by=referred_by,
         )
         self._users[user.id] = user
         self._by_external[(messenger, external_id)] = user.id
@@ -238,6 +236,27 @@ class InMemoryStorage:
 
     async def save_subscription(self, subscription: Subscription) -> None:
         self._subscriptions[subscription.user_id] = subscription
+
+    async def advance_subscription(
+        self,
+        user_id: UserId,
+        *,
+        next_charge_at: datetime,
+        status: str,
+        failed_since: datetime | None,
+        amount: int | None = None,
+    ) -> bool:
+        current = self._subscriptions.get(user_id)
+        if current is None or current.status == SubscriptionStatus.CANCELLED.value:
+            return False
+        self._subscriptions[user_id] = replace(
+            current,
+            next_charge_at=next_charge_at,
+            status=status,
+            failed_since=failed_since,
+            amount=current.amount if amount is None else amount,
+        )
+        return True
 
     async def cancel_subscription(self, user_id: UserId, at: datetime) -> bool:
         current = self._subscriptions.get(user_id)

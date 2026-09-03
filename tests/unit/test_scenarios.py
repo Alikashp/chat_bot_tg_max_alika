@@ -583,6 +583,22 @@ def locked() -> Preset:
     return PRESETS["figurine"]
 
 
+def test_the_free_tariff_keeps_some_presets_open() -> None:
+    """Приколы — главный виральный крючок (§2.4), и он работает на бесплатных.
+
+    Замки ставятся по одному и по разным причинам: этот дорогой, тот требует
+    качества, за которое бесплатный тариф не платит. Каждое такое решение
+    выглядит частным, а вместе они однажды превращают меню в стену замков —
+    и человек, который ещё ничего про бота не понял, не видит ни одной
+    причины остаться.
+    """
+    open_to_everyone = [
+        preset.id for preset in PRESETS.values() if not preset.paid_only
+    ]
+
+    assert len(open_to_everyone) >= 2, open_to_everyone
+
+
 async def test_a_locked_preset_stays_in_the_menu(
     deps: Deps, session: Session, messenger: FakeMessenger, locked: Preset
 ) -> None:

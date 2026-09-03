@@ -82,31 +82,52 @@ PRESETS: Mapping[str, Preset] = MappingProxyType(
                 "photo's lighting, perspective and grain."
             ),
         ),
+        # Замок тут не только про деньги. Портрет живёт узнаваемостью, а
+        # отрисовать лицо модель может лишь теми пикселями, которые ей
+        # оплачены: на бесплатном тарифе мы рисуем в low, и черты уплывают
+        # ещё до всякой инструкции. Платный тариф даёт medium — и заодно
+        # платит за него.
         "id_photo": Preset(
             id="id_photo",
             button="🪪 Фото на документы",
-            invitations=("Кинь селфи — сделаю фото на пропуск или резюме",),
-            # Первое слово инструкции решает больше, чем всё остальное. «Turn
-            # this photo into» модель читает как «нарисуй заново», и человек
-            # получает чужое лицо на белом фоне. «Retouch, keeping the same
-            # photograph» ставит задачу как обработку — а обрабатывать можно
-            # только то, что уже есть.
+            paid_only=True,
+            # Про «прямо в камеру» сказано человеку не для красоты. Развернуть
+            # голову на снимке невозможно, не дорисовав ракурс, которого там
+            # нет, — а дорисованный ракурс это уже другое лицо. Значит, кадр
+            # анфас должен прийти от человека, и попросить его надо словами.
+            invitations=(
+                "Кинь селфи прямо в камеру — сделаю фото на пропуск или резюме",
+            ),
+            # Инструкция устроена как наряд ретушёру, а не как задание
+            # художнику: сначала закрытый список того, что менять, потом «всё
+            # остальное не трогать».
+            #
+            # Про позу здесь нет ни слова, и это не упущение. Просить
+            # «развернись к камере и смотри в объектив» значит просить
+            # дорисовать ракурс, которого на снимке нет: под новым углом
+            # модель заново придумывает форму скул, носа и разрез глаз — и
+            # человек получает обратно чужое лицо, как бы старательно мы ни
+            # перечисляли рядом «сохрани черты». Кадр анфас должен прийти от
+            # человека, поэтому про него сказано в приглашении, а не тут.
             instruction=(
-                "Retouch this photograph into an official document portrait, "
-                "keeping it the same photograph of the same person. "
-                "Replace the background with a perfectly even, plain white backdrop. "
-                "Remove every shadow from the face and the neck. Even, soft, frontal "
-                "studio lighting. Head and shoulders framing, straight posture, "
-                "shoulders square to the camera, eyes looking directly into the lens, "
-                "neutral calm expression with the mouth closed. Sharp focus, natural "
-                "skin texture. "
-                "Do not redraw the person. Keep exactly the same face: identical "
-                "facial features, face shape, bone structure, eyes, nose, mouth, "
-                "eyebrows, skin tone, skin texture, moles and hairstyle. No "
+                "Edit this photograph the way a retoucher would, keeping the "
+                "person's head untouched. This is a background and lighting job on "
+                "an existing photograph, not a new picture of a similar person. "
+                "Change only three things: replace the background with a perfectly "
+                "even, plain white backdrop; remove the shadows from the face and "
+                "the neck and even out the light as if from a soft frontal studio "
+                "lamp; crop to a centred head-and-shoulders document framing with "
+                "a little room above the head. "
+                "Change nothing else. Keep the head exactly where it is and exactly "
+                "as it is turned: do not rotate or tilt the head, do not straighten "
+                "the pose, do not redirect the gaze, do not alter the expression, do "
+                "not open or close the mouth. Keep the same facial features, face "
+                "shape, bone structure, eyes, nose, mouth, eyebrows, skin tone, skin "
+                "texture, moles, facial hair, glasses, hairstyle and clothing. No "
                 "beautification, no smoothing, no slimming, no makeup added or "
                 "removed, no change of age. "
-                "The result must be an ordinary photograph, not an illustration, "
-                "a painting or a 3D render."
+                "The result must be an ordinary sharp photograph of that same "
+                "person, not an illustration, a painting or a 3D render."
             ),
         ),
         "figurine": Preset(

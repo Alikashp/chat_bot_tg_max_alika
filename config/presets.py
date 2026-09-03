@@ -85,14 +85,27 @@ PRESETS: Mapping[str, Preset] = MappingProxyType(
             id="id_photo",
             button="🪪 Фото на документы",
             invitations=("Кинь селфи — сделаю фото на пропуск или резюме",),
+            # Первое слово инструкции решает больше, чем всё остальное. «Turn
+            # this photo into» модель читает как «нарисуй заново», и человек
+            # получает чужое лицо на белом фоне. «Retouch, keeping the same
+            # photograph» ставит задачу как обработку — а обрабатывать можно
+            # только то, что уже есть.
             instruction=(
-                "Turn this photo into a professional ID portrait. Plain light grey "
-                "seamless studio background, even soft frontal lighting, neutral calm "
-                "expression, head and shoulders framing, straight posture facing the "
-                "camera, sharp focus, subject wearing a plain dark shirt or blouse. "
-                "Preserve the person's exact face, facial features, skin tone and "
-                "hairstyle without any beautification, retouching or age change. The "
-                "result must be a realistic photograph, not an illustration or render."
+                "Retouch this photograph into an official document portrait, "
+                "keeping it the same photograph of the same person. "
+                "Replace the background with a perfectly even, plain white backdrop. "
+                "Remove every shadow from the face and the neck. Even, soft, frontal "
+                "studio lighting. Head and shoulders framing, straight posture, "
+                "shoulders square to the camera, eyes looking directly into the lens, "
+                "neutral calm expression with the mouth closed. Sharp focus, natural "
+                "skin texture. "
+                "Do not redraw the person. Keep exactly the same face: identical "
+                "facial features, face shape, bone structure, eyes, nose, mouth, "
+                "eyebrows, skin tone, skin texture, moles and hairstyle. No "
+                "beautification, no smoothing, no slimming, no makeup added or "
+                "removed, no change of age. "
+                "The result must be an ordinary photograph, not an illustration, "
+                "a painting or a 3D render."
             ),
         ),
         "figurine": Preset(
@@ -100,19 +113,36 @@ PRESETS: Mapping[str, Preset] = MappingProxyType(
             button="🧸 Фигурка в коробке",
             invitations=("Кинь фото — сделаю коллекционную фигурку с тобой",),
             paid_only=True,
+            # Надписей на упаковке нет намеренно. Имя человека мы не
+            # спрашиваем, а буквы модели рисуют плохо: вместо подписи выходит
+            # набор похожих на буквы закорючек, и премиальная коробка сразу
+            # выглядит подделкой. Наряд фигурки берётся с самого фото —
+            # так прикол работает и для футболиста, и для кого угодно.
             instruction=(
-                "Turn the person in this photo into a 1/7 scale commercialized "
-                "collectible figurine placed on a computer desk. The figurine stands "
-                "on a round transparent acrylic base with no text. Next to it, a "
-                "premium toy packaging box printed with the character artwork. Behind "
-                "it, a computer monitor showing the 3D model of the figurine in "
-                "modeling software. Merchandise product photography, soft studio "
-                "lighting, shallow depth of field. "
-                "Preserve the person's exact facial features, face shape, hairstyle, "
-                "skin tone and clothing so they remain clearly recognisable. Do not "
-                "beautify, do not change the face structure, do not alter their age."
+                "Using the uploaded photograph as the reference, turn the person "
+                "into an original premium collectible toy sealed inside a blister "
+                "package, photographed as shelf-ready merchandise. "
+                "Base the figure's outfit, colours and accessories on what the "
+                "person is actually wearing in the photograph, restyled as "
+                "collectible merchandise. "
+                "Modern collectible-toy aesthetic: glossy blister plastic, matte "
+                "cardboard backing, smooth vinyl textures, moulded plastic surfaces. "
+                "Hair is moulded plastic with large sculpted grooves rather than "
+                "separate strands. Realistic reflections with soft highlights, "
+                "premium shelf-ready look, soft studio lighting, shallow depth of "
+                "field. The cardboard backing carries only abstract graphic "
+                "decoration: no lettering, no words, no numbers and no logos "
+                "anywhere on the package. "
+                "Keep the person's real face: the same facial features, face shape, "
+                "skin tone and hairstyle silhouette, so the figure stays clearly "
+                "recognisable as them. Do not beautify, do not change the face "
+                "structure, do not alter their age. "
+                "Highly realistic digital render, portrait framing."
             ),
         ),
+        # Идентификатор остался от полароида, которым прикол был поначалу.
+        # Менять его нельзя: он лежит в данных кнопок, а те живут у людей в
+        # переписке вечно и после переименования перестали бы работать.
         "polaroid_child": Preset(
             id="polaroid_child",
             button="📷 Я и я в детстве",
@@ -125,15 +155,28 @@ PRESETS: Mapping[str, Preset] = MappingProxyType(
                 "Отлично. Теперь кинь детское фото 👶",
             ),
             paid_only=True,
+            # Сцена вместо полароида. Полароидная рамка с зерном и мягким
+            # фокусом делала ровно то, чего тут делать нельзя: размывала оба
+            # лица, ради узнаваемости которых прикол и существует. Спокойная
+            # студийная съёмка за столом лица сохраняет.
             instruction=(
-                "Create a single candid Polaroid instant photo showing the adult from "
-                "image 1 and the child from image 2 standing together, hugging and "
-                "smiling at the camera, as if photographed in the same room at the "
-                "same moment. Iconic white Polaroid border, slight overexposure, muted "
-                "retro colours, soft focus, warm indoor light, subtle film grain. "
-                "Preserve both faces exactly as they are in the source images so both "
-                "people remain clearly recognisable. Do not beautify, do not change "
-                "face structure or age."
+                "Combine the two source photographs into a single realistic studio "
+                "photograph: the adult from image 1 and the child from image 2 "
+                "sitting side by side at the same table, as if they had been "
+                "photographed together in the same room at the same moment. "
+                "On the table in front of them, a chocolate birthday cake with "
+                "several thin lit candles. Plain beige seamless backdrop, warm soft "
+                "daylight from the side, muted natural colours, shallow depth of "
+                "field, calm and tender mood. The adult rests their chin on one hand "
+                "and looks at the child with a soft smile; the child looks back at "
+                "the adult. "
+                "Keep both faces exactly as they are in the source photographs: "
+                "identical facial features, face shape, skin tone and hairstyle, so "
+                "both people stay clearly recognisable. The child stays a child and "
+                "the adult stays an adult. Do not beautify, do not change face "
+                "structure or age. "
+                "No text, no lettering and no numbers anywhere in the image, "
+                "including on the cake and the candles."
             ),
         ),
     }

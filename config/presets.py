@@ -55,20 +55,11 @@ PRESETS: Mapping[str, Preset] = MappingProxyType(
             button="🏚 Плохой день",
             invitation="Кинь фото — подселим соседа",
             instruction=(
-                "EDIT this photograph. Do NOT redraw, re-render, restyle or "
-                "regenerate the original image. Preserve the source photograph "
-                "exactly as it is: same pixels, same faces, same skin texture, "
-                "same clothing, same background, same grain and compression "
-                "artifacts, same camera quality. "
-                "ONLY ADD one new element: a scruffy, comically dishevelled man "
-                "in worn clothes standing next to the existing person, posing "
-                "together as if for the same photo. "
-                "Match the added man to the original photograph: same lighting "
-                "direction, same colour temperature, same perspective, same focal "
-                "length, same image noise and sharpness, so he looks like he was "
-                "physically present when the photo was taken. "
-                "The result must look like an unedited real photograph, not an "
-                "illustration or a render."
+                "Add a scruffy, dishevelled man in worn clothes standing next to "
+                "the person, posing together for the same photo. "
+                "Change only this. Preserve the person's face, pose, clothing and "
+                "the background exactly as they are. Match the added man to the "
+                "photo's lighting, perspective and grain."
             ),
         ),
     }

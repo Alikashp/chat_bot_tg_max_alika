@@ -16,6 +16,20 @@ from typing import NewType
 #: один и тот же человек в Telegram и в MAX — два разных пользователя.
 UserId = NewType("UserId", int)
 
+#: Что стоит в поле username, когда его у человека нет.
+#:
+#: Не пустота и не NULL: колонку читает человек из поддержки, а пустая ячейка
+#: одинаково выглядит и как «имени нет», и как «мы его не записали». Слово
+#: отвечает на этот вопрос сразу. Настоящим именем оно не притворяется:
+#: username в Telegram короче пяти символов не бывает.
+NO_USERNAME = "NONE"
+
+
+def username_or_none(reported: str | None) -> str:
+    """Приводит имя от мессенджера к тому, что кладём в базу."""
+    cleaned = (reported or "").strip().lstrip("@")
+    return cleaned or NO_USERNAME
+
 
 class MessengerKind(StrEnum):
     """Мессенджер, из которого пришёл пользователь."""
@@ -74,6 +88,11 @@ class User:
     support_number: int
     created_at: datetime
     daily_image_quota: int
+    #: Имя пользователя в мессенджере — для поддержки, и только для неё:
+    #: человеку оно нигде не показывается. Обновляется при каждом обращении,
+    #: потому что его меняют когда захотят, а протухшее имя хуже, чем
+    #: никакого: по нему пойдут искать не того. NO_USERNAME — имени нет.
+    username: str = NO_USERNAME
     bonus_messages: int = 0
     bonus_images: int = 0
     tariff_expires_at: datetime | None = None
@@ -252,6 +271,9 @@ class IncomingMessage:
 
     chat: Chat
     external_user_id: str
+    #: Имя пользователя, каким его назвал мессенджер прямо сейчас. None —
+    #: мессенджер о нём не сказал; это не то же самое, что «имени нет».
+    username: str | None = None
     text: str | None = None
     #: Ссылка на присланное фото в терминах мессенджера. Ядро её не
     #: разбирает: отдаёт обратно адаптеру, чтобы тот скачал файл.

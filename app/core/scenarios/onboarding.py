@@ -14,7 +14,8 @@ from __future__ import annotations
 from datetime import timedelta
 
 from app.core import referral, support, texts
-from app.core.models import Chat, MessengerKind, User
+from app.core.models import Chat, MessengerKind, User, username_or_none
+from app.core.scenarios import identity
 from app.core.scenarios.deps import Deps, Session
 
 #: Сколько попыток подобрать незанятые код и номер. Коллизия маловероятна,
@@ -33,6 +34,7 @@ async def start(
     messenger: MessengerKind,
     external_id: str,
     payload: str = "",
+    username: str | None = None,
 ) -> Session:
     """Обрабатывает /start и возвращает сессию.
 
@@ -41,13 +43,18 @@ async def start(
     """
     existing = await deps.storage.get_user(messenger, external_id)
     if existing is not None:
+        existing = await identity.remember_username(deps, existing, username)
         session = Session(user=existing, chat=chat, day=deps.today(), now=deps.now())
         await _greet(deps, session, from_presentations=False, gifted=False)
         return session
 
     from_presentations = referral.is_from_presentations(payload)
     user = await _create_user(
-        deps, messenger, external_id, from_presentations=from_presentations
+        deps,
+        messenger,
+        external_id,
+        from_presentations=from_presentations,
+        username=username,
     )
     session = Session(user=user, chat=chat, day=deps.today(), now=deps.now())
 
@@ -71,6 +78,7 @@ async def _create_user(
     external_id: str,
     *,
     from_presentations: bool,
+    username: str | None = None,
 ) -> User:
     """Заводит пользователя, подбирая свободный реферальный код."""
     quota = (
@@ -87,6 +95,7 @@ async def _create_user(
                 referral_code=referral.generate_code(),
                 support_number=support.generate_number(),
                 daily_image_quota=quota,
+                username=username_or_none(username),
             )
         except ValueError as error:
             last_error = error

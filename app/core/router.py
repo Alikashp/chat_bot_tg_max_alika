@@ -27,6 +27,7 @@ from app.core.photos import PhotoTooLargeError
 from app.core.retry_context import RetryKind
 from app.core.scenarios import (
     chat,
+    identity,
     images,
     keyboards,
     onboarding,
@@ -82,6 +83,7 @@ async def handle(deps: Deps, incoming: IncomingMessage) -> None:
             incoming.chat.messenger,
             incoming.external_user_id,
             incoming.start_payload,
+            incoming.username,
         )
         return
 
@@ -111,8 +113,15 @@ async def handle(deps: Deps, incoming: IncomingMessage) -> None:
             incoming.chat.messenger,
             incoming.external_user_id,
             "",
+            incoming.username,
         )
         return
+
+    # Имя в мессенджере меняют когда захотят, поэтому сверяем его при каждом
+    # обращении, а не только при регистрации. Запись происходит, только если
+    # оно правда изменилось: обычно это сравнение двух строк и ни одного
+    # запроса.
+    user = await identity.remember_username(deps, user, incoming.username)
 
     session = Session(user=user, chat=incoming.chat, day=deps.today(), now=deps.now())
 

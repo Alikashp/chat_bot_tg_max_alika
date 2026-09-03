@@ -98,6 +98,7 @@ def to_incoming(message: Message) -> IncomingMessage | None:
         return IncomingMessage(
             chat=chat,
             external_user_id=str(message.from_user.id),
+            username=message.from_user.username,
             paid_order_id=payment.invoice_payload,
             paid_renewal=bool(payment.is_recurring)
             and not bool(payment.is_first_recurring),
@@ -110,6 +111,7 @@ def to_incoming(message: Message) -> IncomingMessage | None:
     return IncomingMessage(
         chat=chat,
         external_user_id=str(message.from_user.id),
+        username=message.from_user.username,
         # Саму команду в текст не отдаём: иначе «/start» уехал бы в чат
         # вопросом пользователя и стоил бы ему сообщения.
         text=None if payload is not None else text,
@@ -136,6 +138,7 @@ def callback_to_incoming(callback: CallbackQuery) -> IncomingMessage | None:
     return IncomingMessage(
         chat=chat,
         external_user_id=str(callback.from_user.id),
+        username=callback.from_user.username,
         action=callback.data,
         callback_id=callback.id,
     )
@@ -151,6 +154,7 @@ def pre_checkout_to_incoming(query: PreCheckoutQuery) -> IncomingMessage:
     return IncomingMessage(
         chat=chat,
         external_user_id=str(query.from_user.id),
+        username=query.from_user.username,
         pre_checkout_id=query.id,
         pre_checkout_order_id=query.invoice_payload,
     )

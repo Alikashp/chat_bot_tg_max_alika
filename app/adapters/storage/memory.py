@@ -21,6 +21,7 @@ from itertools import count
 from uuid import uuid4
 
 from app.core.models import (
+    NO_USERNAME,
     DialogState,
     MessengerKind,
     Payment,
@@ -79,6 +80,7 @@ class InMemoryStorage:
         referral_code: str,
         support_number: int,
         daily_image_quota: int,
+        username: str = NO_USERNAME,
     ) -> User:
         existing = self._by_external.get((messenger, external_id))
         if existing is not None:
@@ -100,6 +102,7 @@ class InMemoryStorage:
             support_number=support_number,
             created_at=self._now(),
             daily_image_quota=daily_image_quota,
+            username=username,
         )
         self._users[user.id] = user
         self._by_external[(messenger, external_id)] = user.id
@@ -120,6 +123,10 @@ class InMemoryStorage:
     async def set_pending(self, user_id: UserId, pending: str | None) -> None:
         user = self._require_user(user_id)
         self._users[user_id] = replace(user, pending=pending)
+
+    async def set_username(self, user_id: UserId, username: str) -> None:
+        user = self._require_user(user_id)
+        self._users[user_id] = replace(user, username=username)
 
     async def set_retry_context(self, user_id: UserId, context: str | None) -> None:
         user = self._require_user(user_id)

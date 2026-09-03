@@ -12,6 +12,7 @@ from datetime import date, datetime
 from typing import Protocol
 
 from app.core.models import (
+    NO_USERNAME,
     DialogState,
     MessengerKind,
     Payment,
@@ -36,6 +37,16 @@ class Storage(Protocol):
         """Находит пользователя по внутреннему идентификатору."""
         ...
 
+    async def set_username(self, user_id: UserId, username: str) -> None:
+        """Запоминает имя пользователя в мессенджере.
+
+        Вызывается при каждом обращении, а не только при регистрации: имя
+        меняют когда захотят, и через месяц записанное однажды будет
+        указывать не на того человека. Протухшее имя хуже, чем никакого —
+        по нему поддержка пойдёт искать и найдёт постороннего.
+        """
+        ...
+
     async def get_user_by_referral_code(self, code: str) -> User | None:
         """Находит пользователя по его реферальному коду."""
         ...
@@ -48,6 +59,7 @@ class Storage(Protocol):
         referral_code: str,
         support_number: int,
         daily_image_quota: int,
+        username: str = NO_USERNAME,
     ) -> User:
         """Заводит нового пользователя — или возвращает уже заведённого.
 

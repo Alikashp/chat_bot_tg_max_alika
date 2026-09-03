@@ -219,6 +219,8 @@ def build_providers(
         ),
         model=settings.image_model,
         size=settings.image_size,
+        edit_size=settings.image_edit_size,
+        input_fidelity=settings.image_input_fidelity,
     )
     return llm, images, (llm_client, image_client)
 

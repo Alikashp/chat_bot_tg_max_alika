@@ -37,6 +37,8 @@ class OpenAIImages:
         caller: ResilientCaller,
         model: str,
         size: str,
+        edit_size: str = "auto",
+        input_fidelity: str = "high",
     ) -> None:
         self._client = client
         self._base_url = base_url.rstrip("/")
@@ -44,6 +46,8 @@ class OpenAIImages:
         self._caller = caller
         self._model = model
         self._size = size
+        self._edit_size = edit_size
+        self._input_fidelity = input_fidelity
 
     @property
     def _auth(self) -> dict[str, str]:
@@ -78,6 +82,18 @@ class OpenAIImages:
         Отправляется multipart, а не JSON: Images API принимает исходное
         изображение файлом. Заголовок Content-Type не выставляем — httpx сам
         соберёт его вместе с границей раздела частей.
+
+        Два параметра отличают правку от рисования заново, и оба здесь
+        существенны — без них человек получает не своё лицо.
+
+        ``input_fidelity`` просит модель сохранять черты лица и мелкие детали
+        исходника. По умолчанию Images API перерисовывает картинку целиком, и
+        никакая инструкция «оставь человека как есть» этого не отменяет: это
+        не вопрос формулировки, а вопрос параметра.
+
+        ``size`` для правки — «auto», то есть пропорции исходника. Фиксированный
+        квадрат означал бы, что портретный снимок с телефона модель
+        перекомпонует под 1:1, а вместе с кадром переедет и лицо.
         """
         files = {
             "image": (source.filename, source.data, source.mime_type),
@@ -85,10 +101,15 @@ class OpenAIImages:
         data = {
             "model": self._model,
             "prompt": instruction,
-            "size": self._size,
+            "size": self._edit_size,
             "quality": quality.value,
             "n": "1",
         }
+        if self._input_fidelity:
+            # Пустое значение выключает параметр целиком: не всякий шлюз к
+            # Images API его пропускает, а неизвестное поле — это 400 на
+            # каждый прикол.
+            data["input_fidelity"] = self._input_fidelity
 
         async def call() -> dict[str, Any]:
             return await request_json(

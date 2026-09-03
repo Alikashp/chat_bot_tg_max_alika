@@ -297,6 +297,7 @@ def build_core_settings(
         offer_url=settings.offer_url,
         privacy_url=settings.privacy_url,
         docs_version=settings.docs_version,
+        bank_statement_name=settings.bank_statement_name,
     )
 
 

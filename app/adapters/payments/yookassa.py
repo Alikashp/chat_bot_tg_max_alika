@@ -24,9 +24,6 @@ from app.adapters.ai.http import request_json
 from app.core.tariffs import RUB
 from app.ports.payments import PaymentIntent
 
-#: Боевой адрес API. В конфиге переопределяется на тестовый магазин.
-API_URL = "https://api.yookassa.ru/v3"
-
 #: Статус, при котором деньги действительно у нас.
 _SUCCEEDED = "succeeded"
 

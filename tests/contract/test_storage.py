@@ -761,3 +761,75 @@ async def test_an_overdue_charge_gets_no_tomorrow_reminder(storage: Storage) -> 
     )
 
     assert due == []
+
+
+async def test_advancing_moves_the_next_charge(storage: Storage) -> None:
+    user = await _make_user(storage, "sub-14")
+    await _make_subscription(storage, user)
+    later = MOMENT + timedelta(days=30)
+
+    moved = await storage.advance_subscription(
+        user.id, next_charge_at=later, status="past_due", failed_since=MOMENT
+    )
+
+    found = await storage.get_subscription(user.id)
+    assert moved is True
+    assert found is not None
+    assert found.next_charge_at == later
+    assert found.status == "past_due"
+    assert found.failed_since == MOMENT
+    assert found.amount == 599
+
+
+async def test_advancing_can_change_the_price(storage: Storage) -> None:
+    user = await _make_user(storage, "sub-15")
+    await _make_subscription(storage, user)
+
+    await storage.advance_subscription(
+        user.id,
+        next_charge_at=MOMENT,
+        status="active",
+        failed_since=None,
+        amount=699,
+    )
+
+    found = await storage.get_subscription(user.id)
+    assert found is not None
+    assert found.amount == 699
+
+
+async def test_a_cancelled_subscription_is_never_advanced(storage: Storage) -> None:
+    """Ради этого условия метод и существует.
+
+    Фоновый проход держит копию, прочитанную в его начале, и между чтением и
+    записью помещается нажатие «Отключить продление». Записать копию целиком
+    значило бы воскресить отменённую подписку и списать деньги в следующем
+    месяце.
+    """
+    user = await _make_user(storage, "sub-16")
+    await _make_subscription(storage, user)
+    await storage.cancel_subscription(user.id, MOMENT)
+
+    moved = await storage.advance_subscription(
+        user.id,
+        next_charge_at=MOMENT + timedelta(days=30),
+        status="active",
+        failed_since=None,
+    )
+
+    found = await storage.get_subscription(user.id)
+    assert moved is False
+    assert found is not None
+    assert found.status == "cancelled"
+    assert found.next_charge_at == MOMENT
+
+
+async def test_advancing_a_missing_subscription_is_false(storage: Storage) -> None:
+    user = await _make_user(storage, "sub-17")
+
+    assert (
+        await storage.advance_subscription(
+            user.id, next_charge_at=MOMENT, status="active", failed_since=None
+        )
+        is False
+    )

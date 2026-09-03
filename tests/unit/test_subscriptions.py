@@ -625,3 +625,82 @@ async def test_the_answer_goes_to_the_messenger_the_person_came_from(
 
     assert messenger.last_text.chat.messenger is MessengerKind.MAX
     assert messenger.last_text.chat.chat_id == "max-42"
+
+
+# --- Строка в банковской выписке ------------------------------------------
+
+
+async def test_the_card_order_names_the_bank_statement_line(
+    deps: Deps, session: Session, messenger: FakeMessenger
+) -> None:
+    """Через месяц человек увидит эту строку в приложении банка.
+
+    Незнакомая — и он звонит оспаривать списание. Показанная до оплаты, она
+    этот звонок предотвращает.
+    """
+    await payments.start_card(deps, session, PRO)
+
+    assert deps.settings.bank_statement_name in messenger.last_text.text
+
+
+async def test_a_star_order_says_nothing_about_banks(
+    deps: Deps, session: Session, messenger: FakeMessenger
+) -> None:
+    """У звёзд списывает мессенджер: банковской выписки не будет вовсе."""
+    await payments.start_stars(deps, session, PRO)
+
+    assert deps.settings.bank_statement_name not in messenger.last_text.text
+
+
+# --- Отмена во время прохода ----------------------------------------------
+
+
+async def test_a_cancellation_during_the_pass_is_not_undone(
+    deps: Deps, storage: InMemoryStorage, user: User
+) -> None:
+    """Проход держит копию подписки, прочитанную в его начале.
+
+    Пока он идёт — а идёт он с обращениями к провайдеру и мессенджеру, —
+    человек успевает нажать «Отключить продление». Записать обратно свою
+    копию значит воскресить отменённую подписку и списать с человека в
+    следующем месяце деньги, от которых он отказался.
+    """
+    cards = FakeCards(recurring=True)
+    cards.charge_succeeds = False
+    recurring = replace(deps, cards=cards)
+    stale = await _subscribe(recurring, user, charge_at=timedelta(0))
+    await storage.cancel_subscription(user.id, deps.now())
+
+    await subscriptions.charge(recurring, stale)
+
+    saved = await storage.get_subscription(user.id)
+    assert saved is not None
+    assert saved.status == SubscriptionStatus.CANCELLED.value
+
+
+async def test_money_is_not_taken_from_someone_who_just_cancelled(
+    deps: Deps, storage: InMemoryStorage, user: User
+) -> None:
+    """Худшее в этой гонке — не испорченная строка, а списанные деньги."""
+    cards = FakeCards(recurring=True)
+    recurring = replace(deps, cards=cards)
+    stale = await _subscribe(recurring, user, charge_at=timedelta(0))
+    await storage.cancel_subscription(user.id, deps.now())
+
+    await subscriptions.charge(recurring, stale)
+
+    assert cards.charged == []
+
+
+async def test_a_price_change_does_not_revive_a_cancelled_subscription(
+    deps: Deps, storage: InMemoryStorage, user: User
+) -> None:
+    """То же самое в проходе сверки цен."""
+    stale = await _subscribe(deps, user, charge_at=timedelta(days=6), amount=499)
+    await storage.cancel_subscription(user.id, deps.now())
+
+    await subscriptions.check_price(deps, stale)
+
+    saved = await storage.get_subscription(user.id)
+    assert saved is not None
+    assert saved.status == SubscriptionStatus.CANCELLED.value

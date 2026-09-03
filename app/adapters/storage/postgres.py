@@ -121,7 +121,6 @@ class PostgresStorage:
         referral_code: str,
         support_number: int,
         daily_image_quota: int,
-        referred_by: UserId | None = None,
     ) -> User:
         query = (
             insert(users)
@@ -133,7 +132,6 @@ class PostgresStorage:
                 support_number=support_number,
                 created_at=self._now(),
                 daily_image_quota=daily_image_quota,
-                referred_by=referred_by,
             )
             # Гонка за нового человека разрешается базой, а не проверкой в
             # коде: два первых обновления обрабатываются параллельно, и оба
@@ -423,6 +421,40 @@ class PostgresStorage:
         async with self._session() as session, session.begin():
             await session.execute(query)
 
+    async def advance_subscription(
+        self,
+        user_id: UserId,
+        *,
+        next_charge_at: datetime,
+        status: str,
+        failed_since: datetime | None,
+        amount: int | None = None,
+    ) -> bool:
+        """Точечное обновление, которое не трогает отменённую подписку.
+
+        Условие стоит внутри самого UPDATE, а не проверкой перед ним: между
+        проверкой и записью помещается ровно то нажатие «Отключить
+        продление», ради которого всё это и написано.
+        """
+        values: dict[str, Any] = {
+            "next_charge_at": next_charge_at,
+            "status": status,
+            "failed_since": failed_since,
+        }
+        if amount is not None:
+            values["amount"] = amount
+        query = (
+            update(subscriptions)
+            .where(
+                subscriptions.c.user_id == user_id,
+                subscriptions.c.status != SubscriptionStatus.CANCELLED.value,
+            )
+            .values(**values)
+            .returning(subscriptions.c.user_id)
+        )
+        async with self._session() as session, session.begin():
+            return (await session.execute(query)).one_or_none() is not None
+
     async def cancel_subscription(self, user_id: UserId, at: datetime) -> bool:
         query = (
             update(subscriptions)
@@ -637,7 +669,6 @@ def _to_user(row: Any) -> User:
         support_number=row["support_number"],
         created_at=row["created_at"],
         daily_image_quota=row["daily_image_quota"],
-        referred_by=None if row["referred_by"] is None else UserId(row["referred_by"]),
         bonus_messages=row["bonus_messages"],
         bonus_images=row["bonus_images"],
         tariff_expires_at=row["tariff_expires_at"],

@@ -142,7 +142,9 @@ python -m app.main
 | `LLM_SYSTEM_PROMPT` | нет | Инструкция модели; по умолчанию из `config/prompt.py` | — |
 | `LLM_RATE_PER_SECOND` / `LLM_BURST` / `LLM_CONCURRENCY` | нет (20 / 40 / 16) | Ограничения на провайдера текста | — |
 | `IMAGE_BASE_URL` / `IMAGE_API_KEY` | нет | Провайдер картинок; пустой ключ означает `LLM_API_KEY` | — |
-| `IMAGE_MODEL` / `IMAGE_SIZE` | нет (`gpt-image-1` / `1024x1024`) | Модель и размер картинки | — |
+| `IMAGE_MODEL` / `IMAGE_SIZE` | нет (`gpt-image-1` / `1024x1024`) | Модель и размер картинки по описанию | — |
+| `IMAGE_EDIT_SIZE` | нет (`auto`) | Размер при правке присланного фото. `auto` — пропорции исходника | — |
+| `IMAGE_INPUT_FIDELITY` | нет (`high`) | Бережность к исходнику при правке. Без `high` лицо перерисовывается. Пусто — параметр не отправляется | — |
 | `IMAGE_TIMEOUT_SECONDS` | нет (180) | Таймаут отрисовки | — |
 | `IMAGE_RATE_PER_SECOND` / `IMAGE_BURST` / `IMAGE_CONCURRENCY` | нет (5 / 10 / 8) | Ограничения на провайдера картинок | — |
 | `IMAGE_RETRY_ATTEMPTS` | нет (2) | Сколько раз повторяем отрисовку. Меньше, чем у текста: попытка стоит денег | — |

@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import json
 from base64 import b64encode
 
 import httpx
@@ -60,7 +61,7 @@ def _llm(caller: ResilientCaller | None = None) -> OpenAICompatibleLLM:
     )
 
 
-def _images(caller: ResilientCaller | None = None) -> OpenAIImages:
+def _images(caller: ResilientCaller | None = None, **overrides: str) -> OpenAIImages:
     return OpenAIImages(
         httpx.AsyncClient(),
         base_url=BASE,
@@ -68,6 +69,7 @@ def _images(caller: ResilientCaller | None = None) -> OpenAIImages:
         caller=caller or _caller(),
         model="gpt-image-1",
         size="1024x1024",
+        **overrides,
     )
 
 
@@ -368,3 +370,65 @@ async def test_an_ordinary_rejection_keeps_its_machine_code() -> None:
         await _llm().complete(TURNS, model="нет-такой-модели")
 
     assert "model_not_found" in str(failure.value)
+
+
+# --- Правка фото не должна возвращать чужое лицо --------------------------
+
+
+@respx.mock
+async def test_editing_asks_the_model_to_keep_the_face() -> None:
+    """Без этого параметра Images API перерисовывает фото целиком.
+
+    Человек присылает свой снимок и получает обратно искажённое лицо. Никакая
+    инструкция «оставь человека как есть» этого не отменяет: дело не в
+    формулировке, а в том, что модель по умолчанию рисует заново.
+    """
+    route = respx.post(EDIT_URL).mock(return_value=httpx.Response(200, json=_drawn()))
+
+    await _images().edit(
+        Photo(data=PNG_BYTES, mime_type="image/png", filename="in.png"),
+        "make it lego",
+        quality=ImageQuality.MEDIUM,
+    )
+
+    assert b'name="input_fidelity"\r\n\r\nhigh' in route.calls.last.request.content
+
+
+@respx.mock
+async def test_editing_keeps_the_shape_of_the_original() -> None:
+    """Квадрат перекомпоновал бы портретный снимок с телефона вместе с лицом."""
+    route = respx.post(EDIT_URL).mock(return_value=httpx.Response(200, json=_drawn()))
+
+    await _images().edit(
+        Photo(data=PNG_BYTES, mime_type="image/png", filename="in.png"),
+        "make it lego",
+        quality=ImageQuality.MEDIUM,
+    )
+
+    assert b'name="size"\r\n\r\nauto' in route.calls.last.request.content
+
+
+@respx.mock
+async def test_drawing_from_scratch_keeps_its_fixed_size() -> None:
+    """Рисование по описанию исходника не имеет — пропорции задаём мы."""
+    route = respx.post(IMAGE_URL).mock(return_value=httpx.Response(200, json=_drawn()))
+
+    await _images().generate("кот", quality=ImageQuality.MEDIUM)
+
+    payload = json.loads(route.calls.last.request.content)
+    assert payload["size"] == "1024x1024"
+    assert "input_fidelity" not in payload
+
+
+@respx.mock
+async def test_the_fidelity_parameter_can_be_switched_off() -> None:
+    """Не всякий шлюз к Images API его пропускает, а неизвестное поле — это 400."""
+    route = respx.post(EDIT_URL).mock(return_value=httpx.Response(200, json=_drawn()))
+
+    await _images(input_fidelity="").edit(
+        Photo(data=PNG_BYTES, mime_type="image/png", filename="in.png"),
+        "make it lego",
+        quality=ImageQuality.LOW,
+    )
+
+    assert b"input_fidelity" not in route.calls.last.request.content

@@ -13,8 +13,9 @@ import pytest
 
 from app.adapters.storage.memory import InMemoryStorage
 from app.core import pending, texts
-from app.core.actions import Action, buy_action, preset_action
+from app.core.actions import Action, buy_action, email_action, preset_action
 from app.core.models import Chat, IncomingMessage, MessengerKind, TariffId, User
+from app.core.receipts import FiscalSettings
 from app.core.router import handle
 from app.core.scenarios.deps import Deps
 from tests.fakes import FakeGuard, FakeImages, FakeLLM, FakeMessenger
@@ -285,6 +286,36 @@ async def test_a_locked_preset_never_starts_collecting(
     await handle(deps, incoming(photo_ref="adult"))
     assert messenger.texts_said()[-1] == texts.PRESETS_ASK
     assert images_.edited == []
+
+
+async def test_the_change_email_button_asks_again(
+    deps: Deps, user: User, storage: InMemoryStorage, messenger: FakeMessenger
+) -> None:
+    """Нажатие ставит ожидание почты — а не снимает его, как все остальные."""
+    with_receipts = replace(
+        deps,
+        settings=replace(
+            deps.settings,
+            fiscal=FiscalSettings(
+                vat_code=1, payment_subject="service", payment_mode="full_payment"
+            ),
+        ),
+    )
+
+    await handle(with_receipts, incoming(action=email_action("pro")))
+
+    assert messenger.last_text.text == texts.EMAIL_ASK
+    fresh = await storage.get_user_by_id(user.id)
+    assert fresh is not None
+    assert pending.parse_await_email(fresh.pending) == "pro"
+
+
+async def test_a_change_email_button_for_a_gone_tariff_does_not_dead_end(
+    deps: Deps, user: User, messenger: FakeMessenger
+) -> None:
+    await handle(deps, incoming(action=email_action("no_such_tariff")))
+
+    assert messenger.texts_said()
 
 
 # --- Непонятое -----------------------------------------------------------

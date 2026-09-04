@@ -263,3 +263,61 @@ def _subscription(deps: Deps, user: User) -> Subscription:
 def test_the_settings_know_whether_receipts_are_on() -> None:
     assert CoreSettings(bot_username="b").receipts_ready is False
     assert CoreSettings(bot_username="b", fiscal=FISCAL).receipts_ready is True
+
+
+# --- Правка адреса на экране заказа --------------------------------------
+
+
+def _labels(messenger: object) -> list[str]:
+    keyboard = messenger.last_text.keyboard  # type: ignore[attr-defined]
+    assert keyboard is not None
+    return [button.text for row in keyboard.rows for button in row]
+
+
+async def test_the_order_screen_offers_to_fix_the_address(
+    fiscal_deps: Deps, session: Session, storage: InMemoryStorage
+) -> None:
+    """Без кнопки исправить опечатку можно было бы только через месяц."""
+    await storage.set_email(session.user.id, "alika@mail.ru")
+    fresh = await storage.get_user_by_id(session.user.id)
+    assert fresh is not None
+
+    await payments.start_card(fiscal_deps, replace(session, user=fresh), TariffId.PRO)
+
+    assert texts.BUTTON_EMAIL_CHANGE in _labels(fiscal_deps.messenger)
+
+
+async def test_without_receipts_there_is_nothing_to_fix(
+    deps: Deps, session: Session
+) -> None:
+    """Обещать шаг, которого нет, — хуже, чем не предлагать его вовсе."""
+    await payments.start_card(deps, session, TariffId.PRO)
+
+    assert texts.BUTTON_EMAIL_CHANGE not in _labels(deps.messenger)
+
+
+async def test_fixing_the_address_returns_to_the_same_tariff(
+    fiscal_deps: Deps, session: Session, storage: InMemoryStorage, cards: FakeCards
+) -> None:
+    """Нажал «Другая почта» на «Максе» — вернуться должен на «Макс»."""
+    await storage.set_email(session.user.id, "opechatka@mial.ru")
+    fresh = await storage.get_user_by_id(session.user.id)
+    assert fresh is not None
+
+    await payments.ask_for_email(
+        fiscal_deps, replace(session, user=fresh), TariffId.MAX
+    )
+    asked = await storage.get_user_by_id(session.user.id)
+    assert asked is not None
+    assert fiscal_deps.messenger.last_text.text == texts.EMAIL_ASK  # type: ignore[attr-defined]
+
+    await payments.remember_email(
+        fiscal_deps, replace(session, user=asked), "alika@mail.ru"
+    )
+
+    saved = await storage.get_user_by_id(session.user.id)
+    assert saved is not None
+    assert saved.email == "alika@mail.ru", "старый адрес не перезаписан"
+    assert cards.receipts[-1] is not None
+    assert cards.receipts[-1].email == "alika@mail.ru"
+    assert cards.receipts[-1].total_rub == 1490, "вернулись не к тому тарифу"

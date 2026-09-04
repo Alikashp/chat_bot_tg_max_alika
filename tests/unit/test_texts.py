@@ -12,6 +12,7 @@ import pytest
 from app.core import texts
 from app.core.models import TariffId
 from app.core.scenarios import keyboards as scenario_keyboards
+from app.core.tariffs import RUB
 from app.core.texts import Screen
 from scripts.check_texts import check_presets, check_screen, collect
 
@@ -359,3 +360,31 @@ def test_no_row_of_buttons_is_too_wide_for_a_phone() -> None:
                 continue
             width = sum(len(button.text) for button in row)
             assert width <= MAX_ROW_CHARS, f"{name}: ряд длиной {width} не поместится"
+
+
+def test_the_order_screen_declares_the_change_email_button() -> None:
+    """Линтер проверяет только то, что экран о себе объявил.
+
+    Разойтись со сборкой клавиатуры этот список не должен: разошедшись, он
+    молча перестанет проверять кнопку, которую человек всё это время видит.
+    """
+    with_address = texts.payment_order(
+        TariffId.PRO,
+        days=30,
+        amount=599,
+        currency=RUB,
+        next_charge="30 сентября",
+        recurring=True,
+        receipt_to="alika@mail.ru",
+    )
+    without = texts.payment_order(
+        TariffId.PRO,
+        days=30,
+        amount=599,
+        currency=RUB,
+        next_charge="30 сентября",
+        recurring=True,
+    )
+
+    assert texts.BUTTON_EMAIL_CHANGE in with_address.buttons
+    assert texts.BUTTON_EMAIL_CHANGE not in without.buttons

@@ -59,6 +59,10 @@ BUY_PREFIX = "t:buy:"
 #: Префикс выбора способа оплаты: за ним «способ:тариф».
 METHOD_PREFIX = "t:pay:"
 
+#: Префикс «спросить почту заново». За ним тариф: спросив адрес, надо вернуть
+#: человека к оплате того же тарифа, а не в начало витрины.
+EMAIL_PREFIX = "t:mail:"
+
 
 def preset_action(preset_id: str) -> str:
     """Действие «выбран такой-то пресет»."""
@@ -85,6 +89,18 @@ def parse_method_action(action: str) -> tuple[str, str] | None:
     if not method or not tariff_id:
         return None
     return method, tariff_id
+
+
+def email_action(tariff_id: str) -> str:
+    """Действие «хочу указать другую почту для чека»."""
+    return f"{EMAIL_PREFIX}{tariff_id}"
+
+
+def parse_email_action(action: str) -> str | None:
+    """Достаёт тариф, к оплате которого вернуться после почты."""
+    if not action.startswith(EMAIL_PREFIX):
+        return None
+    return action.removeprefix(EMAIL_PREFIX) or None
 
 
 def buy_action(tariff_id: str) -> str:

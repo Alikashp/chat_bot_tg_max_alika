@@ -37,6 +37,9 @@ SENSITIVE_KEYS = frozenset(
         "api_key",
         "secret",
         "authorization",
+        # Почта покупателя. В логах ей делать нечего: это персональные
+        # данные, а нужна она ровно в одном месте — в чеке.
+        "email",
         "password",
         "photo",
         "image",

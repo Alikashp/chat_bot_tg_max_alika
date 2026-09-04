@@ -193,6 +193,12 @@ class PostgresStorage:
                 update(users).where(users.c.id == user_id).values(username=username)
             )
 
+    async def set_email(self, user_id: UserId, email: str) -> None:
+        async with self._session() as session, session.begin():
+            await session.execute(
+                update(users).where(users.c.id == user_id).values(email=email)
+            )
+
     async def set_retry_context(self, user_id: UserId, context: str | None) -> None:
         query = update(users).where(users.c.id == user_id).values(retry_context=context)
         async with self._session() as session, session.begin():
@@ -695,6 +701,7 @@ def _to_user(row: Any) -> User:
         bonus_messages=row["bonus_messages"],
         bonus_images=row["bonus_images"],
         tariff_expires_at=row["tariff_expires_at"],
+        email=row["email"],
         pending=row["pending"],
         retry_context=row["retry_context"],
     )

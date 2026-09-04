@@ -25,6 +25,10 @@ AWAIT_IMAGE_PROMPT = "await:image"
 #: и ссылки на уже присланные фото.
 _AWAIT_PRESET_PREFIX = "await:preset:"
 
+#: Ждём почту для фискального чека. За префиксом — тариф, за которым человек
+#: шёл: спросив адрес, надо вернуть его туда же, а не в начало витрины.
+_AWAIT_EMAIL_PREFIX = "await:email:"
+
 #: Чем разделены части.
 #:
 #: Перевод строки, а не двоеточие и не вертикальная черта: ссылка на фото в
@@ -66,6 +70,20 @@ def parse_await_preset(pending: str | None) -> AwaitedPreset | None:
     if not preset_id or not all(collected):
         return None
     return AwaitedPreset(preset_id=preset_id, collected=tuple(collected))
+
+
+def await_email(tariff_id: str) -> str:
+    """Состояние «ждём почту, чтобы вернуться к оплате такого-то тарифа»."""
+    if not tariff_id:
+        raise ValueError("нужен идентификатор тарифа")
+    return f"{_AWAIT_EMAIL_PREFIX}{tariff_id}"
+
+
+def parse_await_email(pending: str | None) -> str | None:
+    """Возвращает тариф, к оплате которого вернуться после почты."""
+    if pending is None or not pending.startswith(_AWAIT_EMAIL_PREFIX):
+        return None
+    return pending.removeprefix(_AWAIT_EMAIL_PREFIX) or None
 
 
 def is_awaiting_image_prompt(pending: str | None) -> bool:

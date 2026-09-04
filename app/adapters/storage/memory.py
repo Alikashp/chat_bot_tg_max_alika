@@ -128,6 +128,10 @@ class InMemoryStorage:
         user = self._require_user(user_id)
         self._users[user_id] = replace(user, username=username)
 
+    async def set_email(self, user_id: UserId, email: str) -> None:
+        user = self._require_user(user_id)
+        self._users[user_id] = replace(user, email=email)
+
     async def set_retry_context(self, user_id: UserId, context: str | None) -> None:
         user = self._require_user(user_id)
         self._users[user_id] = replace(user, retry_context=context)

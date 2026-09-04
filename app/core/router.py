@@ -311,6 +311,13 @@ async def _handle_text(deps: Deps, session: Session, text: str) -> None:
     предыдущего», человек останется и без картинки, и без режима — следующее
     сообщение уедет в чат, хотя он просил нарисовать.
     """
+    if pending.parse_await_email(session.user.pending) is not None:
+        # Ждём почту для чека. Ограничитель здесь не нужен: ни картинки, ни
+        # запроса к провайдеру эта работа не стоит, а вот запереть человека
+        # на середине покупки отказом «дождись предыдущего» было бы обидно.
+        await payments.remember_email(deps, session, text)
+        return
+
     if pending.is_awaiting_image_prompt(session.user.pending):
 
         async def draw(d: Deps, s: Session) -> None:

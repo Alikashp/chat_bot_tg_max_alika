@@ -94,6 +94,14 @@ class Storage(Protocol):
         """
         ...
 
+    async def set_email(self, user_id: UserId, email: str) -> None:
+        """Запоминает почту для фискального чека.
+
+        Спрашивается один раз, перед первой оплатой картой. Дальше по ней
+        уходят чеки автосписаний — там спросить будет уже не у кого.
+        """
+        ...
+
     async def set_retry_context(self, user_id: UserId, context: str | None) -> None:
         """Запоминает, что повторить по кнопке «Ещё раз».
 

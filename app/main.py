@@ -42,6 +42,7 @@ from app.adapters.telegram.stars import TelegramStars
 from app.config import Settings, get_settings
 from app.core.billing import Billing
 from app.core.models import MessengerKind
+from app.core.receipts import FiscalSettings
 from app.core.referral import MAX_HOST, TELEGRAM_HOST
 from app.core.scenarios import payments
 from app.core.scenarios.deps import Deps, session_for
@@ -300,6 +301,19 @@ def build_core_settings(
         privacy_url=settings.privacy_url,
         docs_version=settings.docs_version,
         bank_statement_name=settings.bank_statement_name,
+        fiscal=_fiscal(settings),
+    )
+
+
+def _fiscal(settings: Settings) -> FiscalSettings | None:
+    """Фискальные параметры чека. None — чеки через ЮKassa не формируются."""
+    if not settings.receipts_enabled:
+        return None
+    return FiscalSettings(
+        vat_code=settings.receipt_vat_code,
+        payment_subject=settings.receipt_payment_subject,
+        payment_mode=settings.receipt_payment_mode,
+        tax_system_code=settings.receipt_tax_system_code,
     )
 
 

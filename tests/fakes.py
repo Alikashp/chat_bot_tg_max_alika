@@ -19,6 +19,7 @@ from app.core.models import (
     MessageRef,
     Photo,
 )
+from app.core.receipts import Receipt
 from app.ports.ai import ImageQuality
 from app.ports.payments import PaymentIntent
 
@@ -312,6 +313,9 @@ class FakeCards:
         self.charge_succeeds: bool = True
         #: Просили ли сохранить способ оплаты при последнем платеже.
         self.saved_requested: bool = False
+        #: Чеки, ушедшие вместе с платежами, — по одному на каждый вызов.
+        #: None означает, что чек не отправляли вовсе.
+        self.receipts: list[Receipt | None] = []
 
     async def create_payment(
         self,
@@ -320,10 +324,12 @@ class FakeCards:
         amount_rub: int,
         description: str,
         save_method: bool = False,
+        receipt: Receipt | None = None,
     ) -> PaymentIntent:
         if self.error is not None:
             raise self.error
         self.saved_requested = save_method
+        self.receipts.append(receipt)
         self.created.append((order_id, amount_rub))
         return PaymentIntent(
             external_id=f"ext-{len(self.created)}",
@@ -337,9 +343,11 @@ class FakeCards:
         amount_rub: int,
         description: str,
         payment_method_id: str,
+        receipt: Receipt | None = None,
     ) -> str | None:
         if self.error is not None:
             raise self.error
+        self.receipts.append(receipt)
         self.charged.append((order_id, amount_rub, payment_method_id))
         if not self.charge_succeeds:
             return None

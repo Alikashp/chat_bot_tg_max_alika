@@ -44,6 +44,9 @@ users = Table(
     # Имя в мессенджере — для поддержки. NOT NULL со значением по умолчанию:
     # «имени нет» — это тоже ответ, и пустая ячейка его не даёт.
     Column("username", String(64), nullable=False, server_default="NONE"),
+    # Почта для фискального чека. NULL — человек картой не платил: у звёзд
+    # чек выставляет мессенджер, и адрес там ни к чему.
+    Column("email", String(254), nullable=True),
     Column("bonus_messages", Integer, nullable=False, server_default="0"),
     Column("bonus_images", Integer, nullable=False, server_default="0"),
     Column("tariff_expires_at", DateTime(timezone=True), nullable=True),

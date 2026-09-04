@@ -890,3 +890,36 @@ async def test_losing_the_name_is_recorded_too(storage: Storage) -> None:
     found = await storage.get_user_by_id(user.id)
     assert found is not None
     assert found.username == NO_USERNAME
+
+
+# --- Почта для чека ------------------------------------------------------
+
+
+async def test_a_new_user_has_no_email(storage: Storage) -> None:
+    """Пусто означает ровно «картой не платил», а не «мы не записали»."""
+    user = await _make_user(storage, "mail-1")
+
+    assert user.email is None
+
+
+async def test_the_email_survives_a_reread(storage: Storage) -> None:
+    """По ней уходят чеки автосписаний — там спросить будет уже не у кого."""
+    user = await _make_user(storage, "mail-2")
+
+    await storage.set_email(user.id, "alika@mail.ru")
+
+    found = await storage.get_user_by_id(user.id)
+    assert found is not None
+    assert found.email == "alika@mail.ru"
+
+
+async def test_a_long_address_still_fits(storage: Storage) -> None:
+    """254 символа — предел адреса по RFC 5321, и колонка обязана его вмещать."""
+    user = await _make_user(storage, "mail-3")
+    longest = "a" * (254 - len("@mail.ru")) + "@mail.ru"
+
+    await storage.set_email(user.id, longest)
+
+    found = await storage.get_user_by_id(user.id)
+    assert found is not None
+    assert found.email == longest

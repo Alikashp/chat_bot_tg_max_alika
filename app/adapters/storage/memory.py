@@ -128,6 +128,10 @@ class InMemoryStorage:
         user = self._require_user(user_id)
         self._users[user_id] = replace(user, username=username)
 
+    async def set_email(self, user_id: UserId, email: str) -> None:
+        user = self._require_user(user_id)
+        self._users[user_id] = replace(user, email=email)
+
     async def set_retry_context(self, user_id: UserId, context: str | None) -> None:
         user = self._require_user(user_id)
         self._users[user_id] = replace(user, retry_context=context)
@@ -270,7 +274,13 @@ class InMemoryStorage:
         if current is None or current.status == SubscriptionStatus.CANCELLED.value:
             return False
         self._subscriptions[user_id] = replace(
-            current, status=SubscriptionStatus.CANCELLED.value, cancelled_at=at
+            current,
+            status=SubscriptionStatus.CANCELLED.value,
+            cancelled_at=at,
+            # Забываем способ оплаты, а не только помечаем статус: у ЮKassa
+            # сохранённую карту не удалить, платежи по ней идут, пока мы их
+            # создаём, и отключение автоплатежа целиком на нашей стороне.
+            payment_method_id=None,
         )
         return True
 

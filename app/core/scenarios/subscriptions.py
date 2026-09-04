@@ -265,6 +265,14 @@ async def charge(deps: Deps, subscription: Subscription) -> None:
         await remind(deps, deferred)
         return
 
+    if deps.settings.receipts_ready and user.email is None:
+        # Чек обязателен и при автосписании, а доставить его некуда. Списать
+        # без чека нельзя: штраф за недоставленный дороже месяца подписки.
+        # Такого быть не должно — почта спрашивается до первой оплаты, — но
+        # если случилось, деньги не трогаем и оставляем след в логе.
+        deps.logger.error("subscription_charge_without_receipt", user_id=int(user.id))
+        return
+
     order = await deps.storage.create_payment(
         user_id=subscription.user_id,
         tariff=subscription.tariff,
@@ -281,6 +289,12 @@ async def charge(deps: Deps, subscription: Subscription) -> None:
                 subscription.tariff, days=deps.settings.subscription_days
             )[0],
             payment_method_id=subscription.payment_method_id,
+            receipt=payments.receipt_for_order(
+                deps,
+                email=user.email,
+                tariff_id=subscription.tariff,
+                amount_rub=subscription.amount,
+            ),
         )
     except Exception as error:
         # Провайдер не ответил. Это не отказ банка: денег никто не списывал,

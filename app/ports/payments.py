@@ -21,6 +21,8 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol
 
+from app.core.receipts import Receipt
+
 
 class PaymentMethod(StrEnum):
     """Способ оплаты (§2.8)."""
@@ -78,6 +80,7 @@ class CardPayments(Protocol):
         amount_rub: int,
         description: str,
         save_method: bool = False,
+        receipt: Receipt | None = None,
     ) -> PaymentIntent:
         """Начинает платёж и возвращает, куда отправить человека.
 
@@ -88,6 +91,10 @@ class CardPayments(Protocol):
         ``save_method`` просит провайдера запомнить способ оплаты, чтобы потом
         списывать без участия человека. Реквизиты карты при этом остаются у
         него: нам возвращается только идентификатор.
+
+        ``receipt`` — данные для фискального чека (54-ФЗ). None означает, что
+        чеки через провайдера не формируются: их может выставлять сам
+        мессенджер или онлайн-касса без нашего участия.
         """
         ...
 
@@ -98,6 +105,7 @@ class CardPayments(Protocol):
         amount_rub: int,
         description: str,
         payment_method_id: str,
+        receipt: Receipt | None = None,
     ) -> str | None:
         """Списывает по ранее сохранённому способу оплаты.
 
@@ -110,6 +118,9 @@ class CardPayments(Protocol):
         Исключение остаётся за случаем, когда провайдер не ответил вовсе:
         тогда неизвестно, списали деньги или нет, и считать попытку неудачной
         нельзя — иначе сбой сети стоил бы человеку подписки.
+
+        ``receipt`` нужен здесь ровно так же, как и при первой оплате: закон
+        не делает скидки на то, что человека в этот момент нет за экраном.
         """
         ...
 

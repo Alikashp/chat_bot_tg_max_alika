@@ -29,8 +29,9 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import datetime, timedelta
 
-from app.core import texts
+from app.core import pending, texts
 from app.core.actions import method_action
+from app.core.emails import normalise_email
 from app.core.limits import current_day
 from app.core.models import (
     Button,
@@ -41,6 +42,7 @@ from app.core.models import (
     User,
     UserId,
 )
+from app.core.receipts import Receipt, receipt_for
 from app.core.scenarios import keyboards
 from app.core.scenarios.deps import Deps, Session
 from app.core.tariffs import RUB, STARS, stars_price, tariff_of
@@ -89,6 +91,17 @@ async def start_card(deps: Deps, session: Session, tariff_id: TariffId) -> None:
         await _payments_not_ready(deps, session)
         return
 
+    if deps.settings.receipts_ready and session.user.email is None:
+        # Чек по 54-ФЗ доставляется на почту, и другого способа его вручить у
+        # нас нет. Спрашиваем до заказа, а не после оплаты: человек, уже
+        # отдавший деньги, вправе не отвечать на наши вопросы — а чек ему всё
+        # равно должен уйти.
+        await deps.storage.set_pending(
+            session.user.id, pending.await_email(tariff_id.value)
+        )
+        await deps.messenger.send_text(session.chat, texts.email_ask().text)
+        return
+
     tariff = tariff_of(tariff_id)
     recurring = deps.cards.recurring
     order = await _open_order(
@@ -111,6 +124,12 @@ async def start_card(deps: Deps, session: Session, tariff_id: TariffId) -> None:
             # пользоваться. Иначе провайдер хранил бы карту человека без
             # причины, а мы обещали бы продление, которого не будет.
             save_method=recurring,
+            receipt=receipt_for_order(
+                deps,
+                email=session.user.email,
+                tariff_id=tariff_id,
+                amount_rub=tariff.price_rub,
+            ),
         )
     except Exception as error:
         # Заказ остаётся в pending и просто протухнет. Денег с человека при
@@ -144,6 +163,78 @@ async def start_card(deps: Deps, session: Session, tariff_id: TariffId) -> None:
         currency=RUB,
         url=intent.confirmation_url,
         recurring=recurring,
+    )
+
+
+async def remember_email(deps: Deps, session: Session, written: str) -> None:
+    """Принимает почту для чека и возвращает человека к оплате.
+
+    Ожидание снимается только на годном адресе. Иначе опечатка выкидывала бы
+    человека из покупки в обычный чат, и он бы даже не понял, что произошло.
+    """
+    tariff_id = _tariff(pending.parse_await_email(session.user.pending))
+    if tariff_id is None:
+        # Ожидание от версии, где тариф назывался иначе. Возвращаем к выбору.
+        await _clear_pending(deps, session)
+        await deps.messenger.send_text(
+            session.chat, texts.tariffs_screen().text, keyboard=keyboards.tariffs()
+        )
+        return
+
+    email = normalise_email(written)
+    if email is None:
+        await deps.messenger.send_text(session.chat, texts.email_bad().text)
+        return
+
+    await deps.storage.set_email(session.user.id, email)
+    await deps.storage.set_pending(session.user.id, None)
+    # Адрес логировать нельзя, а знать, что человек его дал, полезно.
+    deps.logger.info("receipt_email_saved", user_id=int(session.user.id))
+
+    await start_card(
+        deps, replace(session, user=replace(session.user, email=email)), tariff_id
+    )
+
+
+def _tariff(tariff_id: str | None) -> TariffId | None:
+    if tariff_id is None:
+        return None
+    try:
+        return TariffId(tariff_id)
+    except ValueError:
+        return None
+
+
+async def _clear_pending(deps: Deps, session: Session) -> None:
+    if session.user.pending is not None:
+        await deps.storage.set_pending(session.user.id, None)
+
+
+def receipt_for_order(
+    deps: Deps,
+    *,
+    email: str | None,
+    tariff_id: TariffId,
+    amount_rub: int,
+) -> Receipt | None:
+    """Чек к заказу. None — чеки через ЮKassa не формируются.
+
+    Одна точка сборки на первый платёж и на автосписание: закон не делает
+    скидки на то, что при продлении человека нет за экраном, и разъехаться
+    этим двум чекам нельзя.
+    """
+    if deps.settings.fiscal is None:
+        return None
+    if email is None:
+        # Сюда попасть не должны: почта спрашивается до заказа. Но платить
+        # без чека нельзя, а тихо отправить чек в никуда — тем более.
+        raise ValueError("нет почты покупателя для чека")
+    return receipt_for(
+        email=email,
+        description=texts.invoice(tariff_id, days=deps.settings.subscription_days)[0],
+        amount_rub=amount_rub,
+        currency=RUB,
+        fiscal=deps.settings.fiscal,
     )
 
 
@@ -400,6 +491,14 @@ async def _show_order(
         # банковской выписки, в которой человек мог бы не узнать платёж, не
         # существует.
         statement=deps.settings.bank_statement_name if currency == RUB else "",
+        # Адрес человек назвал парой сообщений раньше и мог ошибиться в
+        # букве. Увидев его перед оплатой, ошибку он заметит; получив пустоту
+        # вместо чека — уже нет. У звёзд чека от нас не бывает вовсе.
+        receipt_to=(
+            session.user.email or ""
+            if currency == RUB and deps.settings.receipts_ready
+            else ""
+        ),
     )
     await deps.messenger.send_text(
         session.chat,

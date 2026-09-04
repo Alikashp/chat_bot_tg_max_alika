@@ -15,6 +15,7 @@ import respx
 
 from app.adapters.ai.errors import ProviderRequestError, ProviderUnavailableError
 from app.adapters.payments.yookassa import YooKassaPayments, order_id_of
+from app.core.receipts import FiscalSettings, Receipt, receipt_for
 
 BASE = "https://api.example/v3"
 PAYMENTS_URL = f"{BASE}/payments"
@@ -204,8 +205,14 @@ def test_a_notification_without_an_order_is_ignored(
 
 
 @respx.mock
-async def test_saving_the_card_is_asked_for_only_when_needed() -> None:
-    """Провайдер не должен хранить карту человека без причины."""
+async def test_the_card_is_saved_only_when_we_asked_for_it() -> None:
+    """Провайдер не должен хранить карту человека без причины.
+
+    Отказ здесь произносится вслух, а не молчанием. Магазину, которому
+    включили автоплатежи, ЮKassa сама предлагает привязку на каждом платеже,
+    если поля в запросе нет, — и человек видит галочку «привязать карту» под
+    нашим же обещанием, что сам ничего не спишется.
+    """
     route = respx.post(PAYMENTS_URL).mock(
         return_value=httpx.Response(200, json=_created())
     )
@@ -219,7 +226,7 @@ async def test_saving_the_card_is_asked_for_only_when_needed() -> None:
 
     one_off = json.loads(route.calls[0].request.content)
     recurring = json.loads(route.calls[1].request.content)
-    assert "save_payment_method" not in one_off
+    assert one_off["save_payment_method"] is False
     assert recurring["save_payment_method"] is True
 
 
@@ -309,3 +316,90 @@ async def test_an_unsaved_card_gives_nothing_to_charge_later() -> None:
     )
 
     assert await _provider().saved_method_of("2d0a1b") is None
+
+
+# --- Фискальные чеки (54-ФЗ) ---------------------------------------------
+
+
+def _receipt() -> Receipt:
+    return receipt_for(
+        email="alika@mail.ru",
+        description="Тариф Про",
+        amount_rub=599,
+        currency="RUB",
+        fiscal=FiscalSettings(
+            vat_code=1, payment_subject="service", payment_mode="full_payment"
+        ),
+    )
+
+
+@respx.mock
+async def test_the_receipt_travels_with_the_payment() -> None:
+    """ЮKassa передаёт его онлайн-кассе, а та регистрирует чек и шлёт человеку."""
+    route = respx.post(PAYMENTS_URL).mock(
+        return_value=httpx.Response(200, json=_created())
+    )
+
+    await _provider().create_payment(
+        order_id="order-1",
+        amount_rub=599,
+        description="Тариф Про",
+        receipt=_receipt(),
+    )
+
+    sent = json.loads(route.calls.last.request.content)["receipt"]
+    assert sent["customer"]["email"] == "alika@mail.ru"
+    assert sent["items"][0]["vat_code"] == 1
+    assert sent["items"][0]["payment_subject"] == "service"
+    assert sent["items"][0]["payment_mode"] == "full_payment"
+
+
+@respx.mock
+async def test_the_receipt_sum_matches_the_payment_sum() -> None:
+    """ЮKassa сверяет их сама: на расхождение в копейку она вернёт ошибку."""
+    route = respx.post(PAYMENTS_URL).mock(
+        return_value=httpx.Response(200, json=_created())
+    )
+
+    await _provider().create_payment(
+        order_id="order-1",
+        amount_rub=599,
+        description="Тариф Про",
+        receipt=_receipt(),
+    )
+
+    body = json.loads(route.calls.last.request.content)
+    assert body["receipt"]["items"][0]["amount"] == body["amount"]
+
+
+@respx.mock
+async def test_a_repeat_charge_carries_the_receipt_too() -> None:
+    """Закон не делает скидки на то, что человека нет за экраном."""
+    route = respx.post(PAYMENTS_URL).mock(
+        return_value=httpx.Response(200, json=_succeeded())
+    )
+
+    await _provider().charge_saved(
+        order_id="order-2",
+        amount_rub=599,
+        description="Тариф Про",
+        payment_method_id="card-1",
+        receipt=_receipt(),
+    )
+
+    sent = json.loads(route.calls.last.request.content)["receipt"]
+    assert sent["customer"]["email"] == "alika@mail.ru"
+
+
+@respx.mock
+async def test_without_a_receipt_the_field_is_absent() -> None:
+    """Пустой объект чека ЮKassa разбирала бы как чек, а это не он."""
+    route = respx.post(PAYMENTS_URL).mock(
+        return_value=httpx.Response(200, json=_created())
+    )
+
+    await _provider().create_payment(
+        order_id="order-1", amount_rub=599, description="Тариф Про"
+    )
+
+    assert "receipt" not in json.loads(route.calls.last.request.content)

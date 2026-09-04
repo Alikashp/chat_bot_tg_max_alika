@@ -21,6 +21,7 @@ import httpx
 
 from app.adapters.ai.errors import ProviderError
 from app.adapters.ai.http import request_json
+from app.core.receipts import Receipt
 from app.core.tariffs import RUB
 from app.ports.payments import PaymentIntent
 
@@ -63,6 +64,7 @@ class YooKassaPayments:
         amount_rub: int,
         description: str,
         save_method: bool = False,
+        receipt: Receipt | None = None,
     ) -> PaymentIntent:
         """Создаёт платёж и возвращает ссылку на оплату.
 
@@ -73,6 +75,14 @@ class YooKassaPayments:
         дальше. Реквизиты остаются у неё: нам вернётся только идентификатор
         способа оплаты.
         """
+        # Поле уходит всегда — и когда карту сохраняем, и когда нет.
+        #
+        # Умолчания тут нет в нашу пользу. Магазину, которому включили
+        # автоплатежи, ЮKassa сама предлагает привязку на каждом платеже, если
+        # мы не сказали иначе. А сказать надо: экран заказа при выключенных
+        # автоплатежах обещает «сам ничего не спишется», и галочка «привязать
+        # карту» на форме оплаты рядом с этим обещанием — прямое ему
+        # противоречие.
         payload: dict[str, Any] = {
             "amount": {"value": f"{amount_rub}.00", "currency": RUB},
             # Списываем сразу, без двухстадийности: подписка выдаётся тут же,
@@ -83,9 +93,10 @@ class YooKassaPayments:
             # Свой идентификатор кладём в метаданные, чтобы узнать заказ по
             # уведомлению, не заводя отдельной таблицы соответствий.
             "metadata": {"order_id": order_id},
+            "save_payment_method": save_method,
         }
-        if save_method:
-            payload["save_payment_method"] = True
+        if receipt is not None:
+            payload["receipt"] = _receipt(receipt)
 
         response = await self._create(payload, idempotence_key=order_id)
 
@@ -107,6 +118,7 @@ class YooKassaPayments:
         amount_rub: int,
         description: str,
         payment_method_id: str,
+        receipt: Receipt | None = None,
     ) -> str | None:
         """Списывает по сохранённой карте. Возвращает платёж или None.
 
@@ -119,16 +131,17 @@ class YooKassaPayments:
         Идемпотентность та же, что и у первого платежа: наш заказ. Повторный
         вызов по тому же заказу не спишет второй раз.
         """
-        response = await self._create(
-            {
-                "amount": {"value": f"{amount_rub}.00", "currency": RUB},
-                "capture": True,
-                "description": description,
-                "payment_method_id": payment_method_id,
-                "metadata": {"order_id": order_id},
-            },
-            idempotence_key=order_id,
-        )
+        payload: dict[str, Any] = {
+            "amount": {"value": f"{amount_rub}.00", "currency": RUB},
+            "capture": True,
+            "description": description,
+            "payment_method_id": payment_method_id,
+            "metadata": {"order_id": order_id},
+        }
+        if receipt is not None:
+            payload["receipt"] = _receipt(receipt)
+
+        response = await self._create(payload, idempotence_key=order_id)
         if response.get("status") != _SUCCEEDED or response.get("paid") is not True:
             return None
         return _payment_id(response)
@@ -185,6 +198,36 @@ class YooKassaPayments:
         return _rubles(amount.get("value")) == expected_rub and (
             amount.get("currency") == RUB
         )
+
+
+def _receipt(receipt: Receipt) -> dict[str, Any]:
+    """Чек в терминах ЮKassa.
+
+    ``internet`` стоит в их же примере для сторонней онлайн-кассы и означает
+    ровно наш случай: расчёт происходит в интернете, а не у прилавка.
+
+    Сумма позиции пишется целыми рублями с копейками нулями — тем же
+    способом, что и сумма платежа. Иначе чек и платёж разошлись бы на копейку
+    и ЮKassa вернула бы ошибку: она сверяет их сама.
+    """
+    return {
+        "customer": {"email": receipt.email},
+        "items": [
+            {
+                "description": item.description,
+                "quantity": "1.00",
+                "amount": {
+                    "value": f"{item.amount_rub}.00",
+                    "currency": item.currency,
+                },
+                "vat_code": item.vat_code,
+                "payment_subject": item.payment_subject,
+                "payment_mode": item.payment_mode,
+            }
+            for item in receipt.items
+        ],
+        "internet": "true",
+    }
 
 
 def _payment_id(response: dict[str, Any]) -> str:

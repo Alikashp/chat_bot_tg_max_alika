@@ -570,6 +570,23 @@ def too_busy() -> Screen:
 #: быть: это не разговор, а условия, под которыми человек ставит подпись.
 CONSENT = "Нажимая кнопку оплаты, вы соглашаетесь с офертой и политикой данных."
 
+#: Куда прислать чек. Спрашивается один раз, перед первой оплатой картой.
+#:
+#: Причина названа прямо, и это не вежливость: человека посреди покупки
+#: просят личные данные, и «зачем» он спросит сам. Ответ «так велит закон»
+#: короче любого объяснения и не вызывает подозрений.
+EMAIL_ASK = "Куда прислать чек? Напиши почту — этого требует закон 📧"
+EMAIL_BAD = "Не похоже на почту 🤔 Напиши ещё раз, например alika@mail.ru"
+
+
+def email_ask() -> Screen:
+    return Screen(text=EMAIL_ASK, next_step="ждём почту от пользователя")
+
+
+def email_bad() -> Screen:
+    return Screen(text=EMAIL_BAD, next_step="ждём почту ещё раз")
+
+
 #: Что человек увидит на кнопке отмены и в напоминаниях.
 BUTTON_SUBSCRIPTION = "⚙️ Подписка"
 BUTTON_SUBSCRIPTION_OFF = "Отключить продление"
@@ -607,6 +624,7 @@ def payment_order(
     next_charge: str,
     recurring: bool,
     statement: str = "",
+    receipt_to: str = "",
 ) -> Screen:
     """Экран оформления заказа: всё, под чем человек подписывается.
 
@@ -620,6 +638,11 @@ def payment_order(
     об этом надо сказать до денег. Разовая оплата не продлевается, и обещать
     продление было бы враньём — а именно оно случилось бы, оставь мы один
     текст на оба случая.
+
+    ``receipt_to`` — почта, на которую уйдёт фискальный чек. Показывается
+    здесь же затем, что человек назвал её парой сообщений раньше и мог
+    ошибиться в букве: увидев адрес перед оплатой, он ошибку заметит, а
+    получив пустоту вместо чека через месяц — уже нет.
 
     ``statement`` — как платёж подпишется в банковской выписке. Строка нужна
     затем, что через месяц человек увидит в приложении банка незнакомое
@@ -640,8 +663,19 @@ def payment_order(
             f"{_price(amount, currency)} на {_days(days)}.",
             "Продлевать надо будет вручную — сам ничего не спишется.",
         ]
+    # Выписка и чек — одной строкой, а не двумя. Экран и без них упирается в
+    # потолок в пять строк, а поднимать потолок здесь нельзя: каждая строка
+    # выше — обязательное раскрытие условий, и убрать вместо этого одну из
+    # них значило бы сэкономить место на том единственном, ради чего экран
+    # существует. Обе части отвечают на один вопрос — что придёт человеку
+    # после оплаты, — так что вместе они читаются не хуже.
+    destinations = []
     if statement:
-        lines.append(f"В выписке банка: {statement}")
+        destinations.append(f"В выписке банка: {statement}")
+    if receipt_to:
+        destinations.append(f"чек на {receipt_to}")
+    if destinations:
+        lines.append(" · ".join(destinations) if statement else f"Чек на {receipt_to}")
     lines.append(CONSENT)
     return Screen(
         text="\n".join(lines),
@@ -958,6 +992,8 @@ def _all_screens() -> tuple[Screen, ...]:
         referral_reward(),
         tariffs_screen(),
         payment_methods(TariffId.PRO, price_rub=599, stars=524),
+        email_ask(),
+        email_bad(),
         payment_order(
             TariffId.PRO,
             days=30,
@@ -966,6 +1002,16 @@ def _all_screens() -> tuple[Screen, ...]:
             next_charge="30 сентября",
             recurring=True,
             statement="YM*ChatAIBot",
+            receipt_to="alika@mail.ru",
+        ),
+        payment_order(
+            TariffId.PRO,
+            days=30,
+            amount=599,
+            currency=RUB,
+            next_charge="30 сентября",
+            recurring=True,
+            receipt_to="alika@mail.ru",
         ),
         payment_order(
             TariffId.PRO,

@@ -193,6 +193,12 @@ class PostgresStorage:
                 update(users).where(users.c.id == user_id).values(username=username)
             )
 
+    async def set_email(self, user_id: UserId, email: str) -> None:
+        async with self._session() as session, session.begin():
+            await session.execute(
+                update(users).where(users.c.id == user_id).values(email=email)
+            )
+
     async def set_retry_context(self, user_id: UserId, context: str | None) -> None:
         query = update(users).where(users.c.id == user_id).values(retry_context=context)
         async with self._session() as session, session.begin():
@@ -471,7 +477,20 @@ class PostgresStorage:
                 subscriptions.c.user_id == user_id,
                 subscriptions.c.status != SubscriptionStatus.CANCELLED.value,
             )
-            .values(status=SubscriptionStatus.CANCELLED.value, cancelled_at=at)
+            .values(
+                status=SubscriptionStatus.CANCELLED.value,
+                cancelled_at=at,
+                # Отключение автоплатежа у ЮKassa происходит только на нашей
+                # стороне: удалить сохранённый способ оплаты у неё нельзя,
+                # платежи по нему идут, пока мы их создаём. Значит, отмена —
+                # это забыть идентификатор, а не только сменить статус.
+                #
+                # Второй слой к тому же статусу, и он не лишний: если однажды
+                # отменённую подписку кто-нибудь оживит, списывать по ней всё
+                # равно будет нечем. Со звёздами то же самое делает Telegram
+                # по charge_id, и его мы уже отменили выше по вызову.
+                payment_method_id=None,
+            )
             .returning(subscriptions.c.user_id)
         )
         async with self._session() as session, session.begin():
@@ -682,6 +701,7 @@ def _to_user(row: Any) -> User:
         bonus_messages=row["bonus_messages"],
         bonus_images=row["bonus_images"],
         tariff_expires_at=row["tariff_expires_at"],
+        email=row["email"],
         pending=row["pending"],
         retry_context=row["retry_context"],
     )

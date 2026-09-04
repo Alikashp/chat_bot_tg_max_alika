@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from app.core import referral
+from app.core.receipts import FiscalSettings
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,6 +115,20 @@ class CoreSettings:
     #: оспаривать списание. Показанная заранее, она этот звонок предотвращает.
     #: Задаётся провайдером, поэтому приходит из окружения, а не зашита в код.
     bank_statement_name: str = ""
+
+    #: Фискальные параметры чека (54-ФЗ). None — чеки через ЮKassa не
+    #: формируются: их выставляет онлайн-касса без нашего участия или
+    #: продавец работает по режиму, где чеки идут мимо нас вовсе.
+    #:
+    #: Значения сюда приходят из окружения, потому что называет их бухгалтер
+    #: по системе налогообложения, а не программист по своему разумению.
+    #: Неверная ставка НДС — это неверный фискальный документ, а не опечатка.
+    fiscal: FiscalSettings | None = None
+
+    @property
+    def receipts_ready(self) -> bool:
+        """Отправляем ли мы чек вместе с платежом."""
+        return self.fiscal is not None
 
     @property
     def documents_ready(self) -> bool:

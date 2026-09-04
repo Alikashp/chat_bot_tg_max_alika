@@ -204,8 +204,14 @@ def test_a_notification_without_an_order_is_ignored(
 
 
 @respx.mock
-async def test_saving_the_card_is_asked_for_only_when_needed() -> None:
-    """Провайдер не должен хранить карту человека без причины."""
+async def test_the_card_is_saved_only_when_we_asked_for_it() -> None:
+    """Провайдер не должен хранить карту человека без причины.
+
+    Отказ здесь произносится вслух, а не молчанием. Магазину, которому
+    включили автоплатежи, ЮKassa сама предлагает привязку на каждом платеже,
+    если поля в запросе нет, — и человек видит галочку «привязать карту» под
+    нашим же обещанием, что сам ничего не спишется.
+    """
     route = respx.post(PAYMENTS_URL).mock(
         return_value=httpx.Response(200, json=_created())
     )
@@ -219,7 +225,7 @@ async def test_saving_the_card_is_asked_for_only_when_needed() -> None:
 
     one_off = json.loads(route.calls[0].request.content)
     recurring = json.loads(route.calls[1].request.content)
-    assert "save_payment_method" not in one_off
+    assert one_off["save_payment_method"] is False
     assert recurring["save_payment_method"] is True
 
 

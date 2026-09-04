@@ -270,7 +270,13 @@ class InMemoryStorage:
         if current is None or current.status == SubscriptionStatus.CANCELLED.value:
             return False
         self._subscriptions[user_id] = replace(
-            current, status=SubscriptionStatus.CANCELLED.value, cancelled_at=at
+            current,
+            status=SubscriptionStatus.CANCELLED.value,
+            cancelled_at=at,
+            # Забываем способ оплаты, а не только помечаем статус: у ЮKassa
+            # сохранённую карту не удалить, платежи по ней идут, пока мы их
+            # создаём, и отключение автоплатежа целиком на нашей стороне.
+            payment_method_id=None,
         )
         return True
 

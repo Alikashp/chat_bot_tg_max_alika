@@ -656,6 +656,11 @@ async def test_cancelling_stops_future_charges(storage: Storage) -> None:
     assert found is not None
     assert found.status == "cancelled"
     assert found.cancelled_at is not None
+    # Сохранённую карту у ЮKassa не удалить: платежи по ней проходят, пока мы
+    # их создаём, и отключение автоплатежа целиком на нашей стороне. Поэтому
+    # отмена забывает идентификатор, а не только меняет статус — второй слой
+    # к тому же запрету, как и везде, где дело касается денег.
+    assert found.payment_method_id is None
 
 
 async def test_cancelling_twice_changes_nothing(storage: Storage) -> None:

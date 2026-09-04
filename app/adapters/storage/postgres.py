@@ -471,7 +471,20 @@ class PostgresStorage:
                 subscriptions.c.user_id == user_id,
                 subscriptions.c.status != SubscriptionStatus.CANCELLED.value,
             )
-            .values(status=SubscriptionStatus.CANCELLED.value, cancelled_at=at)
+            .values(
+                status=SubscriptionStatus.CANCELLED.value,
+                cancelled_at=at,
+                # Отключение автоплатежа у ЮKassa происходит только на нашей
+                # стороне: удалить сохранённый способ оплаты у неё нельзя,
+                # платежи по нему идут, пока мы их создаём. Значит, отмена —
+                # это забыть идентификатор, а не только сменить статус.
+                #
+                # Второй слой к тому же статусу, и он не лишний: если однажды
+                # отменённую подписку кто-нибудь оживит, списывать по ней всё
+                # равно будет нечем. Со звёздами то же самое делает Telegram
+                # по charge_id, и его мы уже отменили выше по вызову.
+                payment_method_id=None,
+            )
             .returning(subscriptions.c.user_id)
         )
         async with self._session() as session, session.begin():

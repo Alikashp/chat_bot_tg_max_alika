@@ -137,6 +137,11 @@ class MaxMessenger:
     # --- Прочее --------------------------------------------------------
 
     async def send_typing(self, chat: Chat) -> None:
+        if chat.is_person:
+            # «Печатает…» показывается в переписке, а её номера у нас нет:
+            # сюда попадают только разговоры, которые начали мы сами. Молча
+            # пропустить правильнее, чем отправить действие не в тот чат.
+            return
         await self._bot.send_action(
             chat_id=int(chat.chat_id), action=SenderAction.TYPING_ON
         )
@@ -195,8 +200,14 @@ class MaxMessenger:
         if image is not None:
             attachments = [image, *attachments]
 
+        # Личное сообщение адресуется человеком, а не перепиской: у MAX это
+        # разные поля и разные числа (POST /messages принимает либо chat_id,
+        # либо user_id). Номера переписки у разговора, который начинаем мы,
+        # нет вовсе — он приходит только во входящем обновлении.
+        addressee = int(chat.chat_id)
         sent = await self._bot.send_message(
-            chat_id=int(chat.chat_id),
+            chat_id=None if chat.is_person else addressee,
+            user_id=addressee if chat.is_person else None,
             text=text,
             attachments=attachments or None,
         )

@@ -34,9 +34,10 @@ from app.adapters.storage.memory import InMemoryStorage
 from app.core import support, texts
 from app.core.actions import Action, preset_action
 from app.core.limits import current_day
-from app.core.models import MessengerKind, TariffId
+from app.core.models import MessengerKind, Payment, TariffId
 from app.core.referral import MAX_HOST
-from app.core.scenarios.deps import Deps
+from app.core.scenarios import payments
+from app.core.scenarios.deps import Deps, session_for
 from app.core.settings import CoreSettings
 from app.infra.antiflood import FloodGuard
 from app.infra.dedup import Deduplicator
@@ -59,8 +60,13 @@ def _today() -> Any:
 
 SECRET = "max-integration-secret"
 PATH = "/webhook/max"
+#: В MAX номер переписки и номер человека — разные числа, и совпадать они не
+#: обязаны. Одинаковые значения здесь однажды уже скрыли ошибку: сообщение,
+#: которое начинаем мы (подтверждение оплаты, напоминание о списании), уходит
+#: не в переписку, а человеку, и адресовать его номером переписки нельзя —
+#: его у нас в этот момент просто нет.
 CHAT_ID = 555
-USER_ID = 555
+USER_ID = 777
 WebClient = TestClient[web.Request, web.Application]
 
 
@@ -98,14 +104,27 @@ class StubMaxBot:
         self.actions: list[str] = []
         self.callbacks: list[str] = []
         self.uploads = 0
+        #: Кому адресовано каждое сообщение: («chat», номер переписки) или
+        #: («user», номер человека). Разница видна только здесь.
+        self.addressed: list[tuple[str, int | None]] = []
         self._next_id = 0
 
     async def send_message(
         self,
         chat_id: int | None = None,
+        user_id: int | None = None,
         text: str | None = None,
         attachments: list[Any] | None = None,
     ) -> SendedMessage:
+        # Ровно как настоящий MAX: одно из двух полей, не оба сразу. Подделка,
+        # принимающая любое, скрыла бы ту самую ошибку, ради которой этот
+        # разбор и написан.
+        assert (chat_id is None) != (user_id is None), (
+            "MAX принимает либо номер переписки, либо номер человека"
+        )
+        self.addressed.append(
+            ("chat" if chat_id is not None else "user", chat_id or user_id)
+        )
         self.sent.append(SentMessage(chat_id, text, list(attachments or [])))
         self._next_id += 1
         return SendedMessage(
@@ -202,6 +221,9 @@ class Harness:
     storage: InMemoryStorage
     llm: FakeLLM
     images: FakeImages
+    #: Те же зависимости, что и у боевого маршрутизатора. Нужны там, где
+    #: разговор начинаем мы, а входящего обновления нет.
+    deps: Deps
     _step: list[int] = field(default_factory=lambda: [0])
 
     def _next(self) -> str:
@@ -304,7 +326,13 @@ async def harness() -> AsyncIterator[Harness]:
     await client.start_server()
 
     yield Harness(
-        client=client, bot=bot, queue=queue, storage=storage, llm=llm, images=images
+        client=client,
+        bot=bot,
+        queue=queue,
+        storage=storage,
+        llm=llm,
+        images=images,
+        deps=deps,
     )
 
     await queue.drain(timeout=2.0)
@@ -484,6 +512,50 @@ async def test_two_photos_survive_a_link_full_of_colons(started: Harness) -> Non
     assert len(started.images.edited) == 1, "два снимка — один запрос провайдеру"
     assert len(started.images.edited_sources[0]) == 2
     assert started.bot.edits[-1].images, "результат не заменил ожидание"
+
+
+async def test_a_message_we_start_goes_to_the_person_not_the_chat(
+    started: Harness,
+) -> None:
+    """Подтверждение оплаты, напоминание о списании — разговор начинаем мы.
+
+    Номер переписки приходит только во входящем обновлении, а здесь его нет.
+    Подставить вместо него номер человека нельзя: MAX примет запрос и отправит
+    сообщение не туда — человек заплатит и не получит ни слова.
+    """
+    person = await started.user()
+    started.forget()
+    started.bot.addressed.clear()
+
+    await payments.announce(
+        started.deps,
+        session_for(started.deps, person),
+        Payment(
+            id="order-1",
+            user_id=person.id,
+            tariff=TariffId.PRO,
+            method="card",
+            amount=599,
+            currency="RUB",
+            status="paid",
+            created_at=started.deps.now(),
+        ),
+    )
+
+    assert started.bot.addressed == [("user", USER_ID)], (
+        "сообщение адресовано номером переписки, которого у нас нет"
+    )
+
+
+async def test_an_answer_to_a_message_goes_to_that_very_chat(
+    started: Harness,
+) -> None:
+    """Обратная половина того же правила: на входящее отвечаем в переписку."""
+    started.bot.addressed.clear()
+
+    await started.send_text("привет")
+
+    assert started.bot.addressed == [("chat", CHAT_ID)]
 
 
 # --- Транспорт -----------------------------------------------------------

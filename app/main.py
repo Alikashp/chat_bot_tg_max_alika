@@ -701,6 +701,9 @@ async def run() -> None:
             "documents": _ready(settings.documents_ready),
             "recurring": _ready(settings.yookassa_recurring),
             "recurring_max": _ready(settings.max_yookassa_recurring),
+            # Одно на оба магазина: фискальные параметры у продавца одни, а
+            # онлайн-касса подключается в кабинете, куда мы не заглядываем.
+            "receipts": _ready(settings.receipts_enabled),
         }
 
     app = create_app(webhooks=webhooks, health=health)

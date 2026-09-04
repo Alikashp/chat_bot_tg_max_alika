@@ -19,6 +19,7 @@ from app.core import pending, texts
 from app.core.actions import (
     Action,
     parse_buy_action,
+    parse_email_action,
     parse_method_action,
     parse_preset_action,
 )
@@ -194,6 +195,13 @@ async def _route_action(deps: Deps, session: Session, action: str) -> None:
         await _pay_by(deps, session, *chosen)
         return
 
+    fixing_email = parse_email_action(action)
+    if fixing_email is not None:
+        # Отдельной веткой, а не в match ниже: там каждый разбор снимает
+        # ожидание, а это нажатие его как раз ставит.
+        await _ask_email(deps, session, fixing_email)
+        return
+
     match action:
         case Action.MENU_IMAGES:
             await deps.storage.set_pending(session.user.id, pending.AWAIT_IMAGE_PROMPT)
@@ -254,6 +262,16 @@ def _tariff(tariff_id: str) -> TariffId | None:
         return TariffId(tariff_id)
     except ValueError:
         return None
+
+
+async def _ask_email(deps: Deps, session: Session, tariff_id: str) -> None:
+    """Нажали «Другая почта» на экране заказа."""
+    tariff = _tariff(tariff_id)
+    if tariff is None:
+        # Кнопка из версии, где тариф назывался иначе.
+        await tariffs.show(deps, session)
+        return
+    await payments.ask_for_email(deps, session, tariff)
 
 
 async def _pick_preset(deps: Deps, session: Session, preset_id: str) -> None:

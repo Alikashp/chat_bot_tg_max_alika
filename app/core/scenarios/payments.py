@@ -30,7 +30,7 @@ from dataclasses import replace
 from datetime import datetime, timedelta
 
 from app.core import pending, texts
-from app.core.actions import method_action
+from app.core.actions import email_action, method_action
 from app.core.emails import normalise_email
 from app.core.limits import current_day
 from app.core.models import (
@@ -96,10 +96,7 @@ async def start_card(deps: Deps, session: Session, tariff_id: TariffId) -> None:
         # нас нет. Спрашиваем до заказа, а не после оплаты: человек, уже
         # отдавший деньги, вправе не отвечать на наши вопросы — а чек ему всё
         # равно должен уйти.
-        await deps.storage.set_pending(
-            session.user.id, pending.await_email(tariff_id.value)
-        )
-        await deps.messenger.send_text(session.chat, texts.email_ask().text)
+        await ask_for_email(deps, session, tariff_id)
         return
 
     tariff = tariff_of(tariff_id)
@@ -164,6 +161,18 @@ async def start_card(deps: Deps, session: Session, tariff_id: TariffId) -> None:
         url=intent.confirmation_url,
         recurring=recurring,
     )
+
+
+async def ask_for_email(deps: Deps, session: Session, tariff_id: TariffId) -> None:
+    """Просит почту и запоминает, к оплате какого тарифа потом вернуться.
+
+    Одна точка на оба повода: адреса ещё нет вовсе или человек нажал «Другая
+    почта», заметив опечатку на экране заказа.
+    """
+    await deps.storage.set_pending(
+        session.user.id, pending.await_email(tariff_id.value)
+    )
+    await deps.messenger.send_text(session.chat, texts.email_ask().text)
 
 
 async def remember_email(deps: Deps, session: Session, written: str) -> None:
@@ -480,6 +489,14 @@ async def _show_order(
         bought=tariff_id,
         current_tariff=session.user.tariff,
     )
+    # Адрес человек назвал парой сообщений раньше и мог ошибиться в букве.
+    # Увидев его перед оплатой, ошибку он заметит; получив пустоту вместо
+    # чека — уже нет. У звёзд чека от нас не бывает вовсе.
+    receipt_to = (
+        session.user.email or ""
+        if currency == RUB and deps.settings.receipts_ready
+        else ""
+    )
     screen = texts.payment_order(
         tariff_id,
         days=deps.settings.subscription_days,
@@ -491,29 +508,39 @@ async def _show_order(
         # банковской выписки, в которой человек мог бы не узнать платёж, не
         # существует.
         statement=deps.settings.bank_statement_name if currency == RUB else "",
-        # Адрес человек назвал парой сообщений раньше и мог ошибиться в
-        # букве. Увидев его перед оплатой, ошибку он заметит; получив пустоту
-        # вместо чека — уже нет. У звёзд чека от нас не бывает вовсе.
-        receipt_to=(
-            session.user.email or ""
-            if currency == RUB and deps.settings.receipts_ready
-            else ""
-        ),
+        receipt_to=receipt_to,
     )
     await deps.messenger.send_text(
         session.chat,
         screen.text,
-        keyboard=Keyboard(
-            rows=(
-                (Button(text=texts.BUTTON_PAY_OPEN, url=url),),
-                (
-                    Button(text=texts.BUTTON_OFFER, url=deps.settings.offer_url),
-                    Button(text=texts.BUTTON_PRIVACY, url=deps.settings.privacy_url),
-                ),
-            )
-        ),
+        keyboard=_order_keyboard(deps, tariff_id, url=url, receipt_to=receipt_to),
         show_menu=False,
     )
+
+
+def _order_keyboard(
+    deps: Deps, tariff_id: TariffId, *, url: str, receipt_to: str
+) -> Keyboard:
+    """Кнопки экрана заказа: оплатить, прочитать условия, поправить почту."""
+    rows: list[tuple[Button, ...]] = [
+        (Button(text=texts.BUTTON_PAY_OPEN, url=url),),
+        (
+            Button(text=texts.BUTTON_OFFER, url=deps.settings.offer_url),
+            Button(text=texts.BUTTON_PRIVACY, url=deps.settings.privacy_url),
+        ),
+    ]
+    if receipt_to:
+        # Только там, где адрес показан. Предлагать «другую почту» тому, у
+        # кого её и не спрашивали, — обещать шаг, которого нет.
+        rows.append(
+            (
+                Button(
+                    text=texts.BUTTON_EMAIL_CHANGE,
+                    action=email_action(tariff_id.value),
+                ),
+            )
+        )
+    return Keyboard(rows=tuple(rows))
 
 
 async def _renewal_order(

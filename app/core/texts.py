@@ -503,6 +503,7 @@ BUTTON_PAY_STARS = "⭐ Звёздами"
 BUTTON_PAY_OPEN = "💳 Перейти к оплате"
 BUTTON_OFFER = "📄 Оферта"
 BUTTON_PRIVACY = "🔒 Данные"
+BUTTON_EMAIL_CHANGE = "✏️ Другая почта"
 
 
 def tariffs_screen() -> Screen:
@@ -677,9 +678,16 @@ def payment_order(
     if destinations:
         lines.append(" · ".join(destinations) if statement else f"Чек на {receipt_to}")
     lines.append(CONSENT)
+    # Кнопка правки адреса появляется только там, где адрес есть. Ошибиться
+    # в букве человек мог парой сообщений раньше, а заметить это — здесь;
+    # без кнопки исправить ошибку он смог бы только через месяц, на
+    # следующей оплате.
+    buttons: tuple[str, ...] = (BUTTON_PAY_OPEN, BUTTON_OFFER, BUTTON_PRIVACY)
+    if receipt_to:
+        buttons = (*buttons, BUTTON_EMAIL_CHANGE)
     return Screen(
         text="\n".join(lines),
-        buttons=(BUTTON_PAY_OPEN, BUTTON_OFFER, BUTTON_PRIVACY),
+        buttons=buttons,
         formal_address=True,
     )
 

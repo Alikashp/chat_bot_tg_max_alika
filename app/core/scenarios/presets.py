@@ -70,13 +70,40 @@ def _preset_choices(session: Session) -> tuple[tuple[str, str], ...]:
 
 
 async def show_menu(deps: Deps, session: Session) -> None:
-    """Показывает список приколов — прямо из реестра."""
+    """Показывает список приколов — прямо из реестра.
+
+    Перед списком уходит альбом примеров: подпись «🧸 Фигурка в коробке»
+    ничего не говорит тому, кто такой фигурки не видел, и выбирать вслепую
+    он не станет. Порядок примеров тот же, что у кнопок, — иначе человек
+    сопоставил бы картинку не с той подписью.
+
+    Альбом отдельным сообщением, а не подписью к нему: в Telegram кнопок под
+    альбомом не бывает, а кнопки здесь и есть смысл экрана.
+    """
+    examples = _examples(deps)
+    if examples:
+        try:
+            await deps.messenger.send_album(session.chat, examples)
+        except Exception as error:
+            # Примеры — вежливость, а не работа бота. Уронить из-за них
+            # выбор прикола значило бы поменять важное на украшение.
+            deps.logger.warning("preset_examples_failed", error=repr(error))
+
     screen = texts.presets_menu(_preset_buttons(session))
     await deps.messenger.send_text(
         session.chat,
         screen.text,
         keyboard=keyboards.presets_menu(_preset_choices(session)),
     )
+
+
+def _examples(deps: Deps) -> list[Photo]:
+    """Примеры в порядке реестра — том же, в каком идут кнопки."""
+    return [
+        deps.examples[preset.id]
+        for preset in registry.PRESETS.values()
+        if preset.id in deps.examples
+    ]
 
 
 async def pick(deps: Deps, session: Session, preset: Preset) -> None:

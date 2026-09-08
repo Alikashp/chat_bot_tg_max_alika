@@ -90,6 +90,11 @@ class FakeMessenger:
         self.delivered_photo_ref: str | None = "photo-ref"
         #: Чем падает скачивание присланного фото.
         self.fail_download: Exception | None = None
+        #: Отправленные альбомы: куда и что именно, в порядке отправки.
+        self.albums: list[tuple[Chat, tuple[Photo, ...]]] = []
+        #: Чем падает отправка альбома. Примеры — вежливость, и их сбой не
+        #: должен ронять сам выбор прикола.
+        self.fail_album: Exception | None = None
         self._next_id = 0
 
     def _new_ref(self, chat: Chat) -> MessageRef:
@@ -154,6 +159,11 @@ class FakeMessenger:
     ) -> MessageRef:
         self.photo_refs.append(SentPhotoRef(chat, photo_ref, caption, keyboard))
         return self._new_ref(chat)
+
+    async def send_album(self, chat: Chat, photos: Sequence[Photo]) -> None:
+        if self.fail_album is not None:
+            raise self.fail_album
+        self.albums.append((chat, tuple(photos)))
 
     async def send_typing(self, chat: Chat) -> None:
         self.typing.append(chat)

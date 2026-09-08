@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Protocol
 
 from app.core.models import Chat, Keyboard, MessageRef, Photo
@@ -41,6 +42,19 @@ class Messenger(Protocol):
         show_menu: bool = True,
     ) -> MessageRef:
         """Отправляет картинку."""
+        ...
+
+    async def send_album(self, chat: Chat, photos: Sequence[Photo]) -> None:
+        """Отправляет несколько картинок одним блоком.
+
+        Клавиатуры здесь нет намеренно: в Telegram альбом её не принимает, и
+        обещать в порту то, чего мессенджер не умеет, значило бы заставить
+        адаптер выкручиваться. Кнопки идут следующим сообщением.
+
+        Картинки тут одни и те же на всех — примеры к приколам, — поэтому
+        адаптер вправе запомнить, что уже заливал, и второй раз отправить их
+        ссылкой. Ядру эта разница не видна.
+        """
         ...
 
     async def edit_text(

@@ -11,11 +11,13 @@ webhook-интеграции не используются: роутинг у н
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 import httpx
 from maxapi import Bot
 from maxapi.enums.sender_action import SenderAction
 from maxapi.enums.upload_type import UploadType
-from maxapi.types import InputMediaBuffer
+from maxapi.types import Attachment, InputMedia, InputMediaBuffer
 from maxapi.types.attachments.image import Image
 from maxapi.types.attachments.upload import AttachmentPayload, AttachmentUpload
 
@@ -36,6 +38,9 @@ class MaxMessenger:
 
     def __init__(self, bot: Bot, http: httpx.AsyncClient) -> None:
         self._bot = bot
+        #: Что из отправленных альбомом картинок MAX уже держит у себя:
+        #: имя файла → токен вложения. См. send_album.
+        self._albums: dict[str, str] = {}
         # Отдельный HTTP-клиент нужен ровно для скачивания присланных фото:
         # у maxapi есть download_bytes, но он читает файл целиком, без
         # потолка размера, а §3.5 требует отказать до загрузки в память.
@@ -91,6 +96,32 @@ class MaxMessenger:
             keyboard=keyboard,
             show_menu=show_menu,
             image=_by_token(photo_ref),
+        )
+
+    async def send_album(self, chat: Chat, photos: Sequence[Photo]) -> None:
+        """Отправляет альбом. Второй раз — токенами, а не байтами.
+
+        Причина та же, что и в Telegram: примеры к приколам одни и те же у
+        всех, а меню открывают часто. Загруженная картинка живёт у MAX под
+        токеном, и он годится для любого получателя.
+        """
+        attachments: list[
+            Attachment | InputMedia | InputMediaBuffer | AttachmentUpload
+        ] = []
+        for photo in photos:
+            token = self._albums.get(photo.filename)
+            if token is None:
+                token = (await self._upload(photo)).payload.token
+                if token is None:
+                    raise MaxMessengerError("MAX не вернул токен загруженной картинки")
+                self._albums[photo.filename] = token
+            attachments.append(_by_token(token))
+
+        addressee = int(chat.chat_id)
+        await self._bot.send_message(
+            chat_id=None if chat.is_person else addressee,
+            user_id=addressee if chat.is_person else None,
+            attachments=attachments,
         )
 
     # --- Замена уже отправленного --------------------------------------

@@ -64,10 +64,20 @@ PRESETS: Mapping[str, Preset] = MappingProxyType(
             button="🧱 Лего",
             invitations=("Кинь фото — сделаю из тебя лего",),
             instruction=(
-                "Turn the person in this photo into a LEGO minifigure. "
-                "Keep the pose, clothing colours and background recognisable, "
-                "render the character in glossy plastic LEGO style with "
-                "cylindrical hands and a classic minifigure head."
+                "Turn the person in the uploaded photo into a highly detailed LEGO-style "
+                "minifigure while keeping them clearly recognizable. Preserve the person's "
+                "hairstyle, hair color, key facial traits, skin tone, clothing colors, outfit "
+                "details, pose and overall vibe. The character must clearly look like a real "
+                "collectible minifigure with classic blocky proportions, cylindrical hands, "
+                "a glossy molded plastic body, detailed sculpted plastic hair matching the "
+                "person's hairstyle, an expressive printed LEGO-style face based on their real "
+                "features, and clothing recreated as detailed printed and molded toy pieces. "
+                "Adapt shoes and small outfit details into LEGO form. Keep the original "
+                "background recognizable, but make the LEGO figure the main focus. Use realistic "
+                "glossy plastic materials, subtle reflections, detailed molded surfaces, premium "
+                "collectible-toy rendering and cinematic lighting. The result should look like "
+                "a high-end custom LEGO minifigure photographed in the real scene, not a simple "
+                "generic LEGO character and not a human with LEGO-like features."
             ),
         ),
         "bad_day": Preset(
@@ -75,11 +85,14 @@ PRESETS: Mapping[str, Preset] = MappingProxyType(
             button="🏚 Плохой день",
             invitations=("Кинь фото — подселим соседа",),
             instruction=(
-                "Add a scruffy, dishevelled man in worn clothes standing next to "
-                "the person, posing together for the same photo. "
-                "Change only this. Preserve the person's face, pose, clothing and "
-                "the background exactly as they are. Match the added man to the "
-                "photo's lighting, perspective and grain."
+                "Add exactly one scruffy, dishevelled man in worn clothes naturally standing "
+                "or sitting somewhere in the existing scene. Do not add any other people. "
+                "He must not smoke or hold cigarettes, alcohol, drugs, weapons, or other "
+                "inappropriate objects. Change only this. Preserve all existing people, faces, "
+                "poses, clothing, furniture, objects, room layout and background exactly as "
+                "they are. If the source image contains no people, keep it that way except for "
+                "the single added man. Match the added man to the photo's lighting, perspective, "
+                "shadows, camera quality and grain."
             ),
         ),
         # Замок тут не только про деньги. Портрет живёт узнаваемостью, а
@@ -110,24 +123,19 @@ PRESETS: Mapping[str, Preset] = MappingProxyType(
             # перечисляли рядом «сохрани черты». Кадр анфас должен прийти от
             # человека, поэтому про него сказано в приглашении, а не тут.
             instruction=(
-                "Edit this photograph the way a retoucher would, keeping the "
-                "person's head untouched. This is a background and lighting job on "
-                "an existing photograph, not a new picture of a similar person. "
-                "Change only three things: replace the background with a perfectly "
-                "even, plain white backdrop; remove the shadows from the face and "
-                "the neck and even out the light as if from a soft frontal studio "
-                "lamp; crop to a centred head-and-shoulders document framing with "
-                "a little room above the head. "
-                "Change nothing else. Keep the head exactly where it is and exactly "
-                "as it is turned: do not rotate or tilt the head, do not straighten "
-                "the pose, do not redirect the gaze, do not alter the expression, do "
-                "not open or close the mouth. Keep the same facial features, face "
-                "shape, bone structure, eyes, nose, mouth, eyebrows, skin tone, skin "
-                "texture, moles, facial hair, glasses, hairstyle and clothing. No "
-                "beautification, no smoothing, no slimming, no makeup added or "
-                "removed, no change of age. "
-                "The result must be an ordinary sharp photograph of that same "
-                "person, not an illustration, a painting or a 3D render."
+                "Сделай профессиональное фото на документы по исходной фотографии. Главный "
+                "приоритет — максимальное сходство с человеком на исходнике. Это должен быть "
+                "тот же человек. Сохрани форму и пропорции лица, глаза, нос, губы, брови, "
+                "челюсть, подбородок, скулы, возраст и индивидуальные черты. Не меняй заметно "
+                "внешность и не создавай новое лицо. Не делай сильный beauty-фильтр, пластиковую "
+                "кожу, глянцевую ретушь или модельную внешность. Допускается только лёгкое "
+                "естественное улучшение: немного выровнять тон кожи, уменьшить временные "
+                "покраснения, слегка смягчить круги под глазами и аккуратно убрать выбившиеся "
+                "волосы. Сделай чистый светлый нейтральный фон, мягкий студийный свет и аккуратный "
+                "вид фото на документы. При необходимости приведи одежду к нейтральному аккуратному "
+                "виду для официального фото. Результат должен выглядеть как реальная фотография, "
+                "снятая профессиональной камерой: натуральная кожа, хорошая резкость, естественный "
+                "свет, без ощущения AI-генерации."
             ),
         ),
         "figurine": Preset(
@@ -141,25 +149,28 @@ PRESETS: Mapping[str, Preset] = MappingProxyType(
             # выглядит подделкой. Наряд фигурки берётся с самого фото —
             # так прикол работает и для футболиста, и для кого угодно.
             instruction=(
-                "Using the uploaded photograph as the reference, turn the person "
-                "into an original premium collectible toy sealed inside a blister "
-                "package, photographed as shelf-ready merchandise. "
-                "Base the figure's outfit, colours and accessories on what the "
-                "person is actually wearing in the photograph, restyled as "
-                "collectible merchandise. "
-                "Modern collectible-toy aesthetic: glossy blister plastic, matte "
-                "cardboard backing, smooth vinyl textures, moulded plastic surfaces. "
-                "Hair is moulded plastic with large sculpted grooves rather than "
-                "separate strands. Realistic reflections with soft highlights, "
-                "premium shelf-ready look, soft studio lighting, shallow depth of "
-                "field. The cardboard backing carries only abstract graphic "
-                "decoration: no lettering, no words, no numbers and no logos "
-                "anywhere on the package. "
-                "Keep the person's real face: the same facial features, face shape, "
-                "skin tone and hairstyle silhouette, so the figure stays clearly "
-                "recognisable as them. Do not beautify, do not change the face "
-                "structure, do not alter their age. "
-                "Highly realistic digital render, portrait framing."
+                "Using the uploaded photo as reference, create a premium stylized fashion doll "
+                "based on the person. The result must clearly look like a manufactured collectible "
+                "doll, not a real person standing inside packaging. Keep the person recognizable "
+                "through their hairstyle, hair color, key facial traits, skin tone, outfit and "
+                "overall vibe, but stylize them into a polished vinyl fashion doll with a slightly "
+                "oversized head, larger expressive eyes, simplified facial features, smooth "
+                "sculpted vinyl skin, a slim stylized body, and molded toy-like hair. Base the "
+                "doll's outfit and colors only on what the person is actually wearing in the "
+                "uploaded photo. Include only 0-3 separate accessories that are clearly visible "
+                "in the source photo, such as glasses, jewelry, a bag, phone, headphones or similar "
+                "personal items. Do not place clothing items, spare outfits, shirts, pants, shoes "
+                "or duplicates of what the doll is already wearing beside the figure. Never invent "
+                "accessories. If no clear accessories are visible, show only the doll with no "
+                "accessory section and no empty slots. Create a beautiful premium fashion-doll "
+                "collector box with an elegant luxury design, rigid matte materials, a deep molded "
+                "interior, refined metallic accents and polished retail presentation. The doll "
+                "should fill most of the package vertically. The box should fill almost the entire "
+                "image with very little or no visible background around the edges. Use a front-facing, "
+                "tightly framed professional product shot. Use only subtle transparent plastic where "
+                "necessary, with no large obvious blister shell. No text, logos, numbers or fake "
+                "branding. High-end collectible toy photography, polished commercial lighting, "
+                "premium materials, visually striking, social-media-ready."
             ),
         ),
         # Идентификатор остался от полароида, которым прикол был поначалу.
@@ -182,23 +193,23 @@ PRESETS: Mapping[str, Preset] = MappingProxyType(
             # лица, ради узнаваемости которых прикол и существует. Спокойная
             # студийная съёмка за столом лица сохраняет.
             instruction=(
-                "Combine the two source photographs into a single realistic studio "
-                "photograph: the adult from image 1 and the child from image 2 "
-                "sitting side by side at the same table, as if they had been "
-                "photographed together in the same room at the same moment. "
-                "On the table in front of them, a chocolate birthday cake with "
-                "several thin lit candles. Plain beige seamless backdrop, warm soft "
-                "daylight from the side, muted natural colours, shallow depth of "
-                "field, calm and tender mood. The adult rests their chin on one hand "
-                "and looks at the child with a soft smile; the child looks back at "
-                "the adult. "
-                "Keep both faces exactly as they are in the source photographs: "
-                "identical facial features, face shape, skin tone and hairstyle, so "
-                "both people stay clearly recognisable. The child stays a child and "
-                "the adult stays an adult. Do not beautify, do not change face "
-                "structure or age. "
-                "No text, no lettering and no numbers anywhere in the image, "
-                "including on the cake and the candles."
+                "Create a realistic, cozy Polaroid-style photo showing the same person as an "
+                "adult and as a child sitting together at one table. Image 1 is the main identity "
+                "reference. Image 2 is the child reference for age, clothing, and expression. "
+                "The adult must clearly look like the person from image 1. The child must look "
+                "like a believable younger version of that same person, while keeping the "
+                "childlike age and feel of image 2. Preserve matching identity traits across "
+                "both ages, including face shape, eyes, nose, eyebrows, smile, skin tone, and "
+                "overall facial character. Do not heavily beautify and do not turn them into "
+                "generic faces. Create a warm, cozy home interior with a wooden table, soft "
+                "blurred background, and a chocolate birthday cake with several thin lit candles. "
+                "The adult rests their chin on one hand and looks at the child with a tender "
+                "smile. The child looks back warmly. The mood should feel intimate, nostalgic, "
+                "and emotional. The final image should look like a real printed Polaroid instant "
+                "photo with a classic white frame, a slightly thicker bottom border, soft warm "
+                "tones, a subtle vintage feel, slight film texture, and a realistic instant-photo "
+                "look. Keep the composition clean and centered inside the Polaroid frame. No text, "
+                "letters, numbers, logos, or handwriting anywhere, including on the Polaroid border."
             ),
         ),
     }

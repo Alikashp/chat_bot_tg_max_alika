@@ -57,12 +57,24 @@ class LLMProvider(Protocol):
 class ImageProvider(Protocol):
     """Провайдер картинок."""
 
-    async def generate(self, prompt: str, *, quality: ImageQuality) -> Photo:
-        """Рисует картинку по текстовому описанию (§2.3)."""
+    async def generate(
+        self, prompt: str, *, quality: ImageQuality, model: str = ""
+    ) -> Photo:
+        """Рисует картинку по текстовому описанию (§2.3).
+
+        ``model`` пустая — берётся та, что настроена у провайдера. Явная
+        нужна там, где модель выбирается не на весь сервис, а на конкретную
+        работу.
+        """
         ...
 
     async def edit(
-        self, sources: Sequence[Photo], instruction: str, *, quality: ImageQuality
+        self,
+        sources: Sequence[Photo],
+        instruction: str,
+        *,
+        quality: ImageQuality,
+        model: str = "",
     ) -> Photo:
         """Переделывает присланные фото по инструкции (пресеты, §2.4).
 
@@ -70,5 +82,7 @@ class ImageProvider(Protocol):
         снимка в один кадр. Порядок существенный — инструкция ссылается на
         снимки по номерам, и провайдер вытягивает детали первого сильнее,
         чем остальных.
+
+        ``model`` пустая — берётся та, что настроена у провайдера.
         """
         ...

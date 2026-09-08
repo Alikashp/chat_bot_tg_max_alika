@@ -61,6 +61,7 @@ from app.infra.server import (
     Webhook,
     create_app,
 )
+from app.ports.ai import ImageQuality
 from app.ports.payments import CardPayments, StarsPayments
 from config.presets import PRESETS
 
@@ -304,6 +305,11 @@ def build_core_settings(
         docs_version=settings.docs_version,
         bank_statement_name=settings.bank_statement_name,
         fiscal=_fiscal(settings),
+        preset_models=dict(settings.preset_models),
+        preset_qualities={
+            preset: ImageQuality(quality)
+            for preset, quality in settings.preset_qualities.items()
+        },
     )
 
 

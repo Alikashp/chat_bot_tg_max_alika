@@ -149,6 +149,7 @@ python -m app.main
 | `IMAGE_MODEL` / `IMAGE_SIZE` | нет (`gpt-image-1` / `1024x1024`) | Модель и размер картинки по описанию | — |
 | `IMAGE_EDIT_SIZE` | нет (`auto`) | Размер при правке присланного фото. `auto` — пропорции исходника | — |
 | `IMAGE_INPUT_FIDELITY` | нет (`high`) | Бережность к исходнику при правке. Без `high` лицо перерисовывается. Пусто — параметр не отправляется | — |
+| `PRESET_MODELS` / `PRESET_QUALITIES` | нет (пусто) | Модель и качество на отдельный прикол, JSON-ом: `{"figurine":"gpt-image-1-mini"}`, `{"id_photo":"high"}`. Перебивают общую `IMAGE_MODEL` и качество тарифа. Ключи — идентификаторы из `config/presets.py`; качество `low`/`medium`/`high`, опечатка роняет запуск | — |
 | `IMAGE_TIMEOUT_SECONDS` | нет (180) | Таймаут отрисовки | — |
 | `IMAGE_RATE_PER_SECOND` / `IMAGE_BURST` / `IMAGE_CONCURRENCY` | нет (5 / 10 / 8) | Ограничения на провайдера картинок | — |
 | `IMAGE_RETRY_ATTEMPTS` | нет (2) | Сколько раз повторяем отрисовку. Меньше, чем у текста: попытка стоит денег | — |

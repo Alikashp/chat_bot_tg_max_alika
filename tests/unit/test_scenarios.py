@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import timedelta
+from typing import Any
 
 import pytest
 
@@ -25,7 +26,7 @@ from app.core.scenarios import (
     tariffs,
 )
 from app.core.scenarios.deps import Deps, Session
-from app.ports.ai import ContentRefusedError
+from app.ports.ai import ContentRefusedError, ImageQuality
 from config import presets as registry
 from config.presets import PRESETS, Preset
 from tests.fakes import PNG_BYTES, FakeImages, FakeLLM, FakeMessenger
@@ -960,3 +961,61 @@ async def test_a_broken_album_does_not_cost_the_menu(
 
     assert messenger.last_text.text == texts.PRESETS_ASK
     assert messenger.last_text.keyboard is not None
+
+
+# --- Модель и качество на отдельный прикол -------------------------------
+
+
+def _tuned(deps: Deps, *, models: dict[str, str], qualities: dict[str, Any]) -> Deps:
+    """Те же зависимости с переключателями на конкретные приколы."""
+    return replace(
+        deps,
+        settings=replace(
+            deps.settings, preset_models=models, preset_qualities=qualities
+        ),
+    )
+
+
+async def test_a_preset_can_name_its_own_model(
+    deps: Deps, session: Session, images_: FakeImages
+) -> None:
+    """Одному приколу нужна модель подороже, другому хватит дешёвой."""
+    tuned = _tuned(deps, models={"lego": "gpt-image-1-mini"}, qualities={})
+
+    await presets.apply(tuned, session, PRESETS["lego"], [PHOTO])
+
+    assert images_.models == ["gpt-image-1-mini"]
+
+
+async def test_a_preset_without_its_own_model_uses_the_common_one(
+    deps: Deps, session: Session, images_: FakeImages
+) -> None:
+    """Пусто означает «та, что настроена у провайдера», а не «никакая»."""
+    tuned = _tuned(deps, models={"figurine": "gpt-image-1-mini"}, qualities={})
+
+    await presets.apply(tuned, session, PRESETS["lego"], [PHOTO])
+
+    assert images_.models == [""]
+
+
+async def test_a_preset_can_name_its_own_quality(
+    deps: Deps, session: Session, images_: FakeImages
+) -> None:
+    """Портрету нужна детализация независимо от того, за сколько человек платит."""
+    tuned = _tuned(deps, models={}, qualities={"id_photo": ImageQuality.HIGH})
+
+    await presets.apply(tuned, _paid(session), PRESETS["id_photo"], [PHOTO])
+
+    _, quality = images_.edited[0]
+    assert quality is ImageQuality.HIGH
+
+
+async def test_without_its_own_quality_the_tariff_decides(
+    deps: Deps, session: Session, images_: FakeImages
+) -> None:
+    tuned = _tuned(deps, models={}, qualities={"figurine": ImageQuality.HIGH})
+
+    await presets.apply(tuned, session, PRESETS["lego"], [PHOTO])
+
+    _, quality = images_.edited[0]
+    assert quality is session.tariff.image_quality

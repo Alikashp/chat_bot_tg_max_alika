@@ -499,3 +499,28 @@ async def test_the_fidelity_parameter_can_be_switched_off() -> None:
     )
 
     assert b"input_fidelity" not in route.calls.last.request.content
+
+
+@respx.mock
+async def test_a_named_model_wins_over_the_configured_one() -> None:
+    """Модель выбирается на конкретную работу, а не только на весь сервис."""
+    route = respx.post(EDIT_URL).mock(return_value=httpx.Response(200, json=_drawn()))
+
+    await _images().edit(
+        [Photo(data=PNG_BYTES, mime_type="image/png", filename="in.png")],
+        "make it lego",
+        quality=ImageQuality.LOW,
+        model="gpt-image-1-mini",
+    )
+
+    assert b"gpt-image-1-mini" in route.calls.last.request.content
+
+
+@respx.mock
+async def test_an_empty_model_keeps_the_configured_one() -> None:
+    """Пусто означает «та, что настроена», а не «без модели»."""
+    route = respx.post(IMAGE_URL).mock(return_value=httpx.Response(200, json=_drawn()))
+
+    await _images().generate("кот", quality=ImageQuality.LOW, model="")
+
+    assert json.loads(route.calls.last.request.content)["model"] == "gpt-image-1"

@@ -207,7 +207,14 @@ async def apply(
 
     try:
         result = await deps.images.edit(
-            photos, preset.instruction, quality=session.tariff.image_quality
+            photos,
+            preset.instruction,
+            # Модель и качество можно назначить приколу отдельно: портрету
+            # нужна детализация, а какому-нибудь приколу хватит модели
+            # подешевле. Не назначили — работает общая модель и качество
+            # тарифа, как раньше.
+            quality=deps.settings.quality_for(preset.id, session.tariff.image_quality),
+            model=deps.settings.model_for(preset.id),
         )
     except ContentRefusedError as refusal:
         # Отказ по содержанию: дело в самом фото, и повтор ничего не изменит.

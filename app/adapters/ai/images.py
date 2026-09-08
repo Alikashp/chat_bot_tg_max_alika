@@ -54,10 +54,12 @@ class OpenAIImages:
     def _auth(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self._api_key}"}
 
-    async def generate(self, prompt: str, *, quality: ImageQuality) -> Photo:
+    async def generate(
+        self, prompt: str, *, quality: ImageQuality, model: str = ""
+    ) -> Photo:
         """Рисует картинку по описанию."""
         payload = {
-            "model": self._model,
+            "model": model or self._model,
             "prompt": prompt,
             "size": self._size,
             "quality": quality.value,
@@ -76,7 +78,12 @@ class OpenAIImages:
         return _to_photo(await self._caller.call(call))
 
     async def edit(
-        self, sources: Sequence[Photo], instruction: str, *, quality: ImageQuality
+        self,
+        sources: Sequence[Photo],
+        instruction: str,
+        *,
+        quality: ImageQuality,
+        model: str = "",
     ) -> Photo:
         """Переделывает присланные фото по инструкции.
 
@@ -104,7 +111,7 @@ class OpenAIImages:
 
         files = _files(sources)
         data = {
-            "model": self._model,
+            "model": model or self._model,
             "prompt": instruction,
             "size": self._edit_size,
             "quality": quality.value,

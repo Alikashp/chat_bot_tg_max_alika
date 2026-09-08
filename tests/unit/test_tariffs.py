@@ -43,13 +43,15 @@ def test_model_tier_matches_the_brief(tariff_id: TariffId, tier: ModelTier) -> N
     assert tariff_of(tariff_id).model_tier is tier
 
 
-def test_free_draws_in_low_quality() -> None:
-    """Решение про деньги: разница в цене между low и medium — почти порядок."""
-    assert tariff_of(TariffId.FREE).image_quality is ImageQuality.LOW
+@pytest.mark.parametrize("tariff_id", list(TariffId))
+def test_every_tariff_draws_in_medium_quality(tariff_id: TariffId) -> None:
+    """Бесплатный рисует не хуже платных — и это стоит денег.
 
-
-@pytest.mark.parametrize("tariff_id", [TariffId.LITE, TariffId.PRO, TariffId.MAX])
-def test_paid_tariffs_draw_in_medium_quality(tariff_id: TariffId) -> None:
+    На low лицо уплывает, и прикол возвращает человеку не его самого. Приколы
+    же и есть тот крючок, ради которого он остаётся: экономия здесь дороже
+    сэкономленного. Решение заказчика, принятое после того, как разница в
+    цене была названа вслух.
+    """
     assert tariff_of(tariff_id).image_quality is ImageQuality.MEDIUM
 
 

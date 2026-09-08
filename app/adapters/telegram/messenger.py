@@ -8,11 +8,20 @@
 from __future__ import annotations
 
 import contextlib
+from collections.abc import Sequence
 from typing import Any
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest
-from aiogram.types import BufferedInputFile, Message
+from aiogram.types import (
+    BufferedInputFile,
+    InputMediaAudio,
+    InputMediaDocument,
+    InputMediaLivePhoto,
+    InputMediaPhoto,
+    InputMediaVideo,
+    Message,
+)
 
 from app.adapters.telegram import keyboards as tg_keyboards
 from app.core.models import Chat, Keyboard, MessageRef, Photo
@@ -31,6 +40,9 @@ class TelegramMessenger:
 
     def __init__(self, bot: Bot) -> None:
         self._bot = bot
+        #: Что из отправленных альбомом картинок Telegram уже держит у себя:
+        #: имя файла → file_id. См. send_album.
+        self._albums: dict[str, str] = {}
 
     # --- Отправка ------------------------------------------------------
 
@@ -87,6 +99,36 @@ class TelegramMessenger:
             reply_markup=_markup(keyboard, show_menu),
         )
         return _ref(chat, message)
+
+    async def send_album(self, chat: Chat, photos: Sequence[Photo]) -> None:
+        """Отправляет альбом. Второй раз — ссылками, а не байтами.
+
+        Примеры к приколам одни и те же у всех, а меню открывают часто:
+        заливать полтора мегабайта на каждое открытие значило бы платить за
+        трафик и заставлять человека ждать там, где ждать нечего. Telegram
+        отдаёт file_id при первой отправке, и он годится для любого чата
+        этого же бота.
+
+        Память живёт до перезапуска и теряется при выкатке — это не беда:
+        первый показ после неё просто зальёт байты заново.
+        """
+        media: list[
+            InputMediaAudio
+            | InputMediaDocument
+            | InputMediaLivePhoto
+            | InputMediaPhoto
+            | InputMediaVideo
+        ] = [
+            InputMediaPhoto(
+                media=self._albums.get(photo.filename)
+                or BufferedInputFile(photo.data, filename=photo.filename)
+            )
+            for photo in photos
+        ]
+        sent = await self._bot.send_media_group(chat_id=chat.chat_id, media=media)
+        for photo, message in zip(photos, sent, strict=False):
+            if message.photo:
+                self._albums.setdefault(photo.filename, message.photo[-1].file_id)
 
     # --- Замена уже отправленного --------------------------------------
 

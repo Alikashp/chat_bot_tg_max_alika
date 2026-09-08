@@ -49,6 +49,7 @@ from app.core.scenarios.deps import Deps, session_for
 from app.core.settings import CoreSettings
 from app.infra.antiflood import FloodGuard
 from app.infra.dedup import Deduplicator
+from app.infra.examples import load_examples
 from app.infra.logging import configure_logging, get_logger
 from app.infra.queue import JobQueue
 from app.infra.retry import RetryPolicy
@@ -61,6 +62,7 @@ from app.infra.server import (
     create_app,
 )
 from app.ports.payments import CardPayments, StarsPayments
+from config.presets import PRESETS
 
 logger = get_logger(__name__)
 
@@ -348,6 +350,11 @@ async def build_wiring(settings: Settings) -> Wiring:
     if cards_client is not None:
         http_clients = (*http_clients, cards_client)
 
+    # Примеры к приколам читаются один раз на старте: их пять, они не
+    # меняются между выкатками, и ходить за ними на диск при каждом открытии
+    # меню незачем. Оба мессенджера получают одни и те же байты.
+    examples = load_examples(tuple(PRESETS), logger=get_logger("examples"))
+
     def build_deps(
         messenger: Any,
         core_settings: CoreSettings,
@@ -367,6 +374,7 @@ async def build_wiring(settings: Settings) -> Wiring:
             cards=cards,
             stars=stars,
             now=_utc_now,
+            examples=examples,
         )
 
     deps = build_deps(

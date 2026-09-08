@@ -7,12 +7,12 @@ MAX, и в тесте с фейками — различаются только 
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
 from datetime import date, datetime
 
 from app.core.limits import current_day
-from app.core.models import Chat, User
+from app.core.models import Chat, Photo, User
 from app.core.settings import CoreSettings
 from app.core.tariffs import ModelTier, Tariff, active_tariff, tariff_of
 from app.ports.ai import ImageProvider, LLMProvider
@@ -42,6 +42,11 @@ class Deps:
     #: Часы. Передаются отдельно, чтобы тесты про сброс суток не зависели от
     #: того, в какое время их запустили.
     now: Callable[[], datetime]
+    #: Примеры к приколам: идентификатор из реестра → картинка. Читаются с
+    #: диска на старте (infra/examples.py), сюда приходят готовыми — ядро в
+    #: файлы не ходит. Прикола может здесь не быть: тогда меню покажет его
+    #: без примера, как раньше.
+    examples: Mapping[str, Photo] = field(default_factory=dict)
 
     def today(self) -> date:
         """Какие сейчас сутки для пользователя."""

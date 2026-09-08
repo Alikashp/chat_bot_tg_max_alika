@@ -877,3 +877,86 @@ async def test_a_failed_pair_is_forgotten_too(
     assert pending.parse_await_preset(user.pending) == pending.AwaitedPreset(
         "polaroid_child"
     )
+
+
+# --- Примеры к приколам --------------------------------------------------
+
+
+def _with_examples(deps: Deps, *preset_ids: str) -> Deps:
+    """Те же зависимости, но с картинками-примерами к названным приколам."""
+    return replace(
+        deps,
+        examples={
+            preset_id: Photo(data=PNG_BYTES, filename=f"{preset_id}.jpg")
+            for preset_id in preset_ids
+        },
+    )
+
+
+async def test_the_menu_shows_what_each_preset_does(
+    deps: Deps, session: Session, messenger: FakeMessenger
+) -> None:
+    """Подпись «🧸 Фигурка в коробке» ничего не говорит тому, кто её не видел."""
+    with_examples = _with_examples(deps, "lego", "figurine")
+
+    await presets.show_menu(with_examples, session)
+
+    assert len(messenger.albums) == 1
+    chat, photos = messenger.albums[0]
+    assert chat == session.chat
+    assert [photo.filename for photo in photos] == ["lego.jpg", "figurine.jpg"]
+
+
+async def test_the_examples_follow_the_order_of_the_buttons(
+    deps: Deps, session: Session, messenger: FakeMessenger
+) -> None:
+    """Иначе человек сопоставит картинку не с той подписью."""
+    with_examples = _with_examples(deps, "figurine", "lego", "bad_day")
+
+    await presets.show_menu(with_examples, session)
+
+    _, photos = messenger.albums[0]
+    shown = [photo.filename.removesuffix(".jpg") for photo in photos]
+    in_registry = [preset.id for preset in PRESETS.values() if preset.id in shown]
+    assert shown == in_registry
+
+
+async def test_a_preset_without_an_example_still_works(
+    deps: Deps, session: Session, messenger: FakeMessenger
+) -> None:
+    """Критерий A1: новый прикол не должен ждать, пока к нему нарисуют картинку."""
+    with_examples = _with_examples(deps, "lego")
+
+    await presets.show_menu(with_examples, session)
+
+    _, photos = messenger.albums[0]
+    assert [photo.filename for photo in photos] == ["lego.jpg"]
+    assert messenger.last_text.text == texts.PRESETS_ASK
+    labels = [
+        button.text
+        for row in messenger.last_text.keyboard.rows  # type: ignore[union-attr]
+        for button in row
+    ]
+    assert len(labels) == len(PRESETS), "приколы без примеров пропали из меню"
+
+
+async def test_without_examples_the_menu_is_the_same_as_before(
+    deps: Deps, session: Session, messenger: FakeMessenger
+) -> None:
+    await presets.show_menu(deps, session)
+
+    assert messenger.albums == []
+    assert messenger.last_text.text == texts.PRESETS_ASK
+
+
+async def test_a_broken_album_does_not_cost_the_menu(
+    deps: Deps, session: Session, messenger: FakeMessenger
+) -> None:
+    """Примеры — вежливость, а выбор прикола — работа. Менять их местами нельзя."""
+    with_examples = _with_examples(deps, "lego")
+    messenger.fail_album = RuntimeError("мессенджер не принял альбом")
+
+    await presets.show_menu(with_examples, session)
+
+    assert messenger.last_text.text == texts.PRESETS_ASK
+    assert messenger.last_text.keyboard is not None

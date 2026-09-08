@@ -14,7 +14,13 @@ import pytest
 from aiogram import Bot
 from aiogram.client.session.base import BaseSession
 from aiogram.exceptions import TelegramBadRequest
-from aiogram.methods import DeleteMessage, SendMessage, SendPhoto, TelegramMethod
+from aiogram.methods import (
+    DeleteMessage,
+    SendMediaGroup,
+    SendMessage,
+    SendPhoto,
+    TelegramMethod,
+)
 from aiogram.types import (
     CallbackQuery,
     Chat,
@@ -268,6 +274,23 @@ class StubSession(BaseSession):
                     PhotoSize(file_id="big", file_unique_id="b", width=999, height=999),
                 ],
             ).as_(bot)
+        if isinstance(method, SendMediaGroup):
+            return [
+                Message(
+                    message_id=20 + number,
+                    date=datetime.now(UTC),
+                    chat=Chat(id=CHAT_ID, type="private"),
+                    photo=[
+                        PhotoSize(
+                            file_id=f"album-{number}",
+                            file_unique_id=f"u{number}",
+                            width=999,
+                            height=999,
+                        )
+                    ],
+                ).as_(bot)
+                for number, _ in enumerate(method.media)
+            ]
         return File(
             file_id="f",
             file_unique_id="u",
@@ -401,3 +424,41 @@ async def test_a_lying_size_does_not_get_past_the_limit(
         await messenger.download_photo("f", max_bytes=8192)
 
     assert session.stream_closed is True, "чтение не оборвали"
+
+
+# --- Альбом примеров -----------------------------------------------------
+
+
+async def test_an_album_goes_as_one_block(
+    messenger: TelegramMessenger, session: StubSession
+) -> None:
+    """Пять отдельных сообщений превратили бы экран выбора в ленту."""
+    await messenger.send_album(
+        CORE_CHAT,
+        [
+            Photo(data=PNG_BYTES, filename="lego.jpg"),
+            Photo(data=PNG_BYTES, filename="figurine.jpg"),
+        ],
+    )
+
+    sent = [call for call in session.calls if isinstance(call, SendMediaGroup)]
+    assert len(sent) == 1
+    assert len(sent[0].media) == 2
+
+
+async def test_the_same_album_is_not_uploaded_twice(
+    messenger: TelegramMessenger, session: StubSession
+) -> None:
+    """Меню открывают часто, а примеры у всех одни и те же.
+
+    Заливать их байтами каждый раз значило бы платить за трафик и заставлять
+    человека ждать там, где ждать нечего.
+    """
+    photos = [Photo(data=PNG_BYTES, filename="lego.jpg")]
+
+    await messenger.send_album(CORE_CHAT, photos)
+    await messenger.send_album(CORE_CHAT, photos)
+
+    first, second = (call for call in session.calls if isinstance(call, SendMediaGroup))
+    assert not isinstance(first.media[0].media, str), "первый раз — байтами"
+    assert second.media[0].media == "album-0", "второй раз — ссылкой"

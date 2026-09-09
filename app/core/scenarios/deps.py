@@ -16,6 +16,7 @@ from app.core.models import Chat, Photo, User
 from app.core.settings import CoreSettings
 from app.core.tariffs import ModelTier, Tariff, active_tariff, tariff_of
 from app.ports.ai import ImageProvider, LLMProvider
+from app.ports.channel import Channel
 from app.ports.concurrency import Concurrency
 from app.ports.messenger import Messenger
 from app.ports.observability import Logger
@@ -39,6 +40,9 @@ class Deps:
     cards: CardPayments | None
     #: Оплата звёздами. None — мессенджер такого не умеет (MAX).
     stars: StarsPayments | None
+    #: Проверка подписки на наш канал. None — канала в этом мессенджере нет
+    #: или он не настроен; тогда бонус за подписку нигде не предлагается.
+    channel: Channel | None
     #: Часы. Передаются отдельно, чтобы тесты про сброс суток не зависели от
     #: того, в какое время их запустили.
     now: Callable[[], datetime]

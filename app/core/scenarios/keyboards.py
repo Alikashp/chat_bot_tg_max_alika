@@ -130,13 +130,43 @@ def presets_menu(presets: tuple[tuple[str, str], ...]) -> Keyboard:
     )
 
 
-def paywall(invite_label: str) -> Keyboard:
-    """Два выхода с экрана исчерпания (§2.5). Тупика быть не должно."""
-    return Keyboard(
-        rows=(
-            (Button(text=texts.BUTTON_OPEN_TARIFFS, action=Action.OPEN_TARIFFS),),
-            (Button(text=invite_label, action=Action.INVITE_FRIEND),),
-        )
+def paywall(invite_label: str, channel_label: str = "") -> Keyboard:
+    """Выходы с экрана исчерпания (§2.5). Тупика быть не должно.
+
+    Кнопка канала появляется только тогда, когда бонус за него человеку ещё
+    положен. Показывать её всем значило бы вести половину людей на экран,
+    который сообщит им, что брать уже нечего.
+
+    Каждая кнопка своим рядом: подписи с числами длинные, и в паре они
+    обрежутся до нечитаемого огрызка.
+    """
+    rows = [
+        (Button(text=texts.BUTTON_OPEN_TARIFFS, action=Action.OPEN_TARIFFS),),
+        (Button(text=invite_label, action=Action.INVITE_FRIEND),),
+    ]
+    if channel_label:
+        rows.append((Button(text=channel_label, action=Action.CHANNEL_OFFER),))
+    return Keyboard(rows=tuple(rows))
+
+
+def channel_offer(url: str) -> Keyboard:
+    """Уйти в канал и вернуться с проверкой.
+
+    Ссылка кнопкой, а не текстом в сообщении: по тексту надо попасть пальцем,
+    а кнопка открывает канал сразу и оставляет человека в переписке с ботом,
+    куда ему возвращаться за бонусом.
+    """
+    return Keyboard.row(
+        Button(text=texts.BUTTON_OPEN_CHANNEL, url=url),
+        Button(text=texts.BUTTON_CHANNEL_CHECK, action=Action.CHANNEL_CHECK),
+    )
+
+
+def channel_retry() -> Keyboard:
+    """Проверить ещё раз — и выход на тарифы, если надоело."""
+    return Keyboard.row(
+        Button(text=texts.BUTTON_CHANNEL_CHECK, action=Action.CHANNEL_CHECK),
+        Button(text=texts.BUTTON_OPEN_TARIFFS, action=Action.OPEN_TARIFFS),
     )
 
 

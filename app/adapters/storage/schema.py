@@ -40,7 +40,6 @@ users = Table(
     Column("referral_code", String(32), nullable=False),
     Column("support_number", Integer, nullable=False),
     Column("created_at", DateTime(timezone=True), nullable=False),
-    Column("daily_image_quota", Integer, nullable=False),
     # Имя в мессенджере — для поддержки. NOT NULL со значением по умолчанию:
     # «имени нет» — это тоже ответ, и пустая ячейка его не даёт.
     Column("username", String(64), nullable=False, server_default="NONE"),
@@ -49,6 +48,10 @@ users = Table(
     Column("email", String(254), nullable=True),
     Column("bonus_messages", Integer, nullable=False, server_default="0"),
     Column("bonus_images", Integer, nullable=False, server_default="0"),
+    # Когда выдали разовый бонус за подписку на канал. NULL — не выдавали.
+    # Отметка и есть защита от повторной выдачи: начисление ставит её тем же
+    # UPDATE, который добавляет картинки, и условие NULL стоит в его WHERE.
+    Column("channel_bonus_at", DateTime(timezone=True), nullable=True),
     Column("tariff_expires_at", DateTime(timezone=True), nullable=True),
     # Чего бот ждёт от пользователя следующим сообщением (см. core/pending.py).
     # Text, а не String: у приколов с двумя фото ожидание несёт ещё и ссылки

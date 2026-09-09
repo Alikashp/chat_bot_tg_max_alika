@@ -79,7 +79,7 @@ class InMemoryStorage:
         external_id: str,
         referral_code: str,
         support_number: int,
-        daily_image_quota: int,
+        bonus_images: int,
         username: str = NO_USERNAME,
     ) -> User:
         existing = self._by_external.get((messenger, external_id))
@@ -101,7 +101,7 @@ class InMemoryStorage:
             referral_code=referral_code,
             support_number=support_number,
             created_at=self._now(),
-            daily_image_quota=daily_image_quota,
+            bonus_images=bonus_images,
             username=username,
         )
         self._users[user.id] = user
@@ -190,6 +190,17 @@ class InMemoryStorage:
             bonus_messages=user.bonus_messages + messages,
             bonus_images=user.bonus_images + images,
         )
+
+    async def grant_channel_bonus(self, user_id: UserId, *, images: int) -> bool:
+        user = self._require_user(user_id)
+        if user.channel_bonus_at is not None:
+            return False
+        self._users[user_id] = replace(
+            user,
+            bonus_images=user.bonus_images + images,
+            channel_bonus_at=self._now(),
+        )
+        return True
 
     # --- Оплата --------------------------------------------------------
 

@@ -103,3 +103,36 @@ def test_no_switches_is_the_normal_case() -> None:
 
     assert settings.preset_models == {}
     assert settings.preset_qualities == {}
+
+
+def test_a_channel_link_is_accepted() -> None:
+    settings = Settings.model_validate(
+        {**VALID_ENV, "channel_url": " https://t.me/chatgptbotonline "}
+    )
+
+    assert settings.channel_url == "https://t.me/chatgptbotonline"
+
+
+def test_no_channel_is_the_normal_case() -> None:
+    """Пустая ссылка означает «бонуса за подписку нет»."""
+    assert Settings.model_validate(VALID_ENV).channel_url == ""
+
+
+@pytest.mark.parametrize(
+    "link",
+    [
+        # Приглашение в приватный канал: публичного имени нет, проверять
+        # подписку не по чему.
+        "https://t.me/+AbCdEf",
+        "https://vk.com/chatgptbotonline",
+        "chatgptbotonline",
+    ],
+)
+def test_a_link_we_cannot_check_stops_the_start(link: str) -> None:
+    """Иначе кнопка висела бы и обещала картинки, которых не выдадут.
+
+    Опечатку в ссылке иначе видно только по жалобе человека, который
+    подписался и бонуса не получил.
+    """
+    with pytest.raises(ValidationError):
+        Settings.model_validate({**VALID_ENV, "channel_url": link})

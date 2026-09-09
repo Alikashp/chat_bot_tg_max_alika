@@ -325,6 +325,9 @@ async def harness() -> AsyncIterator[Harness]:
         guard=FloodGuard(limit=1),
         cards=cards,
         stars=stars,
+        # Канал в этом прогоне не настроен: проверять подписку ходил бы
+        # живой Telegram, а прогон обходится без сети.
+        channel=None,
         now=clock,
     )
     dispatcher = telegram_router.build_dispatcher(deps)
@@ -404,7 +407,9 @@ async def test_start_creates_the_user_once(harness: Harness) -> None:
     await harness.send_text("/start")
 
     user = await harness.user()
-    assert user.bonus_images == 0
+    # Три картинки выдаются один раз — при регистрации. Второй /start их не
+    # удваивает: иначе бесплатные картинки печатались бы кнопкой.
+    assert user.bonus_images == 3
     assert await harness.storage.get_user(MessengerKind.TELEGRAM, "999") is None
 
 

@@ -25,34 +25,52 @@ MAX_ROW_CHARS = 30
 
 
 def test_onboarding_matches_the_brief() -> None:
-    """§2.1: ровно три строки, дословно."""
-    screen = texts.onboarding(daily_messages=20, daily_images=3)
+    """§2.1: ровно три строки. Картинки названы остатком, а не нормой."""
+    screen = texts.onboarding(daily_messages=20, images_left=3)
 
     assert screen.lines == [
         "Привет! Я отвечу на любой вопрос, решу задачу и сделаю картинку.",
         "Просто напиши мне что-нибудь 👇",
-        "У тебя 20 сообщений в день и 3 картинки бесплатно.",
+        "Сейчас у тебя 20 сообщений в день и 3 картинки.",
     ]
 
 
+def test_onboarding_never_calls_the_images_free() -> None:
+    """Тот же экран видит и оплативший тариф, и вернувшийся с пустым балансом.
+
+    Слово «бесплатно» было бы враньём обоим, а третья строка — единственное
+    место, где человек читает свои числа при каждом /start.
+    """
+    paid = texts.onboarding(daily_messages=100, images_left=40)
+
+    assert "бесплатно" not in paid.text
+    assert "Сейчас у тебя 100 сообщений в день и 40 картинок." in paid.text
+
+
 def test_onboarding_from_presentations_replaces_the_first_line() -> None:
-    """§2.1: ветка deeplink pres_* — другая первая строка и квота 5."""
-    screen = texts.onboarding(
-        daily_messages=20, daily_images=5, from_presentations=True
-    )
+    """§2.1: ветка deeplink pres_* — другая первая строка и подарок больше.
+
+    Число подарка называется один раз — в третьей строке. В приветствии его
+    нет намеренно: два места с одним числом однажды разойдутся.
+    """
+    screen = texts.onboarding(daily_messages=20, images_left=5, from_presentations=True)
 
     assert screen.lines[0] == (
         "Привет! Ты из бота презентаций — здесь ещё чат и картинки. "
-        "Держи 5 картинок вместо 3 за переход."
+        "Держи бонусные картинки за переход."
     )
-    assert screen.lines[2] == "У тебя 20 сообщений в день и 5 картинок бесплатно."
+    assert screen.lines[2] == "Сейчас у тебя 20 сообщений в день и 5 картинок."
 
 
 def test_onboarding_mentions_the_gift_from_a_friend() -> None:
     """§2.7: приглашённый должен сразу понять, откуда у него больше лимитов."""
-    screen = texts.onboarding(daily_messages=20, daily_images=3, referral_gift=True)
+    screen = texts.onboarding(
+        daily_messages=20,
+        images_left=5,
+        gift=texts.referral_gift(messages=50, images=2),
+    )
 
-    assert screen.lines[3] == "Тебе подарок от друга: +50 сообщений и +5 картинок."
+    assert screen.lines[3] == "Тебе подарок от друга: +50 сообщений и +2 картинки."
 
 
 def test_chat_error_promises_the_message_was_not_spent() -> None:
@@ -67,21 +85,56 @@ def test_chat_error_promises_the_message_was_not_spent() -> None:
 
 def test_paywall_always_offers_two_ways_out() -> None:
     """§2.5: тупика быть не должно никогда."""
-    for screen in (texts.paywall_images(), texts.paywall_messages()):
-        assert len(screen.buttons) == 2
+    screens = (
+        texts.paywall_images(renews_tomorrow=True, invite_images=2),
+        texts.paywall_images(renews_tomorrow=False, invite_images=2),
+        texts.paywall_messages(invite_messages=50),
+    )
+
+    for screen in screens:
+        assert len(screen.buttons) >= 2
 
 
-def test_paywall_images_matches_the_brief() -> None:
-    screen = texts.paywall_images()
+def test_paywall_images_promises_tomorrow_only_where_it_comes() -> None:
+    """На бесплатном тарифе картинки не восстанавливаются вовсе.
 
-    assert screen.lines == [
+    Пообещать там «завтра будет ещё» — значит отправить человека ждать
+    сутки того, чего не будет. Это единственная причина, по которой у экрана
+    вообще две редакции.
+    """
+    paid = texts.paywall_images(renews_tomorrow=True, invite_images=2)
+    free = texts.paywall_images(renews_tomorrow=False, invite_images=2)
+
+    assert paid.lines == [
         "Картинки на сегодня закончились 😔",
-        "Завтра будет ещё одна, а можно не ждать:",
+        "Завтра будут ещё, а можно не ждать:",
     ]
+    assert free.lines == [
+        "Картинки закончились 😔",
+        "Можно взять ещё бесплатно или открыть тарифы:",
+    ]
+    assert "Завтра" not in free.text
+
+
+def test_paywall_names_the_reward_it_actually_gives() -> None:
+    """Число в подписи приходит из настроек: обещать надо то, что начислим."""
+    screen = texts.paywall_images(renews_tomorrow=False, invite_images=2)
+
     assert screen.buttons == (
         "⭐ Открыть тарифы",
-        "🎁 Позвать друга → +5 картинок сразу",
+        "🎁 Позвать друга → +2 картинки сразу",
     )
+
+
+def test_the_channel_button_appears_only_when_the_bonus_is_still_owed() -> None:
+    """Кнопка, ведущая на «бонус уже получен», — это тупик наоборот."""
+    without = texts.paywall_images(renews_tomorrow=False, invite_images=2)
+    with_channel = texts.paywall_images(
+        renews_tomorrow=False, invite_images=2, channel_images=2
+    )
+
+    assert len(without.buttons) == 2
+    assert with_channel.buttons[-1] == "📣 Канал → +2 картинки"
 
 
 def test_profile_shows_four_numbers() -> None:
@@ -121,10 +174,10 @@ def test_the_invitation_does_not_promise_anything_about_vpn() -> None:
 
 def test_the_referral_offer_names_the_reward() -> None:
     """§2.7: сначала выгода, потом ссылка. Иначе непонятно, зачем пересылать."""
-    screen = texts.referral_offer(bonus_messages=50, bonus_images=5)
+    screen = texts.referral_offer(bonus_messages=50, bonus_images=2)
 
     assert "+50 сообщений" in screen.text
-    assert "+5 картинок" in screen.text
+    assert "+2 картинки" in screen.text
     assert screen.buttons == (texts.BUTTON_SEND_TO_FRIEND,)
 
 
@@ -195,7 +248,7 @@ def test_a_higher_tariff_repeats_what_a_lower_one_gives() -> None:
 )
 def test_images_are_pluralised_correctly(count: int, expected: str) -> None:
     """«5 картинки» в интерфейсе выглядит как недоделка."""
-    screen = texts.onboarding(daily_messages=20, daily_images=count)
+    screen = texts.onboarding(daily_messages=20, images_left=count)
 
     assert expected in screen.text
 
@@ -346,7 +399,11 @@ def test_no_row_of_buttons_is_too_wide_for_a_phone() -> None:
         "меню": scenario_keyboards.main_menu(),
         "картинка": scenario_keyboards.image_result(),
         "прикол": scenario_keyboards.preset_result(),
-        "пейволл": scenario_keyboards.paywall(texts.BUTTON_INVITE_FOR_IMAGES),
+        "пейволл": scenario_keyboards.paywall(
+            texts.button_invite_for_images(2), texts.button_channel_bonus(2)
+        ),
+        "канал": scenario_keyboards.channel_offer("https://t.me/channel"),
+        "проверка канала": scenario_keyboards.channel_retry(),
         "профиль": scenario_keyboards.profile(),
         "оплата": scenario_keyboards.payments_soon(),
     }

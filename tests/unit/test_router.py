@@ -60,7 +60,8 @@ async def test_start_payload_still_works_for_a_known_user(
     assert messenger.texts_said()
     refreshed = await storage.get_user_by_id(user.id)
     assert refreshed is not None
-    assert refreshed.bonus_images == 0
+    # Только выданное при регистрации: подарок за ссылку положен новым.
+    assert refreshed.bonus_images == 3
 
 
 # --- Кнопки --------------------------------------------------------------

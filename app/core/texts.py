@@ -130,8 +130,29 @@ BUTTON_ANOTHER_PRESET = "🎭 Другой прикол"
 BUTTON_CANCEL = "✖️ Отмена"
 BUTTON_OPEN_TARIFFS = "⭐ Открыть тарифы"
 BUTTON_MY_LINK = "🎁 Моя ссылка"
-BUTTON_INVITE_FOR_IMAGES = "🎁 Позвать друга → +5 картинок сразу"
-BUTTON_INVITE_FOR_MESSAGES = "🎁 Позвать друга → +50 сообщений сразу"
+BUTTON_OPEN_CHANNEL = "📣 Открыть канал"
+BUTTON_CHANNEL_CHECK = "✅ Я подписался"
+
+
+def button_invite_for_images(bonus: int) -> str:
+    """Подпись зовущей кнопки на экране, где кончились картинки.
+
+    Число в подписи, а не в тексте рядом: человек читает кнопку последней и
+    решает по ней. И приходит оно из настроек, а не зашито здесь, — иначе
+    награду поменяли бы в одном месте, а обещали бы по-старому в другом.
+    """
+    return f"🎁 Позвать друга → +{_images(bonus)} сразу"
+
+
+def button_invite_for_messages(bonus: int) -> str:
+    """То же, когда кончились сообщения."""
+    return f"🎁 Позвать друга → +{_messages(bonus)} сразу"
+
+
+def button_channel_bonus(bonus: int) -> str:
+    """Кнопка «получить картинки за подписку на канал»."""
+    return f"📣 Канал → +{_images(bonus)}"
+
 
 # --- Названия тарифов ----------------------------------------------------
 
@@ -181,7 +202,7 @@ POPULAR_MARK = "берут чаще всего"
 _GREETING = "Привет! Я отвечу на любой вопрос, решу задачу и сделаю картинку."
 _GREETING_FROM_PRESENTATIONS = (
     "Привет! Ты из бота презентаций — здесь ещё чат и картинки. "
-    "Держи 5 картинок вместо 3 за переход."
+    "Держи бонусные картинки за переход."
 )
 _INVITATION = "Просто напиши мне что-нибудь 👇"
 
@@ -189,32 +210,35 @@ _INVITATION = "Просто напиши мне что-нибудь 👇"
 def onboarding(
     *,
     daily_messages: int,
-    daily_images: int,
+    images_left: int,
     from_presentations: bool = False,
-    referral_gift: bool = False,
+    gift: str = "",
 ) -> Screen:
     """Первый экран. Три строки, не больше (§2.1).
 
     Четвёртая появляется только у приглашённого другом: подарок надо назвать
     сразу, иначе человек не поймёт, откуда у него больше лимитов.
+
+    Картинки называются остатком, а не нормой, и слова «бесплатно» здесь
+    больше нет. Причина в том, что экран показывается и на второй, и на сотый
+    /start, и человеку с оплаченным тарифом: «3 картинки бесплатно» у него
+    было бы неправдой дважды. Остаток же верен всегда, а у нового человека он
+    ровно тот, что ему выдали при регистрации.
     """
     greeting = _GREETING_FROM_PRESENTATIONS if from_presentations else _GREETING
     lines = [
         greeting,
         _INVITATION,
-        f"У тебя {_messages(daily_messages)} в день "
-        f"и {_images(daily_images)} бесплатно.",
+        f"Сейчас у тебя {_messages(daily_messages)} в день и {_images(images_left)}.",
     ]
-    if referral_gift:
-        lines.append(REFERRAL_GIFT)
+    if gift:
+        lines.append(gift)
     return Screen(text="\n".join(lines), buttons=_menu_buttons())
 
 
-#: Приглашённому — в онбординге (§2.7).
-REFERRAL_GIFT = "Тебе подарок от друга: +50 сообщений и +5 картинок."
-
-#: Пригласившему — сразу, как только друг нажал /start (§2.7).
-REFERRAL_REWARD = "🎁 Твой друг зашёл! Тебе +50 сообщений и +5 картинок."
+def referral_gift(*, messages: int, images: int) -> str:
+    """Приглашённому — четвёртой строкой онбординга (§2.7)."""
+    return f"Тебе подарок от друга: +{_messages(messages)} и +{_images(images)}."
 
 
 def _menu_buttons() -> tuple[str, ...]:
@@ -415,29 +439,56 @@ def preset_refused(preset_buttons: tuple[str, ...]) -> Screen:
 # --- Пейволл (§2.5) ------------------------------------------------------
 
 
-def paywall_images() -> Screen:
-    """Показывается только при исчерпании и всегда даёт два выхода."""
-    return Screen(
-        text=(
-            "Картинки на сегодня закончились 😔\n"
-            "Завтра будет ещё одна, а можно не ждать:"
-        ),
-        buttons=(BUTTON_OPEN_TARIFFS, BUTTON_INVITE_FOR_IMAGES),
+def paywall_images(
+    *,
+    renews_tomorrow: bool,
+    invite_images: int,
+    channel_images: int = 0,
+) -> Screen:
+    """Показывается только при исчерпании и всегда даёт выход.
+
+    Первая строка зависит от тарифа, и это не украшательство. На платном
+    тарифе завтра действительно наступит новая дневная норма. На бесплатном
+    картинки не восстанавливаются вовсе — их выдают разово, — и «завтра будет
+    ещё одна» было бы там прямым обманом: человек прождал бы сутки впустую.
+
+    ``channel_images`` в нуле означает, что бонус за канал предлагать нечего:
+    канал не настроен, человек его уже получил или пришёл из мессенджера, где
+    канала у нас нет.
+    """
+    if renews_tomorrow:
+        lines = [
+            "Картинки на сегодня закончились 😔",
+            "Завтра будут ещё, а можно не ждать:",
+        ]
+    else:
+        lines = [
+            "Картинки закончились 😔",
+            "Можно взять ещё бесплатно или открыть тарифы:",
+        ]
+    buttons: tuple[str, ...] = (
+        BUTTON_OPEN_TARIFFS,
+        button_invite_for_images(invite_images),
     )
+    if channel_images:
+        buttons = (*buttons, button_channel_bonus(channel_images))
+    return Screen(text="\n".join(lines), buttons=buttons)
 
 
-def paywall_messages() -> Screen:
+def paywall_messages(*, invite_messages: int) -> Screen:
     """Тот же экран для сообщений.
 
     В §2.5 задания дан текст только про картинки, но кончиться могут и
     сообщения — 20 в день на бесплатном тарифе. Оставить этот случай без
     экрана значило бы получить тупик, а тупиков быть не должно.
+
+    Здесь «завтра» безусловно: сообщения дневные на любом тарифе.
     """
     return Screen(
         text=(
             "Сообщения на сегодня закончились 😔\nЗавтра будут ещё, а можно не ждать:"
         ),
-        buttons=(BUTTON_OPEN_TARIFFS, BUTTON_INVITE_FOR_MESSAGES),
+        buttons=(BUTTON_OPEN_TARIFFS, button_invite_for_messages(invite_messages)),
     )
 
 
@@ -502,8 +553,75 @@ def referral_invite(referral_url: str) -> Screen:
     )
 
 
-def referral_reward() -> Screen:
-    return Screen(text=REFERRAL_REWARD, buttons=_menu_buttons())
+def referral_reward(*, messages: int, images: int) -> Screen:
+    """Пригласившему — сразу, как только друг нажал /start (§2.7)."""
+    return Screen(
+        text=(f"🎁 Твой друг зашёл! Тебе +{_messages(messages)} и +{_images(images)}."),
+        buttons=_menu_buttons(),
+    )
+
+
+# --- Бонус за подписку на канал ------------------------------------------
+
+
+def channel_offer(*, bonus_images: int) -> Screen:
+    """Предложение подписаться на канал за разовый бонус.
+
+    Отдельным экраном, а не парой кнопок в пейволле: у ссылки на канал и у
+    проверки подписки разное назначение, и человеку надо один раз объяснить,
+    за что именно ему дадут картинки. Двух кнопок под текстом хватает —
+    сначала уйти в канал, потом вернуться и нажать проверку.
+    """
+    return Screen(
+        text=(
+            f"Подпишись на канал — и получишь +{_images(bonus_images)} 🎁\n"
+            "Там новые приколы с фото и всё, чему бот научился."
+        ),
+        buttons=(BUTTON_OPEN_CHANNEL, BUTTON_CHANNEL_CHECK),
+    )
+
+
+def channel_granted(*, bonus_images: int) -> Screen:
+    """Подписка нашлась, картинки начислены."""
+    return Screen(
+        text=f"Спасибо! +{_images(bonus_images)} уже на балансе 🎁",
+        buttons=_menu_buttons(),
+    )
+
+
+def channel_not_subscribed() -> Screen:
+    """Подписки нет. Не упрёк, а подсказка, что делать дальше."""
+    return Screen(
+        text=(
+            "Подписки пока не вижу 🤔\n"
+            "Открой канал, подпишись и нажми проверку ещё раз."
+        ),
+        buttons=(BUTTON_OPEN_CHANNEL, BUTTON_CHANNEL_CHECK),
+    )
+
+
+def channel_already_taken(*, invite_images: int) -> Screen:
+    """Бонус за канал разовый, и второй раз его не дают.
+
+    Тупика тут быть не должно, поэтому экран сразу называет то, чем ещё можно
+    добрать картинки.
+    """
+    return Screen(
+        text="Бонус за канал ты уже получил 🎁 Картинки можно взять ещё так:",
+        buttons=(BUTTON_OPEN_TARIFFS, button_invite_for_images(invite_images)),
+    )
+
+
+def channel_check_failed() -> Screen:
+    """Проверить не удалось — и это не то же самое, что «не подписан».
+
+    Отказать здесь молча значило бы не выдать заслуженный бонус и оставить
+    человека думать, что его обманули.
+    """
+    return Screen(
+        text="Не получилось проверить подписку 🤷 Попробуй ещё раз.",
+        buttons=(BUTTON_CHANNEL_CHECK, BUTTON_OPEN_TARIFFS),
+    )
 
 
 # --- Тарифы (§2.8) -------------------------------------------------------
@@ -966,9 +1084,13 @@ def _all_screens() -> tuple[Screen, ...]:
     вообще собирается: опечатка в шаблоне падает здесь, а не у пользователя.
     """
     return (
-        onboarding(daily_messages=20, daily_images=3),
-        onboarding(daily_messages=20, daily_images=5, from_presentations=True),
-        onboarding(daily_messages=20, daily_images=3, referral_gift=True),
+        onboarding(daily_messages=20, images_left=3),
+        onboarding(daily_messages=20, images_left=5, from_presentations=True),
+        onboarding(
+            daily_messages=20,
+            images_left=5,
+            gift=referral_gift(messages=50, images=2),
+        ),
         chat_answer("Ответ на вопрос.", offer_new_dialog=False),
         chat_answer("Ответ на вопрос.", offer_new_dialog=True),
         chat_answer(
@@ -996,8 +1118,15 @@ def _all_screens() -> tuple[Screen, ...]:
         photo_rejected(PHOTO_TOO_BIG),
         photo_rejected(PHOTO_NOT_AN_IMAGE),
         preset_result(),
-        paywall_images(),
-        paywall_messages(),
+        paywall_images(renews_tomorrow=True, invite_images=2),
+        paywall_images(renews_tomorrow=False, invite_images=2),
+        paywall_images(renews_tomorrow=False, invite_images=2, channel_images=2),
+        paywall_messages(invite_messages=50),
+        channel_offer(bonus_images=2),
+        channel_granted(bonus_images=2),
+        channel_not_subscribed(),
+        channel_already_taken(invite_images=2),
+        channel_check_failed(),
         profile(
             tariff_id=TariffId.FREE,
             messages_used=12,
@@ -1013,9 +1142,9 @@ def _all_screens() -> tuple[Screen, ...]:
             friends=3,
             user_number=1234,
         ),
-        referral_offer(bonus_messages=50, bonus_images=5),
+        referral_offer(bonus_messages=50, bonus_images=2),
         referral_invite("https://t.me/mybot?start=ref_abc123"),
-        referral_reward(),
+        referral_reward(messages=50, images=2),
         tariffs_screen(),
         payment_methods(TariffId.PRO, price_rub=599, stars=524),
         email_ask(),

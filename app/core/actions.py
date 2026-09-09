@@ -50,6 +50,10 @@ class Action(StrEnum):
     MY_LINK = "r:link"
     REFERRAL_SEND = "r:send"
 
+    # Разовый бонус за подписку на канал
+    CHANNEL_OFFER = "n:show"
+    CHANNEL_CHECK = "n:check"
+
 
 #: Префикс выбора пресета. За ним идёт идентификатор из реестра.
 PRESET_PREFIX = "p:pick:"

@@ -36,11 +36,13 @@ from app.adapters.payments.yookassa import YooKassaPayments, order_id_of
 from app.adapters.storage.migrations import upgrade_to_head_async
 from app.adapters.storage.postgres import PostgresStorage, create_engine
 from app.adapters.telegram import router as telegram_router
+from app.adapters.telegram.channel import TelegramChannel
 from app.adapters.telegram.intake import dedup_key
 from app.adapters.telegram.messenger import TelegramMessenger
 from app.adapters.telegram.stars import TelegramStars
 from app.config import Settings, get_settings
 from app.core.billing import Billing
+from app.core.channel import channel_username
 from app.core.models import MessengerKind
 from app.core.receipts import FiscalSettings
 from app.core.referral import MAX_HOST, TELEGRAM_HOST
@@ -62,6 +64,7 @@ from app.infra.server import (
     create_app,
 )
 from app.ports.ai import ImageQuality
+from app.ports.channel import Channel
 from app.ports.payments import CardPayments, StarsPayments
 from config.presets import PRESETS
 
@@ -298,6 +301,13 @@ def build_core_settings(
         model_standard=settings.model_standard,
         dialog_max_turns=settings.dialog_max_turns,
         max_photo_bytes=settings.max_photo_bytes,
+        signup_images=settings.signup_images,
+        presentation_signup_images=settings.presentation_signup_images,
+        referral_bonus_images=settings.referral_bonus_images,
+        referral_bonus_messages=settings.referral_bonus_messages,
+        referral_daily_reward_limit=settings.referral_daily_reward_limit,
+        channel_url=settings.channel_url,
+        channel_bonus_images=settings.channel_bonus_images,
         stars_markup=settings.stars_markup,
         rub_per_star=settings.rub_per_star,
         subscription_days=settings.subscription_days,
@@ -312,6 +322,18 @@ def build_core_settings(
             for preset, quality in settings.preset_qualities.items()
         },
     )
+
+
+def _build_channel(settings: Settings, bot: Bot) -> Channel | None:
+    """Проверка подписки на канал. None — канал не настроен.
+
+    Имя канала выводится из ссылки, а не задаётся отдельно: разойтись им было
+    бы не с чем.
+    """
+    name = channel_username(settings.channel_url)
+    if not name:
+        return None
+    return TelegramChannel(bot, name, get_logger("channel"))
 
 
 def _fiscal(settings: Settings) -> FiscalSettings | None:
@@ -368,6 +390,7 @@ async def build_wiring(settings: Settings) -> Wiring:
         *,
         stars: StarsPayments | None = None,
         cards: CardPayments | None = cards,
+        channel: Channel | None = None,
     ) -> Deps:
         """Одни и те же зависимости, разный мессенджер и его настройки."""
         return Deps(
@@ -380,6 +403,7 @@ async def build_wiring(settings: Settings) -> Wiring:
             guard=guard,
             cards=cards,
             stars=stars,
+            channel=channel,
             now=_utc_now,
             examples=examples,
         )
@@ -389,6 +413,9 @@ async def build_wiring(settings: Settings) -> Wiring:
         build_core_settings(settings, me.username, referral_link_host=TELEGRAM_HOST),
         # Звёзды бывают только в Telegram: в MAX такого механизма нет.
         stars=TelegramStars(bot),
+        # Канал у нас тоже только в Telegram: в MAX проверять подписку нечем,
+        # и там бонус за неё просто не предлагается.
+        channel=_build_channel(settings, bot),
     )
 
     max_wiring = await _build_max(settings, build_deps)
@@ -719,6 +746,9 @@ async def run() -> None:
             # Одно на оба магазина: фискальные параметры у продавца одни, а
             # онлайн-касса подключается в кабинете, куда мы не заглядываем.
             "receipts": _ready(settings.receipts_enabled),
+            # Бонус за подписку на канал. Только Telegram: в MAX своего
+            # канала у нас нет и проверять подписку нечем.
+            "channel": _ready(bool(channel_username(settings.channel_url))),
         }
 
     app = create_app(webhooks=webhooks, health=health)

@@ -103,13 +103,21 @@ async def storage(
     raise AssertionError(f"неизвестная реализация хранилища: {request.param}")
 
 
-async def _make_user(storage: Storage, external_id: str = "1") -> User:
+async def _make_user(
+    storage: Storage, external_id: str = "1", *, bonus_images: int = 0
+) -> User:
+    """Пользователь без подарка при регистрации, если его не попросили.
+
+    Ноль по умолчанию не ради краткости: почти каждая проверка ниже считает
+    бонусы, и молчаливая тройка в них превращала бы арифметику теста в
+    загадку. Саму выдачу проверяет отдельный тест.
+    """
     return await storage.create_user(
         messenger=MessengerKind.TELEGRAM,
         external_id=external_id,
         referral_code=f"code{external_id}",
         support_number=support.generate_number(),
-        daily_image_quota=3,
+        bonus_images=bonus_images,
     )
 
 
@@ -117,16 +125,17 @@ async def _make_user(storage: Storage, external_id: str = "1") -> User:
 
 
 async def test_created_user_is_found_by_external_id(storage: Storage) -> None:
-    created = await _make_user(storage, "42")
+    created = await _make_user(storage, "42", bonus_images=3)
 
     found = await storage.get_user(MessengerKind.TELEGRAM, "42")
 
     assert found is not None
     assert found.id == created.id
     assert found.tariff is TariffId.FREE
-    assert found.daily_image_quota == 3
     assert found.bonus_messages == 0
-    assert found.bonus_images == 0
+    # Картинки при регистрации кладутся в бонус той же вставкой.
+    assert found.bonus_images == 3
+    assert found.channel_bonus_at is None
 
 
 async def test_unknown_user_is_none(storage: Storage) -> None:
@@ -143,7 +152,7 @@ async def test_same_external_id_in_other_messenger_is_another_user(
         external_id="7",
         referral_code="code-max-7",
         support_number=support.generate_number(),
-        daily_image_quota=3,
+        bonus_images=3,
     )
 
     assert telegram_user.id != max_user.id
@@ -163,7 +172,7 @@ async def test_a_second_registration_returns_the_same_person(
         external_id="twice",
         referral_code="другой-код",
         support_number=support.generate_number(),
-        daily_image_quota=3,
+        bonus_images=3,
     )
 
     assert second.id == first.id
@@ -183,7 +192,7 @@ async def test_concurrent_registrations_create_one_person(storage: Storage) -> N
                 external_id="race",
                 referral_code=f"code-{index}",
                 support_number=support.generate_number(),
-                daily_image_quota=3,
+                bonus_images=3,
             )
             for index in range(5)
         )
@@ -201,7 +210,7 @@ async def test_duplicate_referral_code_is_rejected(storage: Storage) -> None:
             external_id="2",
             referral_code="code1",
             support_number=support.generate_number(),
-            daily_image_quota=3,
+            bonus_images=3,
         )
 
 
@@ -331,6 +340,46 @@ async def test_bonus_cannot_be_overspent_concurrently(storage: Storage) -> None:
     updated = await storage.get_user_by_id(user.id)
     assert updated is not None
     assert updated.bonus_images == 0
+
+
+# --- Бонус за подписку на канал ------------------------------------------
+
+
+async def test_channel_bonus_is_granted_once(storage: Storage) -> None:
+    """Разовый — значит разовый.
+
+    Иначе бесплатные картинки печатались бы кнопкой: подписаться, забрать,
+    отписаться, подписаться снова.
+    """
+    user = await _make_user(storage)
+
+    assert await storage.grant_channel_bonus(user.id, images=2) is True
+    assert await storage.grant_channel_bonus(user.id, images=2) is False
+
+    updated = await storage.get_user_by_id(user.id)
+    assert updated is not None
+    assert updated.bonus_images == 2
+    assert updated.channel_bonus_at is not None
+
+
+async def test_channel_bonus_survives_a_double_tap(storage: Storage) -> None:
+    """Десять одновременных нажатий дают ровно одно начисление."""
+    user = await _make_user(storage)
+
+    results = await asyncio.gather(
+        *(storage.grant_channel_bonus(user.id, images=2) for _ in range(10))
+    )
+
+    assert sum(results) == 1
+    updated = await storage.get_user_by_id(user.id)
+    assert updated is not None
+    assert updated.bonus_images == 2
+
+
+async def test_a_fresh_user_has_no_channel_bonus_mark(storage: Storage) -> None:
+    user = await _make_user(storage)
+
+    assert user.channel_bonus_at is None
 
 
 # --- Диалог --------------------------------------------------------------
@@ -860,7 +909,7 @@ async def test_the_name_is_kept_from_the_start(storage: Storage) -> None:
         external_id="name-2",
         referral_code="codename2",
         support_number=support.generate_number(),
-        daily_image_quota=3,
+        bonus_images=3,
         username="durov",
     )
 

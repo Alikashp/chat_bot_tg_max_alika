@@ -50,6 +50,25 @@ def new_dialog() -> Keyboard:
     )
 
 
+def chat_answer(*, truncated: bool, offer_new_dialog: bool) -> Keyboard | None:
+    """Кнопки под ответом в чате.
+
+    «Продолжить» появляется, только когда ответ правда оборван: предлагать
+    досказать законченную мысль значит обещать то, чего нет.
+
+    Обе кнопки рядом уживаются: они про разное — дослушать этот ответ и
+    забыть весь разговор.
+    """
+    rows: list[tuple[Button, ...]] = []
+    if truncated:
+        rows.append((Button(text=texts.BUTTON_CONTINUE, action=Action.CHAT_CONTINUE),))
+    if offer_new_dialog:
+        rows.append(
+            (Button(text=texts.BUTTON_NEW_DIALOG, action=Action.CHAT_NEW_DIALOG),)
+        )
+    return Keyboard(rows=tuple(rows)) if rows else None
+
+
 def image_result() -> Keyboard:
     """Кнопки под нарисованной картинкой (§2.3)."""
     return Keyboard.row(

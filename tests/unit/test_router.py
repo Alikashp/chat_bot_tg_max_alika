@@ -318,6 +318,21 @@ async def test_a_change_email_button_for_a_gone_tariff_does_not_dead_end(
     assert messenger.texts_said()
 
 
+async def test_the_continue_button_reaches_the_scenario(
+    deps: Deps, user: User, llm: FakeLLM, messenger: FakeMessenger
+) -> None:
+    """Кнопка обязана доезжать до продолжения, а не в «не понимаю»."""
+    llm.truncated = True
+    await handle(deps, incoming(text="расскажи подробно"))
+    llm.truncated = False
+    before = len(llm.calls)
+
+    await handle(deps, incoming(action=Action.CHAT_CONTINUE))
+
+    assert len(llm.calls) == before + 1
+    assert messenger.texts_said()[-1] != texts.unsupported_input().text
+
+
 # --- Непонятое -----------------------------------------------------------
 
 

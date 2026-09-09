@@ -201,6 +201,7 @@ def build_providers(
         ),
         system_prompt=settings.llm_system_prompt,
         max_tokens=settings.llm_max_tokens,
+        logger=get_logger("llm"),
     )
 
     images = OpenAIImages(

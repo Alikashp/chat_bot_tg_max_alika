@@ -20,6 +20,8 @@ from app.adapters.ai.errors import ProviderResponseError
 from app.adapters.ai.http import request_json
 from app.adapters.ai.resilience import ResilientCaller
 from app.core.models import ChatTurn, Role
+from app.ports.ai import Answer
+from app.ports.observability import Logger
 
 
 class OpenAICompatibleLLM:
@@ -34,6 +36,7 @@ class OpenAICompatibleLLM:
         caller: ResilientCaller,
         system_prompt: str,
         max_tokens: int,
+        logger: Logger,
     ) -> None:
         self._client = client
         self._base_url = base_url.rstrip("/")
@@ -44,9 +47,21 @@ class OpenAICompatibleLLM:
         self._caller = caller
         self._system_prompt = system_prompt
         self._max_tokens = max_tokens
+        self._logger = logger
 
-    async def complete(self, turns: Sequence[ChatTurn], *, model: str) -> str:
-        """Возвращает ответ на диалог."""
+    async def complete(self, turns: Sequence[ChatTurn], *, model: str) -> Answer:
+        """Возвращает ответ на диалог.
+
+        Системный блок стоит первым и не меняется от запроса к запросу —
+        именно в таком виде провайдер может переиспользовать посчитанное
+        начало промпта. Переменного в нём нет ничего: он приходит из настроек
+        целиком, без подстановок про пользователя или время.
+
+        Сколько от этого сэкономлено, видно по ``cached_tokens`` в логе. Ноль
+        там означает не поломку порядка, а чаще всего то, что промпт просто
+        короче порога кэширования у провайдера: наш системный блок — десятки
+        токенов, а не тысячи.
+        """
         messages: list[dict[str, str]] = []
         if self._system_prompt:
             messages.append({"role": "system", "content": self._system_prompt})
@@ -69,14 +84,39 @@ class OpenAICompatibleLLM:
                 json=payload,
             )
 
-        return _extract_answer(await self._caller.call(call))
+        payload_back = await self._caller.call(call)
+        self._log_cache(payload_back)
+        return _extract_answer(payload_back)
+
+    def _log_cache(self, payload: dict[str, object]) -> None:
+        """Пишет в лог, сколько промпта провайдер взял из кэша.
+
+        Без этого числа разговор про кэширование остаётся гаданием: снаружи
+        видно только счёт, а по счёту не отличить «кэш работает» от «промпт
+        не дотягивает до порога».
+        """
+        usage = payload.get("usage")
+        if not isinstance(usage, dict):
+            return
+        details = usage.get("prompt_tokens_details")
+        cached = details.get("cached_tokens") if isinstance(details, dict) else None
+        self._logger.info(
+            "llm_usage",
+            prompt_tokens=_number(usage.get("prompt_tokens")),
+            cached_tokens=_number(cached),
+        )
 
 
 def _role_name(role: Role) -> str:
     return "user" if role is Role.USER else "assistant"
 
 
-def _extract_answer(payload: dict[str, object]) -> str:
+def _number(value: object) -> int:
+    """Число из ответа провайдера. Не число — считаем нулём, а не падаем."""
+    return value if isinstance(value, int) else 0
+
+
+def _extract_answer(payload: dict[str, object]) -> Answer:
     """Достаёт текст ответа.
 
     Пустой ответ считаем сбоем, а не ответом: показать пользователю пустое
@@ -99,4 +139,9 @@ def _extract_answer(payload: dict[str, object]) -> str:
     if not isinstance(content, str) or not content.strip():
         raise ProviderResponseError("провайдер вернул пустой ответ")
 
-    return content.strip()
+    # «length» означает, что модель не закончила мысль, а упёрлась в потолок:
+    # фраза оборвана на полуслове. Молча отдать такой текст значит выдать
+    # огрызок за законченный ответ.
+    return Answer(
+        text=content.strip(), truncated=first.get("finish_reason") == "length"
+    )

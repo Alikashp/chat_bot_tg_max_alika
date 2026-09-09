@@ -27,6 +27,7 @@ class Action(StrEnum):
     # Чат (§2.2)
     CHAT_RETRY = "c:retry"
     CHAT_NEW_DIALOG = "c:new"
+    CHAT_CONTINUE = "c:more"
 
     # Картинки (§2.3)
     IMAGE_AGAIN = "i:again"

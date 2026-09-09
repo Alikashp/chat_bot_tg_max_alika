@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol
 
@@ -41,10 +42,25 @@ class ContentRefusedError(Exception):
     """
 
 
+@dataclass(frozen=True, slots=True)
+class Answer:
+    """Ответ модели вместе с причиной, по которой она замолчала.
+
+    Причина здесь не для отчётности. Упёршись в потолок длины, модель
+    обрывает фразу на полуслове — и человек, не зная об этом, читает огрызок
+    как законченный ответ. Признак ``truncated`` позволяет сказать честно и
+    предложить дослушать.
+    """
+
+    text: str
+    #: Ответ упёрся в потолок длины, а не закончился сам.
+    truncated: bool = False
+
+
 class LLMProvider(Protocol):
     """Провайдер текстовых ответов."""
 
-    async def complete(self, turns: Sequence[ChatTurn], *, model: str) -> str:
+    async def complete(self, turns: Sequence[ChatTurn], *, model: str) -> Answer:
         """Возвращает ответ на диалог.
 
         Реализация обязана задать явный таймаут (§3.4.6). Исключения не

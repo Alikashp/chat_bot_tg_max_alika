@@ -50,8 +50,8 @@ async def _make_users(engine: AsyncEngine, count: int) -> list[int]:
                 text(
                     "INSERT INTO users "
                     "(messenger, external_id, tariff, referral_code, "
-                    " support_number, created_at, daily_image_quota) "
-                    "VALUES ('telegram', :ext, 'free', :code, :number, :now, 3) "
+                    " support_number, created_at) "
+                    "VALUES ('telegram', :ext, 'free', :code, :number, :now) "
                     "RETURNING id"
                 ),
                 {
@@ -128,8 +128,8 @@ async def test_same_external_id_twice_in_one_messenger_is_impossible(
                 text(
                     "INSERT INTO users "
                     "(messenger, external_id, tariff, referral_code, "
-                    " support_number, created_at, daily_image_quota) "
-                    "VALUES ('telegram', '0', 'free', 'another', 900001, :now, 3)"
+                    " support_number, created_at) "
+                    "VALUES ('telegram', '0', 'free', 'another', 900001, :now)"
                 ),
                 {"now": datetime.now(UTC)},
             )
@@ -146,8 +146,8 @@ async def test_the_same_id_in_another_messenger_is_a_different_person(
             text(
                 "INSERT INTO users "
                 "(messenger, external_id, tariff, referral_code, "
-                " support_number, created_at, daily_image_quota) "
-                "VALUES ('max', '0', 'free', 'max-code', 900003, :now, 3)"
+                " support_number, created_at) "
+                "VALUES ('max', '0', 'free', 'max-code', 900003, :now)"
             ),
             {"now": datetime.now(UTC)},
         )

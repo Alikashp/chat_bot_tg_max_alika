@@ -316,6 +316,27 @@ class FakeGuard:
         return self._active.get(key, 0)
 
 
+class FakeChannel:
+    """Канал, про который заранее известно, кто на него подписан.
+
+    ``error`` отличает «не подписан» от «проверить не удалось»: сценарий
+    обязан вести себя в этих случаях по-разному, и без такой подделки
+    разница не проверяется ничем.
+    """
+
+    def __init__(self, *, members: set[str] | None = None) -> None:
+        self.members = members if members is not None else set()
+        self.error: Exception | None = None
+        #: Кого спрашивали. Нужен там, где важно, что спросили про того.
+        self.asked: list[str] = []
+
+    async def has_member(self, external_user_id: str) -> bool:
+        self.asked.append(external_user_id)
+        if self.error is not None:
+            raise self.error
+        return external_user_id in self.members
+
+
 class FakeCards:
     """Провайдер оплаты картой с заранее заданным поведением."""
 

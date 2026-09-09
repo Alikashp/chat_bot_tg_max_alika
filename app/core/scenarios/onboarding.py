@@ -14,9 +14,10 @@ from __future__ import annotations
 from datetime import timedelta
 
 from app.core import referral, support, texts
-from app.core.models import Chat, MessengerKind, User, username_or_none
-from app.core.scenarios import identity
-from app.core.scenarios.deps import Deps, Session
+from app.core.limits import LimitKind
+from app.core.models import Chat, MessengerKind, User, UserId, username_or_none
+from app.core.scenarios import identity, spending
+from app.core.scenarios.deps import Deps, Session, session_for
 
 #: Сколько попыток подобрать незанятые код и номер. Коллизия маловероятна,
 #: но «маловероятно» и «невозможно» — разные вещи, а падение на регистрации
@@ -81,10 +82,10 @@ async def _create_user(
     username: str | None = None,
 ) -> User:
     """Заводит пользователя, подбирая свободный реферальный код."""
-    quota = (
-        deps.settings.presentation_daily_images
+    granted = (
+        deps.settings.presentation_signup_images
         if from_presentations
-        else deps.settings.free_daily_images
+        else deps.settings.signup_images
     )
     last_error: ValueError | None = None
     for _ in range(_CODE_ATTEMPTS):
@@ -94,7 +95,7 @@ async def _create_user(
                 external_id=external_id,
                 referral_code=referral.generate_code(),
                 support_number=support.generate_number(),
-                daily_image_quota=quota,
+                bonus_images=granted,
                 username=username_or_none(username),
             )
         except ValueError as error:
@@ -119,14 +120,7 @@ async def _apply_referral(deps: Deps, session: Session, payload: str) -> bool:
         # хранилище знает и само, но лишний запрос делать незачем.
         return False
 
-    since = deps.now() - _REWARD_WINDOW
-    rewarded_today = await deps.storage.count_referrals_since(referrer.id, since)
-    if rewarded_today >= deps.settings.referral_daily_reward_limit:
-        deps.logger.warning(
-            "referral_limit_reached",
-            user_id=int(referrer.id),
-            rewarded_today=rewarded_today,
-        )
+    if not await _within_daily_limit(deps, referrer.id):
         return False
 
     if not await deps.storage.record_referral(referrer.id, session.user.id):
@@ -145,6 +139,31 @@ async def _apply_referral(deps: Deps, session: Session, payload: str) -> bool:
     return True
 
 
+async def _within_daily_limit(deps: Deps, referrer_id: UserId) -> bool:
+    """Не упёрся ли пригласивший в суточный потолок наград (§2.7, антифрод).
+
+    Потолок по умолчанию выключен: приглашения стали основным способом взять
+    картинки бесплатно, и ограничивать их числом значит останавливать ровно
+    то, ради чего человек зовёт друзей. Ноль означает «без потолка»; включить
+    его обратно можно переменной окружения, не трогая код.
+    """
+    limit = deps.settings.referral_daily_reward_limit
+    if limit <= 0:
+        return True
+
+    since = deps.now() - _REWARD_WINDOW
+    rewarded_today = await deps.storage.count_referrals_since(referrer_id, since)
+    if rewarded_today < limit:
+        return True
+
+    deps.logger.warning(
+        "referral_limit_reached",
+        user_id=int(referrer_id),
+        rewarded_today=rewarded_today,
+    )
+    return False
+
+
 async def _notify_referrer(deps: Deps, referrer: User) -> None:
     """Сообщает пригласившему, что друг зашёл (§2.7).
 
@@ -152,10 +171,17 @@ async def _notify_referrer(deps: Deps, referrer: User) -> None:
     человек увидит его в профиле, а падать здесь значило бы уронить онбординг
     приглашённому из-за проблемы у пригласившего.
     """
-    screen = texts.referral_reward()
+    screen = texts.referral_reward(
+        messages=deps.settings.referral_bonus_messages,
+        images=deps.settings.referral_bonus_images,
+    )
     try:
         await deps.messenger.send_text(
-            Chat(messenger=referrer.messenger, chat_id=referrer.external_id),
+            # Разговор начинаем мы, входящего обновления нет — значит нет и
+            # номера переписки. Адресат собирается из самого человека, и
+            # пометка «это человек» обязательна: в MAX подставить его номер
+            # вместо номера переписки значит отправить сообщение не туда.
+            session_for(deps, referrer).chat,
             screen.text,
             show_menu=True,
         )
@@ -170,10 +196,25 @@ async def _notify_referrer(deps: Deps, referrer: User) -> None:
 async def _greet(
     deps: Deps, session: Session, *, from_presentations: bool, gifted: bool
 ) -> None:
+    """Первый экран — и второй, и сотый: /start здоровается всегда.
+
+    Картинки называются остатком, а не нормой. У нового человека остаток и
+    есть выданное при регистрации, а у вернувшегося — то, что у него правда
+    осталось: обещать ему «3 картинки» на пустом балансе значило бы соврать
+    на первом же экране.
+    """
+    images = await spending.current_allowance(deps, session, LimitKind.IMAGES)
     screen = texts.onboarding(
         daily_messages=session.tariff.daily_messages,
-        daily_images=session.user.daily_image_quota,
+        images_left=images.total_left,
         from_presentations=from_presentations,
-        referral_gift=gifted,
+        gift=(
+            texts.referral_gift(
+                messages=deps.settings.referral_bonus_messages,
+                images=deps.settings.referral_bonus_images,
+            )
+            if gifted
+            else ""
+        ),
     )
     await deps.messenger.send_text(session.chat, screen.text, show_menu=True)

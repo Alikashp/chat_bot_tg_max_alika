@@ -294,6 +294,9 @@ async def harness() -> AsyncIterator[Harness]:
         cards=FakeCards(),
         # Звёзд в MAX нет — и это не пропуск в тесте, а свойство мессенджера.
         stars=None,
+        # Как и канала: проверять подписку в MAX нечем, и бонус за неё там
+        # не предлагается.
+        channel=None,
         now=clock,
     )
 
@@ -380,7 +383,7 @@ async def test_a_deeplink_gift_reaches_the_invited_user(harness: Harness) -> Non
         external_id="1000",
         referral_code="friend01",
         support_number=support.generate_number(),
-        daily_image_quota=3,
+        bonus_images=3,
     )
 
     assert await harness.post(start_update("ref_friend01")) == 200

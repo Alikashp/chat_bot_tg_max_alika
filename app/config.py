@@ -14,6 +14,7 @@ from typing import Annotated, Literal
 from pydantic import Field, HttpUrl, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.core.channel import channel_username
 from app.ports.ai import ImageQuality
 from config.prompt import SYSTEM_PROMPT
 
@@ -192,6 +193,34 @@ class Settings(BaseSettings):
     #: попытка стоит денег.
     image_retry_attempts: Annotated[int, Field(ge=1, le=5)] = 2
 
+    # --- Бесплатные картинки ----------------------------------------------
+
+    #: Сколько картинок человек получает при регистрации. Разово: дневной
+    #: нормы картинок на бесплатном тарифе нет (см. app/core/limits.py).
+    signup_images: Annotated[int, Field(ge=0, le=100)] = 3
+
+    #: То же для пришедших по deeplink из бота презентаций.
+    presentation_signup_images: Annotated[int, Field(ge=0, le=100)] = 5
+
+    #: Награда за приглашённого друга — обоим.
+    referral_bonus_images: Annotated[int, Field(ge=0, le=100)] = 2
+    referral_bonus_messages: Annotated[int, Field(ge=0, le=1000)] = 50
+
+    #: Потолок наград в сутки на одного пригласившего. Ноль — без потолка.
+    referral_daily_reward_limit: Annotated[int, Field(ge=0, le=1000)] = 0
+
+    #: Канал, за подписку на который дают разовый бонус. Пусто — бонуса нет.
+    #:
+    #: Имя канала выводится из ссылки, отдельной переменной для него нет:
+    #: две переменные про одно и то же однажды разойдутся, и бот станет
+    #: проверять подписку не на тот канал, показывая кнопку на новый.
+    #:
+    #: Чтобы проверка работала, бот должен быть администратором канала.
+    channel_url: str = ""
+
+    #: Сколько картинок даём за подписку на канал. Разово.
+    channel_bonus_images: Annotated[int, Field(ge=0, le=100)] = 2
+
     # --- Продуктовые ограничения ------------------------------------------
 
     #: Потолок размера присланного фото (§3.5). Проверяется до обращения к
@@ -358,6 +387,24 @@ class Settings(BaseSettings):
                 f"неизвестное качество {wrong}; допустимы {sorted(allowed)}"
             )
         return value
+
+    @field_validator("channel_url")
+    @classmethod
+    def _validate_channel(cls, value: str) -> str:
+        """Ссылка обязана быть на публичный канал Telegram.
+
+        Иначе имя из неё не выводится, проверять подписку не по чему, а
+        кнопка при этом висела бы и обещала картинки. Ловим на старте:
+        опечатку в ссылке иначе видно только по жалобе человека, который
+        подписался и бонуса не получил.
+        """
+        cleaned = value.strip()
+        if cleaned and not channel_username(cleaned):
+            raise ValueError(
+                "CHANNEL_URL должен быть ссылкой на публичный канал "
+                "вида https://t.me/имя"
+            )
+        return cleaned
 
     @field_validator("public_url")
     @classmethod

@@ -24,7 +24,6 @@ DAY = date(2026, 8, 28)
 def make_user(
     *,
     tariff: TariffId = TariffId.FREE,
-    daily_image_quota: int = 3,
     bonus_messages: int = 0,
     bonus_images: int = 0,
 ) -> User:
@@ -36,7 +35,6 @@ def make_user(
         referral_code="code",
         support_number=123456,
         created_at=datetime(2026, 8, 1, tzinfo=UTC),
-        daily_image_quota=daily_image_quota,
         bonus_messages=bonus_messages,
         bonus_images=bonus_images,
     )
@@ -64,10 +62,11 @@ def images(user: User, used: int) -> Allowance:
 
 
 def test_fresh_free_user_has_the_full_daily_quota() -> None:
+    """Сообщения дневные и на бесплатном тарифе. Картинки — нет."""
     user = make_user()
 
     assert messages(user, 0).daily_left == 20
-    assert images(user, 0).daily_left == 3
+    assert images(user, 0).daily_left == 0
 
 
 def test_used_quota_is_subtracted() -> None:
@@ -92,24 +91,35 @@ def test_quota_never_goes_negative() -> None:
 
 
 def test_bonus_adds_to_the_total() -> None:
-    user = make_user(bonus_images=5)
+    user = make_user(tariff=TariffId.LITE, bonus_images=5)
 
-    assert images(user, 0).total_left == 8
+    assert images(user, 0).total_left == 45
 
 
 def test_daily_quota_is_spent_before_the_bonus() -> None:
     """Подарок за друга должен ощущаться как продолжение работы, а не
-    растворяться в первый же день."""
-    user = make_user(bonus_images=5)
+    растворяться в первый же день.
+
+    Проверяется на платном тарифе: только там есть чему тратиться раньше
+    бонуса. На бесплатном дневной корзины нет вовсе.
+    """
+    user = make_user(tariff=TariffId.LITE, bonus_images=5)
 
     assert images(user, 0).next_source is Source.DAILY
 
 
 def test_bonus_kicks_in_when_the_daily_quota_runs_out() -> None:
-    user = make_user(bonus_images=5)
+    user = make_user(tariff=TariffId.LITE, bonus_images=5)
 
-    assert images(user, 3).next_source is Source.BONUS
-    assert images(user, 3).exhausted is False
+    assert images(user, 40).next_source is Source.BONUS
+    assert images(user, 40).exhausted is False
+
+
+def test_a_free_user_spends_straight_from_the_bonus() -> None:
+    """Дневной корзины у него нет, и списывать больше неоткуда."""
+    user = make_user(bonus_images=3)
+
+    assert images(user, 0).next_source is Source.BONUS
 
 
 def test_nothing_left_when_both_baskets_are_empty() -> None:
@@ -127,27 +137,32 @@ def test_bonus_alone_is_enough_to_keep_working() -> None:
     assert messages(user, 20).exhausted is False
 
 
-# --- Норма картинок и акция бота презентаций -----------------------------
+# --- Норма картинок ------------------------------------------------------
 
 
-def test_presentation_deeplink_raises_the_free_image_quota() -> None:
-    """§2.1: 5 картинок вместо 3 за переход."""
-    user = make_user(daily_image_quota=5)
+def test_free_tariff_has_no_daily_images_at_all() -> None:
+    """Бесплатные картинки выдаются разово, а не каждый день.
 
-    assert images(user, 0).daily_left == 5
+    Ноль в дневной норме — не мелочь: он один отвечает за то, что три
+    подаренные при регистрации картинки не превращаются в три в сутки.
+    """
+    user = make_user(bonus_images=3)
+
+    assert images(user, 0).daily_left == 0
+    assert images(user, 0).total_left == 3
 
 
-def test_paid_tariff_ignores_the_promo_quota() -> None:
-    """Акция существует только ради бесплатного тарифа."""
-    user = make_user(tariff=TariffId.LITE, daily_image_quota=5)
+def test_a_free_user_spends_the_signup_grant_and_it_does_not_come_back() -> None:
+    """Потратив выданное, человек упирается в пейволл, а не ждёт завтра."""
+    user = make_user(bonus_images=0)
 
-    assert daily_images(user, tariff_of(TariffId.LITE)) == 40
+    assert images(user, 0).exhausted is True
 
 
 @pytest.mark.parametrize(
     ("tariff", "expected_messages", "expected_images"),
     [
-        (TariffId.FREE, 20, 3),
+        (TariffId.FREE, 20, 0),
         (TariffId.LITE, 100, 40),
         (TariffId.PRO, 100, 60),
         (TariffId.MAX, 200, 150),
@@ -156,11 +171,11 @@ def test_paid_tariff_ignores_the_promo_quota() -> None:
 def test_tariff_limits_match_the_brief(
     tariff: TariffId, expected_messages: int, expected_images: int
 ) -> None:
-    """§2.8: числа тарифов взяты из задания."""
-    user = make_user(tariff=tariff, daily_image_quota=3)
+    """§2.8: числа тарифов взяты из задания. У бесплатного картинок нет."""
+    user = make_user(tariff=tariff)
 
     assert messages(user, 0).daily_left == expected_messages
-    assert daily_images(user, tariff_of(tariff)) == expected_images
+    assert daily_images(tariff_of(tariff)) == expected_images
 
 
 # --- Сутки ---------------------------------------------------------------

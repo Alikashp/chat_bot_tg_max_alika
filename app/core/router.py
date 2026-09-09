@@ -27,6 +27,7 @@ from app.core.models import IncomingMessage, TariffId
 from app.core.photos import PhotoTooLargeError
 from app.core.retry_context import RetryKind
 from app.core.scenarios import (
+    channel,
     chat,
     identity,
     images,
@@ -233,6 +234,12 @@ async def _route_action(deps: Deps, session: Session, action: str) -> None:
             await referral.show_offer(deps, session)
         case Action.REFERRAL_SEND:
             await referral.send_invitation(deps, session)
+        case Action.CHANNEL_OFFER:
+            await _clear_pending(deps, session)
+            await channel.show_offer(deps, session)
+        case Action.CHANNEL_CHECK:
+            await _clear_pending(deps, session)
+            await channel.check(deps, session)
         case _:
             # Кнопка из версии, которой больше нет. Тупика быть не должно.
             deps.logger.warning("unknown_action", user_id=int(session.user.id))

@@ -11,6 +11,7 @@ from app.core.scenarios.deps import Deps, Session
 from app.core.settings import CoreSettings
 from tests.fakes import (
     FakeCards,
+    FakeChannel,
     FakeGuard,
     FakeImages,
     FakeLLM,
@@ -71,6 +72,16 @@ def stars() -> FakeStars:
 
 
 @pytest.fixture
+def channel_() -> FakeChannel:
+    """Канал есть — как в Telegram. Подписанных в нём поначалу нет.
+
+    Подчёркивание в имени — не небрежность: без него фикстура затеняла бы
+    модуль сценария app.core.scenarios.channel в тестах, которые нужны оба.
+    """
+    return FakeChannel()
+
+
+@pytest.fixture
 def clock() -> FrozenClock:
     return FrozenClock()
 
@@ -98,6 +109,7 @@ def deps(
     guard: FakeGuard,
     cards: FakeCards,
     stars: FakeStars,
+    channel_: FakeChannel,
     clock: FrozenClock,
 ) -> Deps:
     return Deps(
@@ -110,6 +122,7 @@ def deps(
         guard=guard,
         cards=cards,
         stars=stars,
+        channel=channel_,
         now=clock,
     )
 
@@ -121,7 +134,7 @@ async def user(storage: InMemoryStorage) -> User:
         external_id="1",
         referral_code="code1",
         support_number=support.generate_number(),
-        daily_image_quota=3,
+        bonus_images=3,
     )
 
 

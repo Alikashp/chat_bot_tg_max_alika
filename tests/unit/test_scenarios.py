@@ -201,11 +201,13 @@ async def test_failed_drawing_replaces_the_waiting_message(
 async def test_image_paywall_when_pictures_run_out(
     deps: Deps, session: Session, storage: InMemoryStorage, messenger: FakeMessenger
 ) -> None:
-    await storage.add_usage(session.user.id, session.day, images=3)
+    """Выданное при регистрации кончилось — и завтра нового не будет."""
+    assert await storage.spend_bonus(session.user.id, images=3)
 
     await images.draw(deps, session, "кот")
 
-    assert messenger.last_text.text == texts.paywall_images().text
+    expected = texts.paywall_images(renews_tomorrow=False, invite_images=2)
+    assert messenger.last_text.text == expected.text
 
 
 # --- Пресеты (§2.4) ------------------------------------------------------
@@ -391,7 +393,8 @@ async def test_profile_shows_real_numbers(
     deps: Deps, session: Session, storage: InMemoryStorage, messenger: FakeMessenger
 ) -> None:
     """Критерий приёмки №8."""
-    await storage.add_usage(session.user.id, session.day, messages=12, images=1)
+    await storage.add_usage(session.user.id, session.day, messages=12)
+    assert await storage.spend_bonus(session.user.id, images=1)
 
     await profile.show(deps, session)
 
@@ -814,6 +817,8 @@ async def test_the_second_photo_is_not_asked_for_without_images_left(
 ) -> None:
     """Иначе человек прислал бы второй снимок впустую."""
     await storage.add_usage(paid.user.id, paid.day, messages=0, images=40)
+    # Дневная норма тарифа кончилась — и бонус тоже, иначе рисовать ещё есть чем.
+    assert await storage.spend_bonus(paid.user.id, images=3)
 
     await presets.add_photo(deps, paid, two_photos, PHOTO, "adult-ref")
 

@@ -75,7 +75,12 @@ TARIFFS: Mapping[TariffId, Tariff] = MappingProxyType(
             id=TariffId.FREE,
             price_rub=0,
             daily_messages=20,
-            daily_images=3,
+            # Ноль — не описка. На бесплатном тарифе картинки больше не
+            # приходят каждый день: их выдают разово — при регистрации, за
+            # приглашённого друга и за подписку на канал, — и они копятся в
+            # бонусном балансе, который не сгорает. Дневная норма осталась
+            # только у платных тарифов, где человек платит именно за неё.
+            daily_images=0,
             model_tier=ModelTier.ECONOMY,
             image_quality=ImageQuality.MEDIUM,
         ),

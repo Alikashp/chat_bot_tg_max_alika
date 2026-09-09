@@ -121,7 +121,7 @@ class PostgresStorage:
         external_id: str,
         referral_code: str,
         support_number: int,
-        daily_image_quota: int,
+        bonus_images: int,
         username: str = NO_USERNAME,
     ) -> User:
         query = (
@@ -133,7 +133,7 @@ class PostgresStorage:
                 referral_code=referral_code,
                 support_number=support_number,
                 created_at=self._now(),
-                daily_image_quota=daily_image_quota,
+                bonus_images=bonus_images,
                 username=username,
             )
             # Гонка за нового человека разрешается базой, а не проверкой в
@@ -303,6 +303,26 @@ class PostgresStorage:
         )
         async with self._session() as session, session.begin():
             await session.execute(query)
+
+    async def grant_channel_bonus(self, user_id: UserId, *, images: int) -> bool:
+        """Начисление и отметка о нём — одним UPDATE.
+
+        Условие «отметки ещё нет» стоит в самом запросе, поэтому два
+        одновременных нажатия кнопки приводят к одному начислению: второй
+        UPDATE не найдёт строки под условие и вернёт пусто.
+        """
+        query = (
+            update(users)
+            .where(users.c.id == user_id, users.c.channel_bonus_at.is_(None))
+            .values(
+                bonus_images=users.c.bonus_images + images,
+                channel_bonus_at=self._now(),
+            )
+            .returning(users.c.id)
+        )
+        async with self._session() as session, session.begin():
+            granted = (await session.execute(query)).one_or_none()
+        return granted is not None
 
     # --- Оплата --------------------------------------------------------
 
@@ -696,10 +716,10 @@ def _to_user(row: Any) -> User:
         referral_code=row["referral_code"],
         support_number=row["support_number"],
         created_at=row["created_at"],
-        daily_image_quota=row["daily_image_quota"],
         username=row["username"],
         bonus_messages=row["bonus_messages"],
         bonus_images=row["bonus_images"],
+        channel_bonus_at=row["channel_bonus_at"],
         tariff_expires_at=row["tariff_expires_at"],
         email=row["email"],
         pending=row["pending"],

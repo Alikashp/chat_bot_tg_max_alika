@@ -105,11 +105,14 @@ async def test_failed_chat_does_not_pollute_the_dialog(
 
 
 async def test_image_charges_after_delivery(
-    deps: Deps, session: Session, storage: InMemoryStorage
+    deps: Deps, session: Session, storage: InMemoryStorage, user: User
 ) -> None:
+    """На бесплатном тарифе картинка списывается из бонуса: дневной нормы
+    картинок там нет, а выданное при регистрации лежит именно в нём."""
     await images.draw(deps, session, "кот-космонавт")
 
-    assert await used(storage, session) == (0, 1)
+    assert await bonus(storage, user) == (0, 2)
+    assert await used(storage, session) == (0, 0)
 
 
 async def test_image_does_not_charge_when_the_provider_fails(
@@ -140,11 +143,11 @@ async def test_image_does_not_charge_when_delivery_fails(
 
 
 async def test_preset_charges_after_delivery(
-    deps: Deps, session: Session, storage: InMemoryStorage
+    deps: Deps, session: Session, storage: InMemoryStorage, user: User
 ) -> None:
     await presets.apply(deps, session, PRESETS["lego"], [Photo(data=PNG_BYTES)])
 
-    assert await used(storage, session) == (0, 1)
+    assert await bonus(storage, user) == (0, 2)
 
 
 async def test_preset_does_not_charge_when_the_provider_fails(
@@ -180,7 +183,8 @@ async def test_daily_quota_is_spent_before_the_bonus(
     await spending.charge(deps, session, LimitKind.MESSAGES)
 
     assert await used(storage, session) == (1, 0)
-    assert await bonus(storage, user) == (50, 5)
+    # Три картинки — с регистрации, пять добавлены здесь; ни одна не тронута.
+    assert await bonus(storage, user) == (50, 8)
 
 
 async def test_bonus_is_spent_once_the_daily_quota_is_gone(
@@ -191,7 +195,7 @@ async def test_bonus_is_spent_once_the_daily_quota_is_gone(
 
     await spending.charge(deps, session, LimitKind.MESSAGES)
 
-    assert await bonus(storage, user) == (49, 5)
+    assert await bonus(storage, user) == (49, 8)
 
 
 async def test_charging_with_nothing_left_is_reported(

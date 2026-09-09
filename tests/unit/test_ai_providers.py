@@ -30,7 +30,7 @@ from app.adapters.ai.text import OpenAICompatibleLLM
 from app.core.models import ChatTurn, Photo, Role
 from app.infra.retry import RetryPolicy
 from app.ports.ai import ContentRefusedError, ImageQuality
-from tests.fakes import PNG_BYTES
+from tests.fakes import PNG_BYTES, FakeLogger
 
 BASE = "https://api.example.com/v1"
 CHAT_URL = f"{BASE}/chat/completions"
@@ -50,7 +50,9 @@ def _caller(**overrides: object) -> ResilientCaller:
     return ResilientCaller("test", policy)
 
 
-def _llm(caller: ResilientCaller | None = None) -> OpenAICompatibleLLM:
+def _llm(
+    caller: ResilientCaller | None = None, logger: FakeLogger | None = None
+) -> OpenAICompatibleLLM:
     return OpenAICompatibleLLM(
         httpx.AsyncClient(),
         base_url=BASE,
@@ -58,6 +60,7 @@ def _llm(caller: ResilientCaller | None = None) -> OpenAICompatibleLLM:
         caller=caller or _caller(),
         system_prompt="Be brief.",
         max_tokens=256,
+        logger=logger or FakeLogger(),
     )
 
 
@@ -93,7 +96,7 @@ async def test_the_answer_is_extracted() -> None:
         return_value=httpx.Response(200, json=_answer("  Париж.  "))
     )
 
-    assert await _llm().complete(TURNS, model="gpt-5") == "Париж."
+    assert (await _llm().complete(TURNS, model="gpt-5")).text == "Париж."
 
 
 @respx.mock
@@ -141,7 +144,7 @@ async def test_a_server_error_is_retried_and_can_succeed() -> None:
         ]
     )
 
-    assert await _llm().complete(TURNS, model="gpt-5") == "Париж."
+    assert (await _llm().complete(TURNS, model="gpt-5")).text == "Париж."
 
 
 @respx.mock
@@ -499,3 +502,126 @@ async def test_the_fidelity_parameter_can_be_switched_off() -> None:
     )
 
     assert b"input_fidelity" not in route.calls.last.request.content
+
+
+@respx.mock
+async def test_a_named_model_wins_over_the_configured_one() -> None:
+    """Модель выбирается на конкретную работу, а не только на весь сервис."""
+    route = respx.post(EDIT_URL).mock(return_value=httpx.Response(200, json=_drawn()))
+
+    await _images().edit(
+        [Photo(data=PNG_BYTES, mime_type="image/png", filename="in.png")],
+        "make it lego",
+        quality=ImageQuality.LOW,
+        model="gpt-image-1-mini",
+    )
+
+    assert b"gpt-image-1-mini" in route.calls.last.request.content
+
+
+@respx.mock
+async def test_an_empty_model_keeps_the_configured_one() -> None:
+    """Пусто означает «та, что настроена», а не «без модели»."""
+    route = respx.post(IMAGE_URL).mock(return_value=httpx.Response(200, json=_drawn()))
+
+    await _images().generate("кот", quality=ImageQuality.LOW, model="")
+
+    assert json.loads(route.calls.last.request.content)["model"] == "gpt-image-1"
+
+
+# --- Обрыв и кэш ---------------------------------------------------------
+
+
+@respx.mock
+async def test_a_cut_off_answer_says_so() -> None:
+    """Молча отданный огрызок человек прочтёт как законченную мысль."""
+    respx.post(CHAT_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {"content": "Ответ оборвался на полусло"},
+                        "finish_reason": "length",
+                    }
+                ]
+            },
+        )
+    )
+
+    answer = await _llm().complete(TURNS, model="gpt-5")
+
+    assert answer.truncated is True
+
+
+@respx.mock
+async def test_a_finished_answer_is_not_marked_as_cut_off() -> None:
+    respx.post(CHAT_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": "Париж."}, "finish_reason": "stop"}]
+            },
+        )
+    )
+
+    answer = await _llm().complete(TURNS, model="gpt-5")
+
+    assert answer.truncated is False
+
+
+@respx.mock
+async def test_the_system_block_goes_first_and_never_changes() -> None:
+    """Условие переиспользования начала промпта провайдером.
+
+    Первым и без подстановок: любая переменная в начале — про пользователя,
+    про время — делает каждый запрос новым, и считать его приходится заново.
+    """
+    route = respx.post(CHAT_URL).mock(
+        return_value=httpx.Response(200, json=_answer("Париж."))
+    )
+    llm = _llm()
+
+    await llm.complete(TURNS, model="gpt-5")
+    await llm.complete(TURNS, model="gpt-5")
+
+    first, second = (json.loads(call.request.content) for call in route.calls)
+    assert first["messages"][0] == {"role": "system", "content": "Be brief."}
+    assert first["messages"][0] == second["messages"][0], "системный блок разъехался"
+
+
+@respx.mock
+async def test_the_cache_hit_is_written_down() -> None:
+    """Без этого числа разговор про кэш остаётся гаданием.
+
+    По счёту не отличить «кэш работает» от «промпт не дотягивает до порога»,
+    а больше кэш нигде не виден.
+    """
+    respx.post(CHAT_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": "Париж."}}],
+                "usage": {
+                    "prompt_tokens": 1500,
+                    "prompt_tokens_details": {"cached_tokens": 1024},
+                },
+            },
+        )
+    )
+    logger = FakeLogger()
+
+    await _llm(logger=logger).complete(TURNS, model="gpt-5")
+
+    written = [event for event in logger.events if event.event == "llm_usage"]
+    assert written and written[0].fields["cached_tokens"] == 1024
+
+
+@respx.mock
+async def test_a_response_without_usage_does_not_break_anything() -> None:
+    """Не всякий шлюз к API вообще присылает счётчики."""
+    respx.post(CHAT_URL).mock(return_value=httpx.Response(200, json=_answer("Париж.")))
+
+    answer = await _llm().complete(TURNS, model="gpt-5")
+
+    assert answer.text == "Париж."

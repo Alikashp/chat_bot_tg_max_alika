@@ -122,6 +122,7 @@ MENU: tuple[tuple[str, ...], ...] = (
 
 BUTTON_RETRY = "Повторить"
 BUTTON_NEW_DIALOG = "🔄 Новый диалог"
+BUTTON_CONTINUE = "▶️ Продолжить"
 BUTTON_DRAW_AGAIN = "🔄 Ещё раз"
 BUTTON_SHARE = "📤 Поделиться"
 BUTTON_SEND_TO_FRIEND = "📤 Отправить другу"
@@ -157,13 +158,15 @@ TARIFF_FEATURES: dict[TariffId, tuple[str, ...]] = {
         "100 сообщений в день",
         "60 картинок",
         "голосовой ввод",
-        "отвечает умнее",
     ),
+    # «Отвечает умнее» отсюда убрано: модель у всех тарифов одна, и обещание
+    # стало бы неправдой на экране, за который человек платит. Вернуть его
+    # можно ровно тогда, когда MODEL_STANDARD снова будет отличаться от
+    # MODEL_ECONOMY.
     TariffId.MAX: (
         "200 сообщений в день",
         "150 картинок",
         "голосовой ввод",
-        "отвечает умнее",
         "2 видео",
     ),
 }
@@ -230,13 +233,22 @@ def chat_error() -> Screen:
     return Screen(text=CHAT_ERROR, buttons=(BUTTON_RETRY,))
 
 
-def chat_answer(answer: str, *, offer_new_dialog: bool) -> Screen:
+def chat_answer(
+    answer: str, *, offer_new_dialog: bool, truncated: bool = False
+) -> Screen:
     """Ответ бота.
 
     Кнопка «Новый диалог» появляется начиная с десятого сообщения (§2.2):
     раньше она только мешает, а к десятому разговор обычно уже ушёл в сторону.
+
+    «Продолжить» — только у оборванного ответа. Модель, упёршаяся в потолок
+    длины, замолкает на полуслове, и без кнопки человек читает огрызок как
+    законченную мысль.
     """
-    buttons = (BUTTON_NEW_DIALOG,) if offer_new_dialog else ()
+    buttons = (
+        *((BUTTON_CONTINUE,) if truncated else ()),
+        *((BUTTON_NEW_DIALOG,) if offer_new_dialog else ()),
+    )
     return Screen(
         text=answer,
         buttons=buttons,
@@ -959,6 +971,12 @@ def _all_screens() -> tuple[Screen, ...]:
         onboarding(daily_messages=20, daily_images=3, referral_gift=True),
         chat_answer("Ответ на вопрос.", offer_new_dialog=False),
         chat_answer("Ответ на вопрос.", offer_new_dialog=True),
+        chat_answer(
+            "Ответ оборвался на полусло", offer_new_dialog=False, truncated=True
+        ),
+        chat_answer(
+            "Ответ оборвался на полусло", offer_new_dialog=True, truncated=True
+        ),
         chat_error(),
         new_dialog_started(),
         image_ask(),

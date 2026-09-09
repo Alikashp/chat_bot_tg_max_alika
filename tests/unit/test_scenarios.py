@@ -9,13 +9,14 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import timedelta
+from typing import Any
 
 import pytest
 
 from app.adapters.storage.memory import InMemoryStorage
 from app.core import pending, texts
 from app.core.actions import parse_preset_action
-from app.core.models import Photo, TariffId
+from app.core.models import Photo, Role, TariffId
 from app.core.scenarios import (
     chat,
     images,
@@ -25,9 +26,10 @@ from app.core.scenarios import (
     tariffs,
 )
 from app.core.scenarios.deps import Deps, Session
-from app.ports.ai import ContentRefusedError
+from app.ports.ai import ContentRefusedError, ImageQuality
 from config import presets as registry
 from config.presets import PRESETS, Preset
+from config.prompt import CONTINUE_PROMPT
 from tests.fakes import PNG_BYTES, FakeImages, FakeLLM, FakeMessenger
 
 PHOTO = Photo(data=PNG_BYTES)
@@ -960,3 +962,175 @@ async def test_a_broken_album_does_not_cost_the_menu(
 
     assert messenger.last_text.text == texts.PRESETS_ASK
     assert messenger.last_text.keyboard is not None
+
+
+# --- Модель и качество на отдельный прикол -------------------------------
+
+
+def _tuned(deps: Deps, *, models: dict[str, str], qualities: dict[str, Any]) -> Deps:
+    """Те же зависимости с переключателями на конкретные приколы."""
+    return replace(
+        deps,
+        settings=replace(
+            deps.settings, preset_models=models, preset_qualities=qualities
+        ),
+    )
+
+
+async def test_a_preset_can_name_its_own_model(
+    deps: Deps, session: Session, images_: FakeImages
+) -> None:
+    """Одному приколу нужна модель подороже, другому хватит дешёвой."""
+    tuned = _tuned(deps, models={"lego": "gpt-image-1-mini"}, qualities={})
+
+    await presets.apply(tuned, session, PRESETS["lego"], [PHOTO])
+
+    assert images_.models == ["gpt-image-1-mini"]
+
+
+async def test_a_preset_without_its_own_model_uses_the_common_one(
+    deps: Deps, session: Session, images_: FakeImages
+) -> None:
+    """Пусто означает «та, что настроена у провайдера», а не «никакая»."""
+    tuned = _tuned(deps, models={"figurine": "gpt-image-1-mini"}, qualities={})
+
+    await presets.apply(tuned, session, PRESETS["lego"], [PHOTO])
+
+    assert images_.models == [""]
+
+
+async def test_a_preset_can_name_its_own_quality(
+    deps: Deps, session: Session, images_: FakeImages
+) -> None:
+    """Портрету нужна детализация независимо от того, за сколько человек платит."""
+    tuned = _tuned(deps, models={}, qualities={"id_photo": ImageQuality.HIGH})
+
+    await presets.apply(tuned, _paid(session), PRESETS["id_photo"], [PHOTO])
+
+    _, quality = images_.edited[0]
+    assert quality is ImageQuality.HIGH
+
+
+async def test_without_its_own_quality_the_tariff_decides(
+    deps: Deps, session: Session, images_: FakeImages
+) -> None:
+    tuned = _tuned(deps, models={}, qualities={"figurine": ImageQuality.HIGH})
+
+    await presets.apply(tuned, session, PRESETS["lego"], [PHOTO])
+
+    _, quality = images_.edited[0]
+    assert quality is session.tariff.image_quality
+
+
+# --- Оборванный ответ и «Продолжить» -------------------------------------
+
+
+def _labels_of(messenger: FakeMessenger) -> list[str]:
+    keyboard = messenger.last_text.keyboard
+    return [] if keyboard is None else [b.text for r in keyboard.rows for b in r]
+
+
+async def test_a_cut_off_answer_offers_to_continue(
+    deps: Deps, session: Session, llm: FakeLLM, messenger: FakeMessenger
+) -> None:
+    """Без кнопки человек читает огрызок как законченную мысль."""
+    llm.truncated = True
+
+    await chat.handle_message(deps, session, "расскажи подробно")
+
+    assert texts.BUTTON_CONTINUE in _labels_of(messenger)
+
+
+async def test_a_finished_answer_offers_nothing(
+    deps: Deps, session: Session, messenger: FakeMessenger
+) -> None:
+    """Предлагать досказать законченную мысль значит обещать то, чего нет."""
+    await chat.handle_message(deps, session, "привет")
+
+    assert texts.BUTTON_CONTINUE not in _labels_of(messenger)
+
+
+async def test_continuing_glues_both_halves_into_one_reply(
+    deps: Deps, session: Session, storage: InMemoryStorage, llm: FakeLLM
+) -> None:
+    """Две реплики подряд от модели она сама прочтёт как два разных ответа."""
+    llm.truncated = True
+    llm.answer = "Начало ответа"
+    await chat.handle_message(deps, session, "расскажи")
+
+    llm.truncated = False
+    llm.answer = " и его продолжение."
+    await chat.continue_answer(deps, session)
+
+    dialog = await storage.get_dialog(session.user.id)
+    assistant = [turn for turn in dialog.turns if turn.role is Role.ASSISTANT]
+    assert len(assistant) == 1
+    assert assistant[0].content == "Начало ответа и его продолжение."
+
+
+async def test_the_request_to_continue_stays_out_of_the_history(
+    deps: Deps, session: Session, storage: InMemoryStorage, llm: FakeLLM
+) -> None:
+    """Иначе за несколько нажатий переписка станет нашими же просьбами."""
+    llm.truncated = True
+    await chat.handle_message(deps, session, "расскажи")
+    llm.truncated = False
+
+    await chat.continue_answer(deps, session)
+
+    dialog = await storage.get_dialog(session.user.id)
+    written = [turn.content for turn in dialog.turns]
+    assert CONTINUE_PROMPT not in written
+    # А провайдеру она всё-таки ушла — иначе он не понял бы, чего от него ждут.
+    asked, _ = llm.calls[-1]
+    assert asked[-1].content == CONTINUE_PROMPT
+
+
+async def test_continuing_costs_a_message(
+    deps: Deps, session: Session, storage: InMemoryStorage, llm: FakeLLM
+) -> None:
+    """Полноценный запрос к провайдеру. Бесплатный обходил бы лимит."""
+    llm.truncated = True
+    await chat.handle_message(deps, session, "расскажи")
+    before = (await storage.get_usage(session.user.id, session.day)).messages_used
+
+    llm.truncated = False
+    await chat.continue_answer(deps, session)
+
+    after = (await storage.get_usage(session.user.id, session.day)).messages_used
+    assert after == before + 1
+
+
+async def test_continuing_a_second_time_is_offered_again(
+    deps: Deps, session: Session, llm: FakeLLM, messenger: FakeMessenger
+) -> None:
+    """Длинный ответ может не уместиться и во второй заход."""
+    llm.truncated = True
+    await chat.handle_message(deps, session, "расскажи")
+
+    await chat.continue_answer(deps, session)
+
+    assert texts.BUTTON_CONTINUE in _labels_of(messenger)
+
+
+async def test_continuing_with_nothing_to_continue_is_not_a_dead_end(
+    deps: Deps, session: Session, messenger: FakeMessenger, llm: FakeLLM
+) -> None:
+    """Кнопка из давнего сообщения: разговор с тех пор начали заново."""
+    await chat.continue_answer(deps, session)
+
+    assert messenger.texts_said()
+    assert llm.calls == [], "запрос к провайдеру по пустому диалогу"
+
+
+async def test_continuing_without_messages_left_shows_the_paywall(
+    deps: Deps, session: Session, storage: InMemoryStorage, llm: FakeLLM
+) -> None:
+    llm.truncated = True
+    await chat.handle_message(deps, session, "расскажи")
+    await storage.add_usage(session.user.id, session.day, messages=20, images=0)
+    before = len(llm.calls)
+
+    await chat.continue_answer(deps, session)
+
+    assert len(llm.calls) == before, "запрос ушёл, хотя сообщения кончились"

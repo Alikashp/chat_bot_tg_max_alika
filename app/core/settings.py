@@ -8,10 +8,12 @@ app/main.py и передаёт внутрь. Благодаря этому сц
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 
 from app.core import referral
 from app.core.receipts import FiscalSettings
+from app.ports.ai import ImageQuality
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,6 +126,21 @@ class CoreSettings:
     #: по системе налогообложения, а не программист по своему разумению.
     #: Неверная ставка НДС — это неверный фискальный документ, а не опечатка.
     fiscal: FiscalSettings | None = None
+
+    #: Модель и качество на отдельный прикол: идентификатор из реестра →
+    #: значение. Чего здесь нет, то рисуется общей моделью и качеством
+    #: тарифа. Приходит из окружения, чтобы переключать можно было без
+    #: выкладки.
+    preset_models: Mapping[str, str] = field(default_factory=dict)
+    preset_qualities: Mapping[str, ImageQuality] = field(default_factory=dict)
+
+    def model_for(self, preset_id: str) -> str:
+        """Модель для прикола. Пусто — общая, настроенная у провайдера."""
+        return self.preset_models.get(preset_id, "")
+
+    def quality_for(self, preset_id: str, default: ImageQuality) -> ImageQuality:
+        """Качество для прикола. По умолчанию — то, что даёт тариф."""
+        return self.preset_qualities.get(preset_id, default)
 
     @property
     def receipts_ready(self) -> bool:

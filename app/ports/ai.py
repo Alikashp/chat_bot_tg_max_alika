@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol
 
@@ -41,10 +42,25 @@ class ContentRefusedError(Exception):
     """
 
 
+@dataclass(frozen=True, slots=True)
+class Answer:
+    """Ответ модели вместе с причиной, по которой она замолчала.
+
+    Причина здесь не для отчётности. Упёршись в потолок длины, модель
+    обрывает фразу на полуслове — и человек, не зная об этом, читает огрызок
+    как законченный ответ. Признак ``truncated`` позволяет сказать честно и
+    предложить дослушать.
+    """
+
+    text: str
+    #: Ответ упёрся в потолок длины, а не закончился сам.
+    truncated: bool = False
+
+
 class LLMProvider(Protocol):
     """Провайдер текстовых ответов."""
 
-    async def complete(self, turns: Sequence[ChatTurn], *, model: str) -> str:
+    async def complete(self, turns: Sequence[ChatTurn], *, model: str) -> Answer:
         """Возвращает ответ на диалог.
 
         Реализация обязана задать явный таймаут (§3.4.6). Исключения не
@@ -57,12 +73,24 @@ class LLMProvider(Protocol):
 class ImageProvider(Protocol):
     """Провайдер картинок."""
 
-    async def generate(self, prompt: str, *, quality: ImageQuality) -> Photo:
-        """Рисует картинку по текстовому описанию (§2.3)."""
+    async def generate(
+        self, prompt: str, *, quality: ImageQuality, model: str = ""
+    ) -> Photo:
+        """Рисует картинку по текстовому описанию (§2.3).
+
+        ``model`` пустая — берётся та, что настроена у провайдера. Явная
+        нужна там, где модель выбирается не на весь сервис, а на конкретную
+        работу.
+        """
         ...
 
     async def edit(
-        self, sources: Sequence[Photo], instruction: str, *, quality: ImageQuality
+        self,
+        sources: Sequence[Photo],
+        instruction: str,
+        *,
+        quality: ImageQuality,
+        model: str = "",
     ) -> Photo:
         """Переделывает присланные фото по инструкции (пресеты, §2.4).
 
@@ -70,5 +98,7 @@ class ImageProvider(Protocol):
         снимка в один кадр. Порядок существенный — инструкция ссылается на
         снимки по номерам, и провайдер вытягивает детали первого сильнее,
         чем остальных.
+
+        ``model`` пустая — берётся та, что настроена у провайдера.
         """
         ...

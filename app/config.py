@@ -14,6 +14,7 @@ from typing import Annotated, Literal
 from pydantic import Field, HttpUrl, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.ports.ai import ImageQuality
 from config.prompt import SYSTEM_PROMPT
 
 #: Секрет вебхука MAX допускает только эти символы (см. docs/research.md §1.3).
@@ -101,12 +102,12 @@ class Settings(BaseSettings):
 
     #: Модели по классам тарифа. Пользователю не показываются и им не
     #: выбираются (§2.2), но сменить их надо уметь без выкладки кода.
-    model_economy: str = "gpt-5-mini"
-    model_standard: str = "gpt-5"
+    model_economy: str = "gpt-5.6-luna"
+    model_standard: str = "gpt-5.6-luna"
 
     #: Потолок длины ответа. Ограничение прежде всего денежное: в мессенджере
     #: всё равно никто не читает простыню на три экрана.
-    llm_max_tokens: Annotated[int, Field(ge=64, le=8192)] = 1024
+    llm_max_tokens: Annotated[int, Field(ge=64, le=8192)] = 2000
 
     #: Таймаут вызова (§3.4.6). Больше минуты ждать бессмысленно: человек уже
     #: решил, что бот сломался.
@@ -160,6 +161,21 @@ class Settings(BaseSettings):
     #: Пустое значение выключает параметр: не всякий шлюз к Images API его
     #: пропускает, а неизвестное поле — это 400 на каждый прикол.
     image_input_fidelity: str = "high"
+
+    #: Модель на отдельный прикол: идентификатор из реестра → название модели.
+    #:
+    #: Задаётся JSON-ом в окружении, чтобы менять модель конкретному приколу
+    #: можно было без выкладки: {"figurine": "gpt-image-1-mini"}. Чего в
+    #: словаре нет, то рисуется общей IMAGE_MODEL.
+    #:
+    #: Словарём, а не полем на каждый прикол: приколы — точка расширения, и
+    #: шестой не должен требовать новой строчки в настройках (критерий A1).
+    preset_models: dict[str, str] = Field(default_factory=dict)
+
+    #: Качество на отдельный прикол: идентификатор из реестра → low, medium
+    #: или high. Перебивает качество тарифа — например, портрету нужна
+    #: детализация независимо от того, за сколько человек платит.
+    preset_qualities: dict[str, str] = Field(default_factory=dict)
 
     #: Картинка рисуется десятки секунд, поэтому таймаут свой и заметно
     #: больше текстового.
@@ -322,6 +338,26 @@ class Settings(BaseSettings):
 
     #: Наценка на оплату звёздами (§2.8: на 40% выше).
     stars_markup: Annotated[float, Field(ge=1.0, le=3.0)] = 1.4
+
+    @field_validator("preset_qualities")
+    @classmethod
+    def _validate_qualities(cls, value: dict[str, str]) -> dict[str, str]:
+        """Опечатка в качестве — это 400 на каждый такой прикол.
+
+        Ловим на старте, а не на живом человеке: имена значений короткие и
+        похожие, а ошибка в них не видна ничем, кроме отказа провайдера.
+        """
+        allowed = {quality.value for quality in ImageQuality}
+        wrong = {
+            preset: quality
+            for preset, quality in value.items()
+            if quality not in allowed
+        }
+        if wrong:
+            raise ValueError(
+                f"неизвестное качество {wrong}; допустимы {sorted(allowed)}"
+            )
+        return value
 
     @field_validator("public_url")
     @classmethod

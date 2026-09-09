@@ -20,7 +20,7 @@ from app.core.models import (
     Photo,
 )
 from app.core.receipts import Receipt
-from app.ports.ai import ImageQuality
+from app.ports.ai import Answer, ImageQuality
 from app.ports.payments import PaymentIntent
 
 #: Минимальный настоящий PNG: восемь байт сигнатуры плюс немного тела.
@@ -196,12 +196,15 @@ class FakeLLM:
         self.answer = answer
         self.error = error
         self.calls: list[tuple[tuple[ChatTurn, ...], str]] = []
+        #: Оборвался ли ответ на потолке длины. Про это бот обязан сказать
+        #: человеку кнопкой, а не выдавать огрызок за законченную мысль.
+        self.truncated = False
 
-    async def complete(self, turns: Sequence[ChatTurn], *, model: str) -> str:
+    async def complete(self, turns: Sequence[ChatTurn], *, model: str) -> Answer:
         self.calls.append((tuple(turns), model))
         if self.error is not None:
             raise self.error
-        return self.answer
+        return Answer(text=self.answer, truncated=self.truncated)
 
 
 class FakeImages:
@@ -214,16 +217,28 @@ class FakeImages:
         #: Исходники каждой правки — по ним видно и сколько фото уехало, и в
         #: каком порядке. Порядок у «я и я в детстве» меняет результат.
         self.edited_sources: list[tuple[Photo, ...]] = []
+        #: Какую модель просили на каждый вызов. Пусто — общую, настроенную
+        #: у провайдера.
+        self.models: list[str] = []
 
-    async def generate(self, prompt: str, *, quality: ImageQuality) -> Photo:
+    async def generate(
+        self, prompt: str, *, quality: ImageQuality, model: str = ""
+    ) -> Photo:
+        self.models.append(model)
         self.generated.append((prompt, quality))
         if self.error is not None:
             raise self.error
         return Photo(data=PNG_BYTES)
 
     async def edit(
-        self, sources: Sequence[Photo], instruction: str, *, quality: ImageQuality
+        self,
+        sources: Sequence[Photo],
+        instruction: str,
+        *,
+        quality: ImageQuality,
+        model: str = "",
     ) -> Photo:
+        self.models.append(model)
         self.edited.append((instruction, quality))
         self.edited_sources.append(tuple(sources))
         if self.error is not None:

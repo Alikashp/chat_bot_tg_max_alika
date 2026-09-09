@@ -66,3 +66,40 @@ def test_webhook_path_does_not_contain_secret() -> None:
     settings = Settings.model_validate(VALID_ENV)
 
     assert settings.telegram_webhook_secret not in settings.telegram_webhook_path
+
+
+# --- Переключатели на отдельный прикол -----------------------------------
+
+
+def test_a_preset_may_name_its_own_model_and_quality() -> None:
+    """Переключать модель приколу надо уметь без выкладки."""
+    settings = Settings.model_validate(
+        {
+            **VALID_ENV,
+            "preset_models": {"figurine": "gpt-image-1-mini"},
+            "preset_qualities": {"id_photo": "high"},
+        }
+    )
+
+    assert settings.preset_models == {"figurine": "gpt-image-1-mini"}
+    assert settings.preset_qualities == {"id_photo": "high"}
+
+
+def test_a_typo_in_the_quality_stops_the_start() -> None:
+    """Иначе это 400 на каждом таком приколе, и видно только по отказу провайдера.
+
+    Имена значений короткие и похожие, а ошибка в них ничем больше не
+    проявляется: картинка просто перестаёт получаться.
+    """
+    with pytest.raises(ValidationError):
+        Settings.model_validate(
+            {**VALID_ENV, "preset_qualities": {"id_photo": "ultra"}}
+        )
+
+
+def test_no_switches_is_the_normal_case() -> None:
+    """Пустые словари означают «общая модель и качество тарифа»."""
+    settings = Settings.model_validate(VALID_ENV)
+
+    assert settings.preset_models == {}
+    assert settings.preset_qualities == {}

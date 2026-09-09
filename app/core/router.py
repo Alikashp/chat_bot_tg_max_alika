@@ -221,6 +221,11 @@ async def _route_action(deps: Deps, session: Session, action: str) -> None:
         case Action.SUBSCRIPTION_OFF:
             await _clear_pending(deps, session)
             await subscriptions.cancel(deps, session)
+        case Action.CHAT_CONTINUE:
+            # Стоит сообщения, как и обычный ответ, — значит и ограничитель
+            # тот же: зажатая кнопка не должна обходить проверку остатка.
+            await _clear_pending(deps, session)
+            await _guarded(deps, session, _text_key(session), chat.continue_answer)
         case Action.CHAT_NEW_DIALOG:
             await _clear_pending(deps, session)
             await chat.start_new_dialog(deps, session)

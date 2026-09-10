@@ -87,21 +87,21 @@ PRESETS: Mapping[str, Preset] = MappingProxyType(
             button="🏚 Плохой день",
             invitations=("Кинь фото — подселим соседа",),
             instruction=(
-                "Add exactly one scruffy, unkempt homeless-looking man in worn, dirty "
-                "clothes naturally placed somewhere in the existing scene. He may be "
-                "standing or sitting, whichever fits the composition better. Do not "
-                "add any other people. Make him look realistic and believable, with a "
-                "natural human face and normal anatomy. He may look tired, poor, and "
-                "dishevelled, but do not make his face deformed, damaged, grotesque, "
-                "or low-quality. Do not add injuries, blood, missing teeth, "
-                "exaggerated dirt, or a horror-like appearance. He must not smoke or "
-                "hold cigarettes, alcohol, drugs, weapons, or other inappropriate "
-                "objects. Change only this. Preserve all existing people, faces, "
-                "poses, clothing, furniture, objects, room layout, and background "
-                "exactly as they are. If the source image contains no people, keep it "
-                "that way except for this single added man. Match him carefully to the "
-                "photo's lighting, perspective, shadows, camera quality, focus, and "
-                "grain so he looks naturally present in the original image."
+                "Add exactly one tired, unkempt, homeless-looking man naturally placed somewhere "
+                "in the existing scene. He may be standing or sitting, whichever fits the "
+                "composition better. Do not add any other people. Make him look like a real "
+                "ordinary person who has had a hard time, not a horror character. He should have "
+                "a natural human face, normal anatomy, and believable proportions. He may look "
+                "poor, slightly dishevelled, and wear worn, modest clothes, but keep him visually "
+                "realistic and not extreme. Do not make him grotesque, frightening, severely dirty, "
+                "deformed, sick-looking, or low-quality. Do not add injuries, blood, missing teeth, "
+                "exaggerated grime, extreme raggedness, or a disturbing appearance. He must not "
+                "smoke or hold cigarettes, alcohol, drugs, weapons, or other inappropriate objects. "
+                "Change only this. Preserve all existing people, faces, poses, clothing, furniture, "
+                "objects, room layout, and background exactly as they are. If the source image "
+                "contains no people, keep it that way except for this single added man. Match him "
+                "carefully to the photo's lighting, perspective, shadows, camera quality, focus, "
+                "and grain so he looks naturally present in the original image."
             ),
         ),
         # Замок тут не только про деньги. Портрет живёт узнаваемостью, а

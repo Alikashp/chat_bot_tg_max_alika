@@ -21,6 +21,15 @@ from config import presets as registry
 from tests.fakes import PNG_BYTES, FakeImages, FakeLLM, FakeMessenger
 
 
+def _locked_preset_id() -> str:
+    """Идентификатор платного прикола из реестра.
+
+    Не имя в тесте: приколы переводят между тарифами продуктовым решением,
+    и проверка замка не должна от этого падать.
+    """
+    return next(preset.id for preset in registry.PRESETS.values() if preset.paid_only)
+
+
 async def test_repeat_after_a_chat_failure_resends_the_same_question(
     deps: Deps, session: Session, llm: FakeLLM
 ) -> None:
@@ -240,15 +249,16 @@ async def test_a_lapsed_subscription_closes_the_preset_again(
 ) -> None:
     """Кнопка «Ещё раз» остаётся в переписке навсегда — и замок тоже.
 
-    Человек оформил подписку, сделал фигурку, подписка кончилась. Кнопка под
-    прошлогодней картинкой никуда не делась, и без проверки на этой двери она
-    рисовала бы ему новую фигурку бесплатно сколько угодно раз.
+    Человек оформил подписку, сделал платный прикол, подписка кончилась.
+    Кнопка под прошлогодней картинкой никуда не делась, и без проверки на
+    этой двери она рисовала бы ему новую картинку бесплатно сколько угодно
+    раз.
     """
     await storage.set_retry_context(
         session.user.id,
         RetryContext(
             kind=RetryKind.PRESET,
-            preset_id="figurine",
+            preset_id=_locked_preset_id(),
             source_photos=("last-year",),
         ).encode(),
     )

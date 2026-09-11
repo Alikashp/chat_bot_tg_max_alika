@@ -57,6 +57,13 @@ class Preset:
         return len(self.invitations)
 
 
+#: Реестр приколов. Порядок записей — это и порядок кнопок в меню, и
+#: порядок примеров в альбоме перед ним: альбом собирается по этому же
+#: словарю, и переставить запись достаточно, чтобы переставить картинку.
+#:
+#: Сначала идут открытые всем, потом закрытые замком. Вперемешку меню
+#: читается как случайный список: человек видит замок на втором пункте и
+#: решает, что платить надо за всё.
 PRESETS: Mapping[str, Preset] = MappingProxyType(
     {
         "lego": Preset(
@@ -107,11 +114,47 @@ PRESETS: Mapping[str, Preset] = MappingProxyType(
                 "he looks naturally present in the original image."
             ),
         ),
-        # Замок тут не только про деньги. Портрет живёт узнаваемостью, а
-        # отрисовать лицо модель может лишь теми пикселями, которые ей
-        # оплачены: на бесплатном тарифе мы рисуем в low, и черты уплывают
-        # ещё до всякой инструкции. Платный тариф даёт medium — и заодно
-        # платит за него.
+        "figurine": Preset(
+            id="figurine",
+            button="🧸 Фигурка в коробке",
+            invitations=("Кинь фото — сделаю коллекционную фигурку с тобой",),
+            # Надписей на упаковке нет намеренно. Имя человека мы не
+            # спрашиваем, а буквы модели рисуют плохо: вместо подписи выходит
+            # набор похожих на буквы закорючек, и премиальная коробка сразу
+            # выглядит подделкой. Наряд фигурки берётся с самого фото —
+            # так прикол работает и для футболиста, и для кого угодно.
+            instruction=(
+                "Using the uploaded photo as reference, create a premium stylized "
+                "fashion doll based on the person. The result must clearly look like a "
+                "manufactured collectible doll, not a real person standing inside "
+                "packaging. Keep the person recognizable through their hairstyle, hair "
+                "color, key facial traits, skin tone, outfit and overall vibe, but "
+                "stylize them into a polished vinyl fashion doll with a slightly "
+                "oversized head, larger expressive eyes, simplified facial features, "
+                "smooth sculpted vinyl skin, a slim stylized body, and molded toy-like "
+                "hair. Base the doll's outfit and colors only on what the person is "
+                "actually wearing in the uploaded photo. Include only 0-3 separate "
+                "accessories that are clearly visible in the source photo, such as "
+                "glasses, jewelry, a bag, phone, headphones or similar personal items. "
+                "Do not place clothing items, spare outfits, shirts, pants, shoes or "
+                "duplicates of what the doll is already wearing beside the figure. "
+                "Never invent accessories. If no clear accessories are visible, show "
+                "only the doll with no accessory section and no empty slots. Create a "
+                "beautiful premium fashion-doll collector box with an elegant luxury "
+                "design, rigid matte materials, a deep molded interior, refined "
+                "metallic accents and polished retail presentation. The doll should "
+                "fill most of the package vertically. The box should fill almost the "
+                "entire image with very little or no visible background around the "
+                "edges. Use a front-facing, tightly framed professional product shot. "
+                "Use only subtle transparent plastic where necessary, with no large "
+                "obvious blister shell. No text, logos, numbers or fake branding. "
+                "High-end collectible toy photography, polished commercial lighting, "
+                "premium materials, visually striking, social-media-ready."
+            ),
+        ),
+        # Замок здесь — продуктовое решение заказчика. Прежнее объяснение
+        # (на бесплатном тарифе рисуем в low, и черты лица уплывают) отпало:
+        # в low мы больше не рисуем нигде, все тарифы работают в medium.
         "id_photo": Preset(
             id="id_photo",
             button="🪪 Фото на документы",
@@ -150,44 +193,6 @@ PRESETS: Mapping[str, Preset] = MappingProxyType(
                 "официального фото. Результат должен выглядеть как реальная "
                 "фотография, снятая профессиональной камерой: натуральная кожа, "
                 "хорошая резкость, естественный свет, без ощущения AI-генерации."
-            ),
-        ),
-        "figurine": Preset(
-            id="figurine",
-            button="🧸 Фигурка в коробке",
-            invitations=("Кинь фото — сделаю коллекционную фигурку с тобой",),
-            # Надписей на упаковке нет намеренно. Имя человека мы не
-            # спрашиваем, а буквы модели рисуют плохо: вместо подписи выходит
-            # набор похожих на буквы закорючек, и премиальная коробка сразу
-            # выглядит подделкой. Наряд фигурки берётся с самого фото —
-            # так прикол работает и для футболиста, и для кого угодно.
-            instruction=(
-                "Using the uploaded photo as reference, create a premium stylized "
-                "fashion doll based on the person. The result must clearly look like a "
-                "manufactured collectible doll, not a real person standing inside "
-                "packaging. Keep the person recognizable through their hairstyle, hair "
-                "color, key facial traits, skin tone, outfit and overall vibe, but "
-                "stylize them into a polished vinyl fashion doll with a slightly "
-                "oversized head, larger expressive eyes, simplified facial features, "
-                "smooth sculpted vinyl skin, a slim stylized body, and molded toy-like "
-                "hair. Base the doll's outfit and colors only on what the person is "
-                "actually wearing in the uploaded photo. Include only 0-3 separate "
-                "accessories that are clearly visible in the source photo, such as "
-                "glasses, jewelry, a bag, phone, headphones or similar personal items. "
-                "Do not place clothing items, spare outfits, shirts, pants, shoes or "
-                "duplicates of what the doll is already wearing beside the figure. "
-                "Never invent accessories. If no clear accessories are visible, show "
-                "only the doll with no accessory section and no empty slots. Create a "
-                "beautiful premium fashion-doll collector box with an elegant luxury "
-                "design, rigid matte materials, a deep molded interior, refined "
-                "metallic accents and polished retail presentation. The doll should "
-                "fill most of the package vertically. The box should fill almost the "
-                "entire image with very little or no visible background around the "
-                "edges. Use a front-facing, tightly framed professional product shot. "
-                "Use only subtle transparent plastic where necessary, with no large "
-                "obvious blister shell. No text, logos, numbers or fake branding. "
-                "High-end collectible toy photography, polished commercial lighting, "
-                "premium materials, visually striking, social-media-ready."
             ),
         ),
         # Идентификатор остался от полароида, которым прикол был поначалу.

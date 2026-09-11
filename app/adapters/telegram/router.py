@@ -116,6 +116,9 @@ def to_incoming(message: Message) -> IncomingMessage | None:
         # вопросом пользователя и стоил бы ему сообщения.
         text=None if payload is not None else text,
         photo_ref=message.photo[-1].file_id if message.photo else None,
+        # Номер сообщения растёт в пределах переписки, и альбом из двух фото
+        # приезжает двумя соседними номерами: по ним снимки и упорядочиваются.
+        order_key=message.message_id,
         start_payload=payload,
     )
 

@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -169,6 +170,10 @@ class FakeMessenger:
         self.typing.append(chat)
 
     async def download_photo(self, file_id: str, *, max_bytes: int) -> Photo:
+        # Уступаем управление, как это делает всякая настоящая закачка. Без
+        # этого фейк проходит насквозь, не прерываясь, и проверки про два
+        # одновременных обращения проверяли бы пустоту.
+        await asyncio.sleep(0)
         if self.fail_download is not None:
             raise self.fail_download
         self.downloaded.append(file_id)
@@ -311,6 +316,8 @@ class FakeGuard:
         self._limit = limit
         self._active: dict[str, int] = {}
         self.refused: list[str] = []
+        #: Сколько времени ограничителю разрешали ждать на каждом обращении.
+        self.waited: list[float] = []
 
     def try_acquire(self, key: str) -> bool:
         current = self._active.get(key, 0)
@@ -319,6 +326,15 @@ class FakeGuard:
             return False
         self._active[key] = current + 1
         return True
+
+    async def acquire(self, key: str, *, wait_seconds: float = 0.0) -> bool:
+        """Ждать в тесте нечего: слот освобождает только сам тест.
+
+        Готовность подождать записывается, чтобы было видно, где ограничитель
+        отказывает сразу, а где сначала даёт шанс.
+        """
+        self.waited.append(wait_seconds)
+        return self.try_acquire(key)
 
     def release(self, key: str) -> None:
         current = self._active.get(key, 0)

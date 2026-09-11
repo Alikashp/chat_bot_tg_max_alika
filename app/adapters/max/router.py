@@ -125,7 +125,17 @@ def _from_message(raw: dict[str, Any]) -> IncomingMessage | None:
         username=_username(message, "sender"),
         text=text,
         photo_ref=_photo_url(body.get("attachments")),
+        # Номера сообщения, растущего по переписке, в MAX нет — есть время
+        # обновления в миллисекундах. Два снимка, отправленные разом, всё
+        # равно приходят с разными отметками, и порядок по ним верный.
+        order_key=_order_key(raw),
     )
+
+
+def _order_key(raw: dict[str, Any]) -> int:
+    """Время обновления как порядковый ключ. Ноль — мессенджер его не назвал."""
+    timestamp = raw.get("timestamp")
+    return timestamp if isinstance(timestamp, int) else 0
 
 
 def _from_callback(raw: dict[str, Any]) -> IncomingMessage | None:

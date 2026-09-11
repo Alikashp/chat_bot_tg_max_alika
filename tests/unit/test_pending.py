@@ -13,6 +13,7 @@ import pytest
 from app.core.pending import (
     AWAIT_IMAGE_PROMPT,
     AwaitedPreset,
+    CollectedPhoto,
     await_preset,
     is_awaiting_image_prompt,
     parse_await_preset,
@@ -28,19 +29,46 @@ def test_a_preset_without_photos_survives_the_round_trip() -> None:
 
 def test_a_link_with_colons_and_slashes_survives_the_round_trip() -> None:
     """Разделителем не может быть символ, который бывает внутри ссылки."""
-    stored = await_preset("polaroid_child", (MAX_LINK, "AgACAgIAAxkBAAI"))
+    photos = (CollectedPhoto(7, MAX_LINK), CollectedPhoto(8, "AgACAgIAAxkBAAI"))
+    stored = await_preset("polaroid_child", photos)
 
-    assert parse_await_preset(stored) == AwaitedPreset(
-        "polaroid_child", (MAX_LINK, "AgACAgIAAxkBAAI")
-    )
+    assert parse_await_preset(stored) == AwaitedPreset("polaroid_child", photos)
 
 
 def test_the_order_of_photos_is_kept() -> None:
     """Первым уезжает взрослый снимок — переставить их значит получить другое."""
-    parsed = parse_await_preset(await_preset("polaroid_child", ("adult", "child")))
+    photos = (CollectedPhoto(1, "adult"), CollectedPhoto(2, "child"))
+
+    parsed = parse_await_preset(await_preset("polaroid_child", photos))
 
     assert parsed is not None
-    assert parsed.collected == ("adult", "child")
+    assert parsed.refs == ("adult", "child")
+
+
+def test_photos_are_ordered_by_the_messenger_not_by_arrival() -> None:
+    """Два снимка, отправленные разом, разбираются параллельно.
+
+    Какое из двух обновлений доберётся до базы первым — решает случай, а
+    порядок тут меняет результат: инструкция ссылается на снимки по номерам.
+    """
+    later_first = (CollectedPhoto(2, "child"), CollectedPhoto(1, "adult"))
+
+    parsed = parse_await_preset(await_preset("polaroid_child", later_first))
+
+    assert parsed is not None
+    assert parsed.refs == ("adult", "child")
+
+
+def test_a_photo_from_the_old_format_is_not_lost() -> None:
+    """У того, кто прислал первое фото до выкладки, в базе лежит голая ссылка.
+
+    Потерять её значит попросить прислать снимок заново — на ровном месте.
+    """
+    parsed = parse_await_preset("await:preset:polaroid_child\n" + MAX_LINK)
+
+    assert parsed is not None
+    assert parsed.refs == (MAX_LINK,)
+    assert parsed.collected == (CollectedPhoto(0, MAX_LINK),)
 
 
 def test_waiting_for_a_description_is_not_waiting_for_a_photo() -> None:
@@ -61,7 +89,7 @@ def test_a_broken_state_is_read_as_no_waiting(stored: str | None) -> None:
 def test_a_link_with_a_newline_is_refused_at_the_door() -> None:
     """Иначе одна ссылка разобралась бы обратно как две."""
     with pytest.raises(ValueError):
-        await_preset("lego", ("сначала\nпотом",))
+        await_preset("lego", (CollectedPhoto(1, "сначала\nпотом"),))
 
 
 def test_a_preset_without_an_identifier_is_refused() -> None:

@@ -12,8 +12,16 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterator
 from contextlib import contextmanager
+
+#: Как часто проверяем, освободился ли слот.
+#:
+#: Опросом, а не событием: ключей много, живут они секунды, и заводить на
+#: каждый объект синхронизации ради ожидания в полсекунды — это больше кода
+#: и больше способов забыть его убрать.
+_POLL_SECONDS = 0.05
 
 
 class FloodLimitExceededError(RuntimeError):
@@ -53,6 +61,23 @@ class FloodGuard:
             return False
         self._active[key] = current + 1
         return True
+
+    async def acquire(self, key: str, *, wait_seconds: float = 0.0) -> bool:
+        """Занимает слот, при необходимости подождав до ``wait_seconds``.
+
+        Ноль означает прежнее поведение — отказать сразу.
+        """
+        if self.try_acquire(key):
+            return True
+        if wait_seconds <= 0:
+            return False
+
+        deadline = asyncio.get_running_loop().time() + wait_seconds
+        while asyncio.get_running_loop().time() < deadline:
+            await asyncio.sleep(_POLL_SECONDS)
+            if self.try_acquire(key):
+                return True
+        return False
 
     def release(self, key: str) -> None:
         """Освобождает слот."""

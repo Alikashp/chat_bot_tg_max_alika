@@ -161,6 +161,18 @@ def test_the_largest_photo_size_is_taken() -> None:
     assert incoming.photo_ref == "big"
 
 
+def test_the_message_number_becomes_the_order_key() -> None:
+    """По нему упорядочиваются снимки прикола из двух фото.
+
+    Два фото, отправленные разом, приезжают двумя обновлениями и разбираются
+    параллельно: порядок обработки случаен, а порядок номеров — нет.
+    """
+    incoming = to_incoming(_message(message_id=77))
+
+    assert incoming is not None
+    assert incoming.order_key == 77
+
+
 def test_a_caption_counts_as_text() -> None:
     incoming = to_incoming(_message(caption="подпись к фото"))
 

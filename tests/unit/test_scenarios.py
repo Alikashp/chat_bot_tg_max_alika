@@ -680,6 +680,18 @@ def test_the_free_tariff_keeps_some_presets_open() -> None:
     assert len(open_to_everyone) >= 2, open_to_everyone
 
 
+def test_open_presets_come_before_locked_ones() -> None:
+    """Сначала открытые всем, потом закрытые замком.
+
+    Вперемешку меню читается как случайный список: человек видит замок на
+    втором пункте и решает, что платить надо за всё. Порядок задаётся одним
+    только реестром, и новый прикол легко дописать не туда.
+    """
+    locks = [preset.paid_only for preset in PRESETS.values()]
+
+    assert locks == sorted(locks), [preset.button for preset in PRESETS.values()]
+
+
 async def test_a_locked_preset_stays_in_the_menu(
     deps: Deps, session: Session, messenger: FakeMessenger, locked: Preset
 ) -> None:

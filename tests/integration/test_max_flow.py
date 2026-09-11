@@ -43,6 +43,7 @@ from app.infra.antiflood import FloodGuard
 from app.infra.dedup import Deduplicator
 from app.infra.queue import JobQueue
 from app.infra.server import MAX_SECRET_HEADER, Webhook, create_app
+from config.presets import PRESETS
 from tests.fakes import (
     PNG_BYTES,
     FakeCards,
@@ -486,8 +487,14 @@ async def test_a_preset_applies_to_a_photo(started: Harness) -> None:
 
 
 async def test_a_locked_preset_leads_to_the_tariffs(started: Harness) -> None:
-    """Замок в MAX работает так же: платят тут через ЮKassa, а не звёздами."""
-    await started.press(preset_action("figurine"))
+    """Замок в MAX работает так же: платят тут через ЮKassa, а не звёздами.
+
+    Прикол берётся из реестра по признаку: приколы переводят между тарифами
+    продуктовым решением, и проверка замка не должна от этого падать.
+    """
+    paid = next(each.id for each in PRESETS.values() if each.paid_only)
+
+    await started.press(preset_action(paid))
 
     assert started.texts_said()[-1] == texts.PRESET_LOCKED
 

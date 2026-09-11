@@ -156,7 +156,6 @@ PRESETS: Mapping[str, Preset] = MappingProxyType(
             id="figurine",
             button="🧸 Фигурка в коробке",
             invitations=("Кинь фото — сделаю коллекционную фигурку с тобой",),
-            paid_only=True,
             # Надписей на упаковке нет намеренно. Имя человека мы не
             # спрашиваем, а буквы модели рисуют плохо: вместо подписи выходит
             # набор похожих на буквы закорючек, и премиальная коробка сразу
@@ -231,6 +230,34 @@ PRESETS: Mapping[str, Preset] = MappingProxyType(
                 "realistic instant-photo look. Keep the composition clean and centered "
                 "inside the Polaroid frame. No text, letters, numbers, logos, or "
                 "handwriting anywhere, including on the Polaroid border."
+            ),
+        ),
+        "halves": Preset(
+            id="halves",
+            button="❤️ Половинки",
+            # Своё фото первым: провайдер вытягивает детализацию сильнее у
+            # первого исходника, а инструкция вдобавок ссылается на снимки по
+            # номерам — левая половина берётся из первого, правая из второго.
+            invitations=(
+                "Кинь два фото: своё и партнёра",
+                "Отлично. Теперь кинь фото партнёра ❤️",
+            ),
+            paid_only=True,
+            # Чёрно-белое здесь не стиль ради стиля. Два лица снимают при
+            # разном свете и на разные камеры, и в цвете шов посреди лица
+            # виден прежде всего по разнице тона кожи. Серый его прячет.
+            instruction=(
+                "Create a photorealistic black-and-white 9:16 portrait combining "
+                "two faces: the left half of the face from image 1 and the right "
+                "half of the face from image 2, joined strictly vertically down "
+                "the centre through the forehead, nose, lips and chin. "
+                "Preserve each person's real individual features exactly, without "
+                "blending or altering their appearance. Align the eyes, eyebrows, "
+                "nose, nostrils, lips and face contours precisely; both eyes fully "
+                "visible. Close-up front view, looking at the camera, neutral "
+                "expression, high skin and hair detail, soft studio lighting, "
+                "light neutral background, high sharpness, no filters and no heavy "
+                "retouching."
             ),
         ),
     }

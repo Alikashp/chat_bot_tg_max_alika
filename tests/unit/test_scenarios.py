@@ -317,6 +317,20 @@ async def test_every_preset_in_the_registry_works(
     assert len(messenger.photo_edits) == 1
 
 
+def test_a_preset_that_asks_for_two_photos_uses_both() -> None:
+    """Второй снимок просят не для красоты.
+
+    Инструкция обязана сослаться на него по номеру: без этого человек
+    присылает второе фото, ждёт, платит картинкой — а провайдер рисует по
+    одному первому, и понять это по результату почти невозможно.
+    """
+    for preset in PRESETS.values():
+        if preset.photos_required < 2:
+            continue
+        for number in range(1, preset.photos_required + 1):
+            assert f"image {number}" in preset.instruction.lower(), preset.id
+
+
 async def test_menu_is_built_from_the_registry(
     deps: Deps, session: Session, messenger: FakeMessenger
 ) -> None:
@@ -636,8 +650,18 @@ async def test_the_profile_shows_the_tariff_that_actually_works(
 
 @pytest.fixture
 def locked() -> Preset:
-    """Прикол, закрытый до покупки подписки."""
-    return PRESETS["figurine"]
+    """Прикол, закрытый до покупки подписки.
+
+    Берётся из реестра по признаку, а не назван поимённо: приколы переводят
+    из платных в бесплатные и обратно продуктовым решением, и тест про замок
+    не должен падать от такого перевода. Нужен именно однофотный: проверки
+    ниже присылают один снимок.
+    """
+    return next(
+        preset
+        for preset in PRESETS.values()
+        if preset.paid_only and preset.photos_required == 1
+    )
 
 
 def test_the_free_tariff_keeps_some_presets_open() -> None:
@@ -753,7 +777,7 @@ async def test_a_paid_user_gets_asked_for_the_photo(
     assert messenger.last_text.text == locked.invitations[0]
     user = await storage.get_user_by_id(session.user.id)
     assert user is not None
-    assert pending.parse_await_preset(user.pending) == pending.AwaitedPreset("figurine")
+    assert pending.parse_await_preset(user.pending) == pending.AwaitedPreset(locked.id)
 
 
 # --- Прикол из двух фото -------------------------------------------------

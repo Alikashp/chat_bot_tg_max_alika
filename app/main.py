@@ -32,7 +32,11 @@ from app.adapters.ai.text import OpenAICompatibleLLM
 from app.adapters.max import router as max_router
 from app.adapters.max.intake import dedup_key as max_dedup_key
 from app.adapters.max.messenger import MaxMessenger
-from app.adapters.payments.yookassa import YooKassaPayments, order_id_of
+from app.adapters.payments.yookassa import (
+    YooKassaPayments,
+    order_id_of,
+    refunded_payment_id_of,
+)
 from app.adapters.storage.migrations import upgrade_to_head_async
 from app.adapters.storage.postgres import PostgresStorage, create_engine
 from app.adapters.telegram import router as telegram_router
@@ -125,7 +129,16 @@ class Wiring:
 
 
 def _payment_notice_key(notification: dict[str, Any]) -> str | None:
-    """Ключ дедупликации уведомления об оплате — наш идентификатор заказа."""
+    """Ключ дедупликации уведомления от ЮKassa.
+
+    У оплаты это наш идентификатор заказа, у возврата — идентификатор
+    платежа: своего order_id у возврата нет, его делают в кабинете
+    провайдера. Префиксы разные, чтобы уведомление о возврате не приняли за
+    повтор уведомления об оплате того же заказа и не выбросили молча.
+    """
+    refunded = refunded_payment_id_of(notification)
+    if refunded is not None:
+        return f"yk:refund:{refunded}"
     order_id = order_id_of(notification)
     return f"yk:{order_id}" if order_id is not None else None
 
@@ -316,6 +329,7 @@ def build_core_settings(
         docs_version=settings.docs_version,
         bank_statement_name=settings.bank_statement_name,
         fiscal=_fiscal(settings),
+        image_model=settings.image_model,
         preset_models=dict(settings.preset_models),
         preset_qualities={
             preset: ImageQuality(quality)
@@ -441,6 +455,52 @@ async def build_wiring(settings: Settings) -> Wiring:
     )
 
 
+async def _settle_refund(
+    by_messenger: dict[MessengerKind, Deps], external_id: str
+) -> None:
+    """Отмечает возврат денег по заказу.
+
+    Порядок тот же, что и у оплаты: уведомление ничего не доказывает, и
+    возврат сверяется у провайдера нашим ключом. Заказ ищется по
+    идентификатору платежа — в объекте возврата нашего идентификатора нет.
+
+    Оплаченный период у человека не отбирается: решение «вернуть деньги и
+    оставить доступ до конца месяца» принимает продавец, а не этот код. А вот
+    продление снимается сразу: списать с того, кому мы только что вернули
+    деньги, — верный способ получить оспаривание платежа вместо покупателя.
+    """
+    any_deps = next(iter(by_messenger.values()))
+    order = await any_deps.storage.get_payment_by_external_id(external_id)
+    if order is None:
+        logger.warning("refund_notice_unknown_payment")
+        return
+
+    user = await any_deps.storage.get_user_by_id(order.user_id)
+    if user is None:
+        logger.error("refund_user_missing", user_id=int(order.user_id))
+        return
+
+    deps = by_messenger.get(user.messenger)
+    if deps is None or deps.cards is None:
+        logger.error(
+            "refund_notice_without_provider",
+            user_id=int(user.id),
+            messenger=user.messenger.value,
+        )
+        return
+
+    if not await deps.cards.is_refunded(external_id):
+        logger.info("refund_notice_not_confirmed")
+        return
+
+    if not await deps.storage.mark_refunded(order.id):
+        # Уже отмечали: уведомлений о возврате приходит несколько.
+        return
+
+    await deps.storage.cancel_subscription(user.id, deps.now())
+    logger.info("payment_refunded", user_id=int(user.id))
+
+
 def _build_settlement(by_messenger: dict[MessengerKind, Deps]) -> Settlement:
     """Приём уведомлений об оплате картой.
 
@@ -461,6 +521,11 @@ def _build_settlement(by_messenger: dict[MessengerKind, Deps]) -> Settlement:
     any_deps = next(iter(by_messenger.values()))
 
     async def handle(notification: dict[str, Any]) -> None:
+        refunded_payment = refunded_payment_id_of(notification)
+        if refunded_payment is not None:
+            await _settle_refund(by_messenger, refunded_payment)
+            return
+
         order_id = order_id_of(notification)
         if order_id is None:
             logger.warning("payment_notice_without_order")

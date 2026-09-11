@@ -139,9 +139,30 @@ def _extract_answer(payload: dict[str, object]) -> Answer:
     if not isinstance(content, str) or not content.strip():
         raise ProviderResponseError("провайдер вернул пустой ответ")
 
+    tokens_in, tokens_out = _tokens(payload)
     # «length» означает, что модель не закончила мысль, а упёрлась в потолок:
     # фраза оборвана на полуслове. Молча отдать такой текст значит выдать
     # огрызок за законченный ответ.
     return Answer(
-        text=content.strip(), truncated=first.get("finish_reason") == "length"
+        text=content.strip(),
+        truncated=first.get("finish_reason") == "length",
+        tokens_in=tokens_in,
+        tokens_out=tokens_out,
+    )
+
+
+def _tokens(payload: dict[str, object]) -> tuple[int | None, int | None]:
+    """Токены запроса и ответа из usage. None — провайдер их не назвал.
+
+    None, а не ноль: не всякий шлюз к /chat/completions возвращает usage, и
+    нули в учёте выглядели бы как бесплатные вызовы.
+    """
+    usage = payload.get("usage")
+    if not isinstance(usage, dict):
+        return None, None
+    prompt = usage.get("prompt_tokens")
+    completion = usage.get("completion_tokens")
+    return (
+        prompt if isinstance(prompt, int) else None,
+        completion if isinstance(completion, int) else None,
     )

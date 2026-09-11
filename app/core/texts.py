@@ -207,30 +207,19 @@ _GREETING_FROM_PRESENTATIONS = (
 _INVITATION = "Просто напиши мне что-нибудь 👇"
 
 
-def onboarding(
-    *,
-    daily_messages: int,
-    images_left: int,
-    from_presentations: bool = False,
-    gift: str = "",
-) -> Screen:
-    """Первый экран. Три строки, не больше (§2.1).
+def onboarding(*, from_presentations: bool = False, gift: str = "") -> Screen:
+    """Первый экран. Две строки — поздороваться и позвать написать.
 
-    Четвёртая появляется только у приглашённого другом: подарок надо назвать
-    сразу, иначе человек не поймёт, откуда у него больше лимитов.
+    Числа лимитов отсюда убраны по решению заказчика. Первый экран должен
+    звать попробовать, а не отчитываться: человек ещё ничего не сделал, а ему
+    уже называют, сколько ему можно. Свои остатки он в любой момент видит в
+    профиле, и там они всегда свежие.
 
-    Картинки называются остатком, а не нормой, и слова «бесплатно» здесь
-    больше нет. Причина в том, что экран показывается и на второй, и на сотый
-    /start, и человеку с оплаченным тарифом: «3 картинки бесплатно» у него
-    было бы неправдой дважды. Остаток же верен всегда, а у нового человека он
-    ровно тот, что ему выдали при регистрации.
+    Третья строка появляется только у приглашённого другом: подарок надо
+    назвать сразу, иначе человек не поймёт, откуда у него больше лимитов.
     """
     greeting = _GREETING_FROM_PRESENTATIONS if from_presentations else _GREETING
-    lines = [
-        greeting,
-        _INVITATION,
-        f"Сейчас у тебя {_messages(daily_messages)} в день и {_images(images_left)}.",
-    ]
+    lines = [greeting, _INVITATION]
     if gift:
         lines.append(gift)
     return Screen(text="\n".join(lines), buttons=_menu_buttons())
@@ -1084,13 +1073,9 @@ def _all_screens() -> tuple[Screen, ...]:
     вообще собирается: опечатка в шаблоне падает здесь, а не у пользователя.
     """
     return (
-        onboarding(daily_messages=20, images_left=3),
-        onboarding(daily_messages=20, images_left=5, from_presentations=True),
-        onboarding(
-            daily_messages=20,
-            images_left=5,
-            gift=referral_gift(messages=50, images=2),
-        ),
+        onboarding(),
+        onboarding(from_presentations=True),
+        onboarding(gift=referral_gift(messages=50, images=2)),
         chat_answer("Ответ на вопрос.", offer_new_dialog=False),
         chat_answer("Ответ на вопрос.", offer_new_dialog=True),
         chat_answer(

@@ -11,10 +11,11 @@ from __future__ import annotations
 
 from app.core import texts
 from app.core.actions import Action
+from app.core.generations import GenerationKind
 from app.core.limits import LimitKind
 from app.core.referral import referral_url
 from app.core.retry_context import RetryContext, RetryKind
-from app.core.scenarios import keyboards, paywall, spending
+from app.core.scenarios import keyboards, paywall, spending, telemetry
 from app.core.scenarios.deps import Deps, Session
 from app.ports.ai import ContentRefusedError
 
@@ -36,11 +37,20 @@ async def draw(deps: Deps, session: Session, description: str) -> None:
         session.chat, texts.image_drawing().text, show_menu=False
     )
 
+    started = deps.now()
     try:
         photo = await deps.images.generate(
             description, quality=session.tariff.image_quality
         )
     except ContentRefusedError as refusal:
+        await telemetry.record_failure(
+            deps,
+            session,
+            GenerationKind.IMAGE,
+            started=started,
+            model=deps.settings.recorded_model_for(),
+            error=refusal,
+        )
         # Провайдер ответил по существу: такое он рисовать не станет. Это не
         # сбой, и предлагать «Повторить» нельзя — повтор даст тот же отказ, а
         # кнопка обещала бы обратное. Контекст повтора тоже не сохраняем.
@@ -50,6 +60,14 @@ async def draw(deps: Deps, session: Session, description: str) -> None:
         await deps.messenger.edit_text(waiting, texts.image_refused().text)
         return
     except Exception as error:
+        await telemetry.record_failure(
+            deps,
+            session,
+            GenerationKind.IMAGE,
+            started=started,
+            model=deps.settings.recorded_model_for(),
+            error=error,
+        )
         deps.logger.warning(
             "image_failed", user_id=int(session.user.id), error=repr(error)
         )
@@ -63,6 +81,14 @@ async def draw(deps: Deps, session: Session, description: str) -> None:
             keyboard=keyboards.retry(Action.IMAGE_RETRY),
         )
         return
+
+    await telemetry.record_success(
+        deps,
+        session,
+        GenerationKind.IMAGE,
+        started=started,
+        model=deps.settings.recorded_model_for(),
+    )
 
     delivered = await deps.messenger.edit_to_photo(
         waiting, photo, keyboard=keyboards.image_result()

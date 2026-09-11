@@ -25,52 +25,45 @@ MAX_ROW_CHARS = 30
 
 
 def test_onboarding_matches_the_brief() -> None:
-    """§2.1: ровно три строки. Картинки названы остатком, а не нормой."""
-    screen = texts.onboarding(daily_messages=20, images_left=3)
+    """§2.1: две строки — поздороваться и позвать написать."""
+    screen = texts.onboarding()
 
     assert screen.lines == [
         "Привет! Я отвечу на любой вопрос, решу задачу и сделаю картинку.",
         "Просто напиши мне что-нибудь 👇",
-        "Сейчас у тебя 20 сообщений в день и 3 картинки.",
     ]
 
 
-def test_onboarding_never_calls_the_images_free() -> None:
-    """Тот же экран видит и оплативший тариф, и вернувшийся с пустым балансом.
+def test_onboarding_does_not_report_limits() -> None:
+    """Решение заказчика: первый экран зовёт попробовать, а не отчитывается.
 
-    Слово «бесплатно» было бы враньём обоим, а третья строка — единственное
-    место, где человек читает свои числа при каждом /start.
+    Человек ещё ничего не сделал, а ему уже называют, сколько ему можно.
+    Свои остатки он видит в профиле, и там они всегда свежие.
     """
-    paid = texts.onboarding(daily_messages=100, images_left=40)
+    plain = texts.onboarding().text
+    invited = texts.onboarding(gift=texts.referral_gift(messages=50, images=2)).text
 
-    assert "бесплатно" not in paid.text
-    assert "Сейчас у тебя 100 сообщений в день и 40 картинок." in paid.text
+    assert not any(char.isdigit() for char in plain)
+    assert "в день" not in plain
+    # У приглашённого числа есть — но это подарок, а не отчёт о лимитах.
+    assert "в день" not in invited
 
 
 def test_onboarding_from_presentations_replaces_the_first_line() -> None:
-    """§2.1: ветка deeplink pres_* — другая первая строка и подарок больше.
-
-    Число подарка называется один раз — в третьей строке. В приветствии его
-    нет намеренно: два места с одним числом однажды разойдутся.
-    """
-    screen = texts.onboarding(daily_messages=20, images_left=5, from_presentations=True)
+    """§2.1: ветка deeplink pres_* — другая первая строка."""
+    screen = texts.onboarding(from_presentations=True)
 
     assert screen.lines[0] == (
         "Привет! Ты из бота презентаций — здесь ещё чат и картинки. "
         "Держи бонусные картинки за переход."
     )
-    assert screen.lines[2] == "Сейчас у тебя 20 сообщений в день и 5 картинок."
 
 
 def test_onboarding_mentions_the_gift_from_a_friend() -> None:
     """§2.7: приглашённый должен сразу понять, откуда у него больше лимитов."""
-    screen = texts.onboarding(
-        daily_messages=20,
-        images_left=5,
-        gift=texts.referral_gift(messages=50, images=2),
-    )
+    screen = texts.onboarding(gift=texts.referral_gift(messages=50, images=2))
 
-    assert screen.lines[3] == "Тебе подарок от друга: +50 сообщений и +2 картинки."
+    assert screen.lines[2] == "Тебе подарок от друга: +50 сообщений и +2 картинки."
 
 
 def test_chat_error_promises_the_message_was_not_spent() -> None:
@@ -248,9 +241,7 @@ def test_a_higher_tariff_repeats_what_a_lower_one_gives() -> None:
 )
 def test_images_are_pluralised_correctly(count: int, expected: str) -> None:
     """«5 картинки» в интерфейсе выглядит как недоделка."""
-    screen = texts.onboarding(daily_messages=20, images_left=count)
-
-    assert expected in screen.text
+    assert expected in texts.button_invite_for_images(count)
 
 
 # --- Линтер ловит нарушения ----------------------------------------------

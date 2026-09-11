@@ -95,6 +95,58 @@ async def test_context_is_trimmed_to_the_configured_depth(
     assert len(last_turns) <= deps.settings.dialog_max_turns
 
 
+async def test_the_stored_dialog_never_outgrows_the_limit(
+    deps: Deps, session: Session, storage: InMemoryStorage
+) -> None:
+    """В базе лежит ровно столько реплик, сколько уходит провайдеру.
+
+    Обрезка при записи — единственное, что держит строку диалога конечной:
+    массив растёт с каждым сообщением, а читается целиком и целиком же
+    уезжает в следующий запрос.
+    """
+    for index in range(15):
+        await chat.handle_message(deps, session, f"сообщение {index}")
+
+    stored = await storage.get_dialog(session.user.id)
+    assert len(stored.turns) == deps.settings.dialog_max_turns
+
+
+async def test_continuing_an_answer_does_not_grow_the_stored_dialog(
+    deps: Deps, session: Session, storage: InMemoryStorage
+) -> None:
+    """«Продолжить» дописывает ответ, а не добавляет реплики сверх предела.
+
+    Путь у него свой, мимо обычной записи, — и обрезку на нём легко потерять.
+    """
+    for index in range(15):
+        await chat.handle_message(deps, session, f"сообщение {index}")
+
+    for _ in range(5):
+        await chat.continue_answer(deps, session)
+
+    stored = await storage.get_dialog(session.user.id)
+    assert len(stored.turns) == deps.settings.dialog_max_turns
+
+
+async def test_a_lowered_limit_shrinks_the_stored_dialog(
+    deps: Deps, session: Session, storage: InMemoryStorage
+) -> None:
+    """Опустили DIALOG_MAX_TURNS — длинные диалоги обязаны укоротиться.
+
+    Иначе у давних собеседников в строке навсегда осталась бы старая длина,
+    и каждый их запрос стоил бы по-старому: контекст уезжает провайдеру
+    целиком.
+    """
+    for index in range(15):
+        await chat.handle_message(deps, session, f"сообщение {index}")
+
+    shorter = replace(deps, settings=replace(deps.settings, dialog_max_turns=4))
+    await chat.continue_answer(shorter, session)
+
+    stored = await storage.get_dialog(session.user.id)
+    assert len(stored.turns) == 4
+
+
 async def test_new_dialog_button_appears_exactly_on_the_tenth_message(
     deps: Deps, session: Session, messenger: FakeMessenger
 ) -> None:

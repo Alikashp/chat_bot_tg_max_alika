@@ -150,9 +150,21 @@ class CoreSettings:
     preset_models: Mapping[str, str] = field(default_factory=dict)
     preset_qualities: Mapping[str, ImageQuality] = field(default_factory=dict)
 
+    #: Общая модель картинок — та же, что настроена у провайдера.
+    #:
+    #: Ядро её не передаёт в вызов: пустая модель означает «бери свою», и так
+    #: это и работает. Знать её тут нужно ради учёта: строка в generations
+    #: должна называть модель, которой рисовали, а не оставлять прочерк на
+    #: каждой картинке без персональной настройки.
+    image_model: str = ""
+
     def model_for(self, preset_id: str) -> str:
         """Модель для прикола. Пусто — общая, настроенная у провайдера."""
         return self.preset_models.get(preset_id, "")
+
+    def recorded_model_for(self, preset_id: str = "") -> str:
+        """Какую модель записать в учёт: персональную или общую."""
+        return self.preset_models.get(preset_id, "") or self.image_model
 
     def quality_for(self, preset_id: str, default: ImageQuality) -> ImageQuality:
         """Качество для прикола. По умолчанию — то, что даёт тариф."""

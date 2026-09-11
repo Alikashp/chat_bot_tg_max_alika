@@ -199,12 +199,27 @@ class FakeLLM:
         #: Оборвался ли ответ на потолке длины. Про это бот обязан сказать
         #: человеку кнопкой, а не выдавать огрызок за законченную мысль.
         self.truncated = False
+        #: Сколько токенов «посчитал» провайдер. None — не сказал: не всякий
+        #: шлюз возвращает usage, и учёт обязан это пережить.
+        self.tokens_in: int | None = 11
+        self.tokens_out: int | None = 22
+        #: Часы, которые вызов двигает вперёд. Нужны там, где проверяется
+        #: измеренная длительность: с замороженным временем она всегда ноль.
+        self.clock: FrozenClock | None = None
+        self.takes_seconds = 0.0
 
     async def complete(self, turns: Sequence[ChatTurn], *, model: str) -> Answer:
         self.calls.append((tuple(turns), model))
+        if self.clock is not None and self.takes_seconds:
+            self.clock.advance(seconds=self.takes_seconds)
         if self.error is not None:
             raise self.error
-        return Answer(text=self.answer, truncated=self.truncated)
+        return Answer(
+            text=self.answer,
+            truncated=self.truncated,
+            tokens_in=self.tokens_in,
+            tokens_out=self.tokens_out,
+        )
 
 
 class FakeImages:
@@ -351,6 +366,10 @@ class FakeCards:
         self.recurring = recurring
         #: Что провайдер отвечает на вопрос «оплачено ли».
         self.paid: bool = True
+        #: Вернули ли деньги по платежу. Отдельно от paid: у ЮKassa возврат
+        #: не меняет статус платежа, и это ровно та разница, которую код
+        #: обязан различать.
+        self.refunded: bool = False
         #: Ссылка, которую он возвращает. None — провайдер её не дал.
         self.confirmation_url: str | None = "https://pay.example/checkout"
         #: Сохранённый способ оплаты. None — сохранить не удалось.
@@ -405,6 +424,10 @@ class FakeCards:
     async def is_paid(self, external_id: str, *, expected_rub: int) -> bool:
         self.asked.append(external_id)
         return self.paid
+
+    async def is_refunded(self, external_id: str) -> bool:
+        self.asked.append(external_id)
+        return self.refunded
 
 
 @dataclass

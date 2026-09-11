@@ -13,10 +13,11 @@ from dataclasses import replace
 
 from app.core import texts
 from app.core.actions import Action
+from app.core.generations import GenerationKind
 from app.core.limits import LimitKind
 from app.core.models import ChatTurn, DialogState, Role
 from app.core.retry_context import RetryContext, RetryKind
-from app.core.scenarios import keyboards, paywall, spending
+from app.core.scenarios import keyboards, paywall, spending, telemetry
 from app.core.scenarios.deps import Deps, Session
 from config.prompt import CONTINUE_PROMPT
 
@@ -35,11 +36,19 @@ async def handle_message(deps: Deps, session: Session, text: str) -> None:
         ChatTurn(Role.USER, text), max_turns=deps.settings.dialog_max_turns
     )
 
+    model = session.model(deps.settings)
+    started = deps.now()
     try:
-        answer = await deps.llm.complete(
-            asked.turns, model=session.model(deps.settings)
-        )
+        answer = await deps.llm.complete(asked.turns, model=model)
     except Exception as error:
+        await telemetry.record_failure(
+            deps,
+            session,
+            GenerationKind.CHAT,
+            started=started,
+            model=model,
+            error=error,
+        )
         # Лимит не тронут: пользователь получит ошибку и сможет повторить,
         # ничего не потеряв. Это обещано ему прямо в тексте.
         deps.logger.warning(
@@ -58,6 +67,16 @@ async def handle_message(deps: Deps, session: Session, text: str) -> None:
             keyboard=keyboards.retry(Action.CHAT_RETRY),
         )
         return
+
+    await telemetry.record_success(
+        deps,
+        session,
+        GenerationKind.CHAT,
+        started=started,
+        model=model,
+        tokens_in=answer.tokens_in,
+        tokens_out=answer.tokens_out,
+    )
 
     offer_new_dialog = asked.user_turns >= deps.settings.new_dialog_after_messages
     await deps.messenger.send_text(
@@ -111,11 +130,19 @@ async def continue_answer(deps: Deps, session: Session) -> None:
         max_turns=deps.settings.dialog_max_turns,
     )
 
+    model = session.model(deps.settings)
+    started = deps.now()
     try:
-        answer = await deps.llm.complete(
-            asked.turns, model=session.model(deps.settings)
-        )
+        answer = await deps.llm.complete(asked.turns, model=model)
     except Exception as error:
+        await telemetry.record_failure(
+            deps,
+            session,
+            GenerationKind.CHAT,
+            started=started,
+            model=model,
+            error=error,
+        )
         deps.logger.warning(
             "llm_continue_failed", user_id=int(session.user.id), error=repr(error)
         )
@@ -124,6 +151,16 @@ async def continue_answer(deps: Deps, session: Session) -> None:
             session.chat, screen.text, keyboard=keyboards.retry(Action.CHAT_CONTINUE)
         )
         return
+
+    await telemetry.record_success(
+        deps,
+        session,
+        GenerationKind.CHAT,
+        started=started,
+        model=model,
+        tokens_in=answer.tokens_in,
+        tokens_out=answer.tokens_out,
+    )
 
     await deps.messenger.send_text(
         session.chat,

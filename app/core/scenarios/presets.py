@@ -14,15 +14,17 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from datetime import datetime
 
 from app.core import texts
 from app.core.actions import Action
+from app.core.generations import GenerationKind
 from app.core.limits import LimitKind
 from app.core.models import Photo
 from app.core.pending import await_preset
 from app.core.photos import PhotoProblem, check_photo
 from app.core.retry_context import RetryContext, RetryKind
-from app.core.scenarios import keyboards, paywall, spending
+from app.core.scenarios import keyboards, paywall, spending, telemetry
 from app.core.scenarios.deps import Deps, Session
 from app.ports.ai import ContentRefusedError
 from config import presets as registry
@@ -171,6 +173,42 @@ async def add_photo(
     await apply(deps, session, preset, (*earlier, photo), refs)
 
 
+async def _record(
+    deps: Deps,
+    session: Session,
+    preset: Preset,
+    *,
+    started: datetime,
+    error: BaseException | None = None,
+) -> None:
+    """Учёт одной попытки прикола.
+
+    Модель берётся та же, которой рисовали: у прикола она может быть своя,
+    а нет — работает общая. Токены у картинок провайдер не называет, и в
+    строке они остаются пустыми.
+    """
+    model = deps.settings.recorded_model_for(preset.id)
+    if error is None:
+        await telemetry.record_success(
+            deps,
+            session,
+            GenerationKind.PRESET,
+            started=started,
+            model=model,
+            preset_id=preset.id,
+        )
+        return
+    await telemetry.record_failure(
+        deps,
+        session,
+        GenerationKind.PRESET,
+        started=started,
+        model=model,
+        error=error,
+        preset_id=preset.id,
+    )
+
+
 async def apply(
     deps: Deps,
     session: Session,
@@ -205,6 +243,7 @@ async def apply(
         session.chat, texts.preset_working().text, show_menu=False
     )
 
+    started = deps.now()
     try:
         result = await deps.images.edit(
             photos,
@@ -217,6 +256,7 @@ async def apply(
             model=deps.settings.model_for(preset.id),
         )
     except ContentRefusedError as refusal:
+        await _record(deps, session, preset, started=started, error=refusal)
         # Отказ по содержанию: дело в самом фото, и повтор ничего не изменит.
         # Выход с экрана — список приколов, чтобы человек не остался ни с чем.
         deps.logger.info(
@@ -232,6 +272,7 @@ async def apply(
         )
         return
     except Exception as error:
+        await _record(deps, session, preset, started=started, error=error)
         deps.logger.warning(
             "preset_failed",
             user_id=int(session.user.id),
@@ -252,6 +293,8 @@ async def apply(
             keyboard=keyboards.retry(Action.PRESET_RETRY),
         )
         return
+
+    await _record(deps, session, preset, started=started)
 
     delivered = await deps.messenger.edit_to_photo(
         waiting, result, keyboard=keyboards.preset_result()

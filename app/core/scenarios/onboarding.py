@@ -13,10 +13,9 @@ from __future__ import annotations
 
 from datetime import timedelta
 
-from app.core import referral, support, texts
-from app.core.limits import LimitKind
+from app.core import referral, sources, support, texts
 from app.core.models import Chat, MessengerKind, User, UserId, username_or_none
-from app.core.scenarios import identity, spending
+from app.core.scenarios import identity
 from app.core.scenarios.deps import Deps, Session, session_for
 
 #: Сколько попыток подобрать незанятые код и номер. Коллизия маловероятна,
@@ -56,6 +55,7 @@ async def start(
         external_id,
         from_presentations=from_presentations,
         username=username,
+        source=sources.source_of(payload),
     )
     session = Session(user=user, chat=chat, day=deps.today(), now=deps.now())
 
@@ -80,6 +80,7 @@ async def _create_user(
     *,
     from_presentations: bool,
     username: str | None = None,
+    source: str = sources.DIRECT,
 ) -> User:
     """Заводит пользователя, подбирая свободный реферальный код."""
     granted = (
@@ -97,6 +98,7 @@ async def _create_user(
                 support_number=support.generate_number(),
                 bonus_images=granted,
                 username=username_or_none(username),
+                source=source,
             )
         except ValueError as error:
             last_error = error
@@ -196,17 +198,8 @@ async def _notify_referrer(deps: Deps, referrer: User) -> None:
 async def _greet(
     deps: Deps, session: Session, *, from_presentations: bool, gifted: bool
 ) -> None:
-    """Первый экран — и второй, и сотый: /start здоровается всегда.
-
-    Картинки называются остатком, а не нормой. У нового человека остаток и
-    есть выданное при регистрации, а у вернувшегося — то, что у него правда
-    осталось: обещать ему «3 картинки» на пустом балансе значило бы соврать
-    на первом же экране.
-    """
-    images = await spending.current_allowance(deps, session, LimitKind.IMAGES)
+    """Первый экран — и второй, и сотый: /start здоровается всегда."""
     screen = texts.onboarding(
-        daily_messages=session.tariff.daily_messages,
-        images_left=images.total_left,
         from_presentations=from_presentations,
         gift=(
             texts.referral_gift(

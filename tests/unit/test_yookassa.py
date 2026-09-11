@@ -14,7 +14,11 @@ import pytest
 import respx
 
 from app.adapters.ai.errors import ProviderRequestError, ProviderUnavailableError
-from app.adapters.payments.yookassa import YooKassaPayments, order_id_of
+from app.adapters.payments.yookassa import (
+    YooKassaPayments,
+    order_id_of,
+    refunded_payment_id_of,
+)
 from app.core.receipts import FiscalSettings, Receipt, receipt_for
 
 BASE = "https://api.example/v3"
@@ -403,3 +407,89 @@ async def test_without_a_receipt_the_field_is_absent() -> None:
     )
 
     assert "receipt" not in json.loads(route.calls.last.request.content)
+
+
+# --- Возврат -------------------------------------------------------------
+
+
+def test_a_refund_notice_names_the_payment_not_our_order() -> None:
+    """Нашего order_id в объекте возврата нет и быть не может.
+
+    Возврат делают в кабинете ЮKassa, где про наши метаданные никто не знает.
+    Зато есть payment_id — по нему заказ и находится у нас.
+    """
+    notice = {
+        "event": "refund.succeeded",
+        "object": {"id": "refund-1", "payment_id": "2d0a1b"},
+    }
+
+    assert refunded_payment_id_of(notice) == "2d0a1b"
+    assert order_id_of(notice) is None
+
+
+def test_a_payment_notice_is_not_mistaken_for_a_refund() -> None:
+    notice = {
+        "event": "payment.succeeded",
+        "object": {"id": "2d0a1b", "metadata": {"order_id": "order-1"}},
+    }
+
+    assert refunded_payment_id_of(notice) is None
+
+
+@respx.mock
+async def test_a_refunded_payment_is_seen_by_the_returned_amount() -> None:
+    """Статус платежа возврат не меняет: он так и остаётся succeeded.
+
+    Смотреть надо на refunded_amount, иначе возврат навсегда остался бы
+    невидимым.
+    """
+    respx.get(f"{PAYMENTS_URL}/2d0a1b").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "id": "2d0a1b",
+                "status": "succeeded",
+                "paid": True,
+                "amount": {"value": "599.00", "currency": "RUB"},
+                "refunded_amount": {"value": "599.00", "currency": "RUB"},
+            },
+        )
+    )
+
+    assert await _provider().is_refunded("2d0a1b") is True
+
+
+@respx.mock
+async def test_a_partial_refund_still_counts_as_a_refund() -> None:
+    """Деньги человеку вернули — называть такой платёж обычной оплатой неправда."""
+    respx.get(f"{PAYMENTS_URL}/2d0a1b").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "id": "2d0a1b",
+                "status": "succeeded",
+                "paid": True,
+                "amount": {"value": "599.00", "currency": "RUB"},
+                "refunded_amount": {"value": "100.00", "currency": "RUB"},
+            },
+        )
+    )
+
+    assert await _provider().is_refunded("2d0a1b") is True
+
+
+@respx.mock
+async def test_a_plain_payment_is_not_a_refund() -> None:
+    respx.get(f"{PAYMENTS_URL}/2d0a1b").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "id": "2d0a1b",
+                "status": "succeeded",
+                "paid": True,
+                "amount": {"value": "599.00", "currency": "RUB"},
+            },
+        )
+    )
+
+    assert await _provider().is_refunded("2d0a1b") is False

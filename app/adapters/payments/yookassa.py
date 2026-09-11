@@ -181,6 +181,24 @@ class YooKassaPayments:
             headers=self._headers,
         )
 
+    async def is_refunded(self, external_id: str) -> bool:
+        """Вернулись ли деньги по платежу.
+
+        У ЮKassa возврат не меняет статус платежа: он так и остаётся
+        succeeded, а возвращённое лежит в отдельном поле refunded_amount.
+        Поэтому смотреть надо именно на него, а не на статус, — иначе
+        возврат навсегда остался бы невидимым.
+
+        Частичный возврат считаем возвратом: деньги человеку вернули, и
+        называть такой платёж обычной оплатой уже неправда.
+        """
+        response = await self._payment(external_id)
+        refunded = response.get("refunded_amount")
+        if not isinstance(refunded, dict):
+            return False
+        value = _rubles(refunded.get("value"))
+        return value is not None and value > 0
+
     async def is_paid(self, external_id: str, *, expected_rub: int) -> bool:
         """Спрашивает у ЮKassa, оплачен ли платёж на нужную сумму.
 
@@ -236,6 +254,26 @@ def _payment_id(response: dict[str, Any]) -> str:
     if not isinstance(payment_id, str) or not payment_id:
         raise ProviderError("ЮKassa не вернула идентификатор платежа")
     return payment_id
+
+
+def refunded_payment_id_of(notification: dict[str, Any]) -> str | None:
+    """Идентификатор платежа из уведомления о возврате; None — это не оно.
+
+    У возврата свой объект, и нашего ``order_id`` в нём нет: возврат делают
+    в кабинете ЮKassa, где про наши метаданные никто не знает. Зато есть
+    ``payment_id`` — по нему заказ и находится у нас.
+
+    Само уведомление, как и любое другое, ничего не доказывает: это повод
+    переспросить провайдера нашим ключом.
+    """
+    event = notification.get("event")
+    if not isinstance(event, str) or not event.startswith("refund."):
+        return None
+    refund = notification.get("object")
+    if not isinstance(refund, dict):
+        return None
+    payment_id = refund.get("payment_id")
+    return payment_id if isinstance(payment_id, str) and payment_id else None
 
 
 def order_id_of(notification: dict[str, Any]) -> str | None:

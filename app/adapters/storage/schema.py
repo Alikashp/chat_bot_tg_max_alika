@@ -19,6 +19,7 @@ from sqlalchemy import (
     Date,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     MetaData,
     String,
@@ -43,6 +44,10 @@ users = Table(
     # Имя в мессенджере — для поддержки. NOT NULL со значением по умолчанию:
     # «имени нет» — это тоже ответ, и пустая ячейка его не даёт.
     Column("username", String(64), nullable=False, server_default="NONE"),
+    # Откуда человек пришёл: payload из ?start=... при регистрации.
+    # NOT NULL со значением по умолчанию: «пришёл сам» — это тоже ответ,
+    # и пустая ячейка его не даёт (см. core/sources.py).
+    Column("source", String(64), nullable=False, server_default="direct"),
     # Почта для фискального чека. NULL — человек картой не платил: у звёзд
     # чек выставляет мессенджер, и адрес там ни к чему.
     Column("email", String(254), nullable=True),
@@ -181,4 +186,42 @@ referrals = Table(
     ),
     Column("created_at", DateTime(timezone=True), nullable=False),
     CheckConstraint("referrer_id <> referee_id", name="ck_referrals_no_self"),
+)
+
+generations = Table(
+    "generations",
+    metadata,
+    Column("id", BigInteger, primary_key=True, autoincrement=True),
+    Column(
+        "user_id",
+        BigInteger,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    # chat | image | preset. Строкой, а не перечислением базы: вид работы
+    # добавляется продуктовым решением, а менять тип в PostgreSQL дороже,
+    # чем дописать строку в реестр.
+    Column("kind", String(16), nullable=False),
+    # Идентификатор прикола из config/presets.py. NULL у чата и у картинки
+    # по описанию — у них прикола нет вовсе.
+    Column("preset_id", String(32), nullable=True),
+    Column("model", String(64), nullable=False, server_default=""),
+    # success | failed. Упавшие попытки нужны не для полноты: провайдер берёт
+    # деньги за попытку, и без них доля брака видна только по счёту.
+    Column("status", String(16), nullable=False),
+    # Имя класса исключения. Текста ошибки здесь нет намеренно: он несёт
+    # присланный запрос, а содержимого сообщений мы не храним (§3.5).
+    Column("error_code", String(64), nullable=True),
+    # NULL, а не ноль: у картинок провайдер токены не называет, и ноль в
+    # такой строке испортил бы любую сумму.
+    Column("tokens_in", Integer, nullable=True),
+    Column("tokens_out", Integer, nullable=True),
+    Column("duration_ms", Integer, nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    # Два разреза, которые спрашивают на самом деле: «что делал этот человек»
+    # и «что происходило за такой-то период». Без второго отчёт за месяц
+    # читает таблицу целиком.
+    Index("ix_generations_user_created", "user_id", "created_at"),
+    Index("ix_generations_created", "created_at"),
+    CheckConstraint("duration_ms >= 0", name="ck_generations_duration"),
 )

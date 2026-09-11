@@ -55,6 +55,11 @@ class Answer:
     text: str
     #: Ответ упёрся в потолок длины, а не закончился сам.
     truncated: bool = False
+    #: Сколько токенов провайдер посчитал за запрос и за ответ. None —
+    #: не сказал: не всякий шлюз к /chat/completions возвращает usage, а
+    #: ноль вместо «неизвестно» испортил бы любую сумму по учёту.
+    tokens_in: int | None = None
+    tokens_out: int | None = None
 
 
 class LLMProvider(Protocol):

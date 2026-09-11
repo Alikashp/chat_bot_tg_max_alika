@@ -37,16 +37,15 @@ async def refresh(storage: InMemoryStorage, user: User) -> User:
 # --- Первый экран (§2.1) -------------------------------------------------
 
 
-async def test_onboarding_is_three_lines_verbatim(
+async def test_onboarding_is_two_lines_verbatim(
     deps: Deps, messenger: FakeMessenger
 ) -> None:
-    """Критерий приёмки №1."""
+    """Критерий приёмки №1. Лимиты с первого экрана убраны заказчиком."""
     await start(deps)
 
     assert messenger.last_text.text == (
         "Привет! Я отвечу на любой вопрос, решу задачу и сделаю картинку.\n"
-        "Просто напиши мне что-нибудь 👇\n"
-        "Сейчас у тебя 20 сообщений в день и 3 картинки."
+        "Просто напиши мне что-нибудь 👇"
     )
 
 
@@ -92,15 +91,53 @@ async def test_presentation_deeplink_replaces_the_first_line(
 async def test_presentation_deeplink_raises_the_signup_grant(
     deps: Deps, messenger: FakeMessenger
 ) -> None:
-    """§2.1: 5 картинок вместо 3 — и это видно в самом тексте.
+    """§2.1: 5 картинок вместо 3.
 
     Картинки ложатся в бонус, а не в дневную квоту: дневной квоты картинок
-    на бесплатном тарифе нет вовсе.
+    на бесплатном тарифе нет вовсе. В тексте первого экрана их больше не
+    называют — число проверяется по самой выдаче.
     """
     session = await start(deps, payload="pres_autumn")
 
     assert session.user.bonus_images == 5
-    assert "5 картинок" in messenger.last_text.text
+
+
+# --- Источник регистрации ------------------------------------------------
+
+
+async def test_the_link_a_person_came_by_is_recorded(deps: Deps) -> None:
+    session = await start(deps, payload="ppt_result")
+
+    assert session.user.source == "ppt_result"
+
+
+async def test_a_referral_link_is_recorded_as_it_is(deps: Deps, user: User) -> None:
+    """Код внутри источника нужен: по нему видно, чьё приглашение сработало."""
+    session = await start(deps, payload=f"ref_{user.referral_code}")
+
+    assert session.user.source == f"ref_{user.referral_code}"
+
+
+async def test_coming_without_a_link_is_called_by_a_word(deps: Deps) -> None:
+    """Пустая ячейка одинаково читается и как «пришёл сам», и как «не записали»."""
+    session = await start(deps)
+
+    assert session.user.source == "direct"
+
+
+async def test_the_source_is_not_rewritten_on_a_later_start(
+    deps: Deps, storage: InMemoryStorage
+) -> None:
+    """Источник отвечает на «откуда он взялся», а не «где был в последний раз».
+
+    Перезапись превратила бы его в бесполезный «последний deeplink», по
+    которому нельзя посчитать ни одну кампанию.
+    """
+    first = await start(deps, payload="catalog")
+
+    await start(deps, payload="ppt_result")
+
+    assert (await refresh(storage, first.user)).source == "catalog"
 
 
 # --- Рефералка (§2.7) ----------------------------------------------------

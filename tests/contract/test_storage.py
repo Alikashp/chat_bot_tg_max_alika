@@ -23,16 +23,19 @@ from app.adapters.storage.memory import InMemoryStorage
 from app.adapters.storage.postgres import PostgresStorage, create_engine
 from app.adapters.storage.schema import metadata
 from app.core import support
+from app.core.generations import Generation, GenerationKind, GenerationStatus
 from app.core.models import (
     NO_USERNAME,
     ChatTurn,
     DialogState,
     MessengerKind,
+    Payment,
     Role,
     Subscription,
     TariffId,
     User,
 )
+from app.ports.payments import PaymentStatus
 from app.ports.storage import Storage
 
 DAY = date(2026, 8, 28)
@@ -118,6 +121,18 @@ async def _make_user(
         referral_code=f"code{external_id}",
         support_number=support.generate_number(),
         bonus_images=bonus_images,
+    )
+
+
+async def _payment(storage: Storage, user: User) -> Payment:
+    """Заказ на подписку — общая заготовка для проверок про деньги."""
+    return await storage.create_payment(
+        user_id=user.id,
+        tariff=TariffId.PRO,
+        method="card",
+        amount=599,
+        currency="RUB",
+        docs_version="2026-08-31",
     )
 
 
@@ -380,6 +395,111 @@ async def test_a_fresh_user_has_no_channel_bonus_mark(storage: Storage) -> None:
     user = await _make_user(storage)
 
     assert user.channel_bonus_at is None
+
+
+# --- Учёт обращений к провайдерам ----------------------------------------
+
+
+async def test_a_generation_is_written_as_it_was_given(storage: Storage) -> None:
+    user = await _make_user(storage)
+
+    await storage.record_generation(
+        Generation(
+            user_id=user.id,
+            kind=GenerationKind.PRESET,
+            model="gpt-image-1",
+            status=GenerationStatus.SUCCESS,
+            duration_ms=1500,
+            preset_id="lego",
+            tokens_in=11,
+            tokens_out=22,
+        )
+    )
+
+    # Читать учёт продукту незачем, поэтому в порту метода чтения нет:
+    # проверяем тем, что запись вообще прошла и не упала на ограничениях.
+
+
+async def test_a_failed_generation_is_written_too(storage: Storage) -> None:
+    """Провайдер берёт деньги за попытку, а не за успех."""
+    user = await _make_user(storage)
+
+    await storage.record_generation(
+        Generation(
+            user_id=user.id,
+            kind=GenerationKind.CHAT,
+            model="gpt-5.6-luna",
+            status=GenerationStatus.FAILED,
+            duration_ms=0,
+            error_code="TimeoutError",
+        )
+    )
+
+
+async def test_generations_of_one_user_do_not_collide(storage: Storage) -> None:
+    """Строк на человека много: это журнал, а не одна запись на пользователя."""
+    user = await _make_user(storage)
+    one = Generation(
+        user_id=user.id,
+        kind=GenerationKind.IMAGE,
+        model="gpt-image-1",
+        status=GenerationStatus.SUCCESS,
+        duration_ms=10,
+    )
+
+    await storage.record_generation(one)
+    await storage.record_generation(one)
+
+
+# --- Возврат денег -------------------------------------------------------
+
+
+async def test_an_order_is_found_by_the_provider_payment_id(
+    storage: Storage,
+) -> None:
+    """У возврата нашего идентификатора нет — только идентификатор платежа."""
+    user = await _make_user(storage)
+    order = await _payment(storage, user)
+    await storage.attach_external_id(order.id, "yk-42")
+
+    found = await storage.get_payment_by_external_id("yk-42")
+
+    assert found is not None
+    assert found.id == order.id
+
+
+async def test_an_unknown_payment_id_finds_nothing(storage: Storage) -> None:
+    assert await storage.get_payment_by_external_id("yk-нет-такого") is None
+
+
+async def test_a_paid_order_becomes_refunded_once(storage: Storage) -> None:
+    """Уведомлений о возврате приходит несколько, возврат при этом один."""
+    user = await _make_user(storage)
+    order = await _payment(storage, user)
+    assert await storage.mark_paid(order.id)
+
+    assert await storage.mark_refunded(order.id) is True
+    assert await storage.mark_refunded(order.id) is False
+
+    found = await storage.get_payment(order.id)
+    assert found is not None
+    assert found.status == PaymentStatus.REFUNDED.value
+
+
+async def test_an_unpaid_order_cannot_be_refunded(storage: Storage) -> None:
+    """Вернуть можно то, что получили.
+
+    Уведомление о возврате по неоплаченному заказу означает, что мы чего-то
+    не знаем, и молча переписывать статус в такой ситуации нельзя.
+    """
+    user = await _make_user(storage)
+    order = await _payment(storage, user)
+
+    assert await storage.mark_refunded(order.id) is False
+
+    found = await storage.get_payment(order.id)
+    assert found is not None
+    assert found.status == PaymentStatus.PENDING.value
 
 
 # --- Диалог --------------------------------------------------------------

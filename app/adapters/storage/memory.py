@@ -20,6 +20,8 @@ from datetime import UTC, date, datetime
 from itertools import count
 from uuid import uuid4
 
+from app.core import sources
+from app.core.generations import Generation
 from app.core.models import (
     NO_USERNAME,
     DialogState,
@@ -52,6 +54,10 @@ class InMemoryStorage:
         self._by_referral_code: dict[str, UserId] = {}
         self._usage: dict[tuple[UserId, date], Usage] = {}
         self._dialogs: dict[UserId, DialogState] = {}
+        #: Учёт обращений к провайдерам. Публичный намеренно: в тестах по
+        #: нему проверяют, что попытка записана, — так же, как в бою по
+        #: таблице generations.
+        self.generations: list[Generation] = []
         #: Приглашённый -> (пригласивший, когда). Ключ по приглашённому,
         #: потому что награда полагается только за нового пользователя и
         #: только одному пригласившему.
@@ -81,6 +87,7 @@ class InMemoryStorage:
         support_number: int,
         bonus_images: int,
         username: str = NO_USERNAME,
+        source: str = sources.DIRECT,
     ) -> User:
         existing = self._by_external.get((messenger, external_id))
         if existing is not None:
@@ -103,6 +110,7 @@ class InMemoryStorage:
             created_at=self._now(),
             bonus_images=bonus_images,
             username=username,
+            source=source,
         )
         self._users[user.id] = user
         self._by_external[(messenger, external_id)] = user.id
@@ -191,6 +199,10 @@ class InMemoryStorage:
             bonus_images=user.bonus_images + images,
         )
 
+    async def record_generation(self, generation: Generation) -> None:
+        self._require_user(generation.user_id)
+        self.generations.append(generation)
+
     async def grant_channel_bonus(self, user_id: UserId, *, images: int) -> bool:
         user = self._require_user(user_id)
         if user.channel_bonus_at is not None:
@@ -248,6 +260,25 @@ class InMemoryStorage:
             return False
         self._payments[payment_id] = replace(
             payment, status=PaymentStatus.PAID.value, paid_at=self._now()
+        )
+        return True
+
+    async def get_payment_by_external_id(self, external_id: str) -> Payment | None:
+        return next(
+            (
+                payment
+                for payment in self._payments.values()
+                if payment.external_id == external_id
+            ),
+            None,
+        )
+
+    async def mark_refunded(self, payment_id: str) -> bool:
+        payment = self._payments.get(payment_id)
+        if payment is None or payment.status != PaymentStatus.PAID.value:
+            return False
+        self._payments[payment_id] = replace(
+            payment, status=PaymentStatus.REFUNDED.value
         )
         return True
 

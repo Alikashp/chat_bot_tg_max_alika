@@ -26,12 +26,15 @@ from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async
 
 from app.adapters.storage.schema import (
     dialogs,
+    generations,
     payments,
     referrals,
     subscriptions,
     usage,
     users,
 )
+from app.core import sources
+from app.core.generations import Generation
 from app.core.models import (
     NO_USERNAME,
     ChatTurn,
@@ -123,6 +126,7 @@ class PostgresStorage:
         support_number: int,
         bonus_images: int,
         username: str = NO_USERNAME,
+        source: str = sources.DIRECT,
     ) -> User:
         query = (
             insert(users)
@@ -135,6 +139,7 @@ class PostgresStorage:
                 created_at=self._now(),
                 bonus_images=bonus_images,
                 username=username,
+                source=source,
             )
             # Гонка за нового человека разрешается базой, а не проверкой в
             # коде: два первых обновления обрабатываются параллельно, и оба
@@ -304,6 +309,28 @@ class PostgresStorage:
         async with self._session() as session, session.begin():
             await session.execute(query)
 
+    async def record_generation(self, generation: Generation) -> None:
+        """Одна вставка без чтений: строка только добавляется.
+
+        Своей транзакции хватает: учётная запись ни от чего не зависит и ни
+        с чем не спорит, а держать её в одной транзакции с выдачей результата
+        значило бы уронить выдачу из-за учёта.
+        """
+        query = insert(generations).values(
+            user_id=generation.user_id,
+            kind=generation.kind.value,
+            preset_id=generation.preset_id,
+            model=generation.model,
+            status=generation.status.value,
+            error_code=generation.error_code,
+            tokens_in=generation.tokens_in,
+            tokens_out=generation.tokens_out,
+            duration_ms=generation.duration_ms,
+            created_at=self._now(),
+        )
+        async with self._session() as session, session.begin():
+            await session.execute(query)
+
     async def grant_channel_bonus(self, user_id: UserId, *, images: int) -> bool:
         """Начисление и отметка о нём — одним UPDATE.
 
@@ -406,6 +433,31 @@ class PostgresStorage:
                 payments.c.status == PaymentStatus.PENDING.value,
             )
             .values(status=PaymentStatus.PAID.value, paid_at=self._now())
+            .returning(payments.c.id)
+        )
+        async with self._session() as session, session.begin():
+            return (await session.execute(query)).one_or_none() is not None
+
+    async def get_payment_by_external_id(self, external_id: str) -> Payment | None:
+        query = select(payments).where(payments.c.external_id == external_id)
+        async with self._session() as session:
+            row = (await session.execute(query)).mappings().one_or_none()
+        return _to_payment(row) if row is not None else None
+
+    async def mark_refunded(self, payment_id: str) -> bool:
+        """Переход в «возвращён» ровно один раз и только из «оплачен».
+
+        Только из «оплачен»: вернуть можно то, что получили. Уведомление о
+        возврате по неоплаченному заказу означает, что мы чего-то не знаем,
+        и молча переписывать статус в такой ситуации нельзя.
+        """
+        query = (
+            update(payments)
+            .where(
+                payments.c.id == payment_id,
+                payments.c.status == PaymentStatus.PAID.value,
+            )
+            .values(status=PaymentStatus.REFUNDED.value)
             .returning(payments.c.id)
         )
         async with self._session() as session, session.begin():
@@ -717,6 +769,7 @@ def _to_user(row: Any) -> User:
         support_number=row["support_number"],
         created_at=row["created_at"],
         username=row["username"],
+        source=row["source"],
         bonus_messages=row["bonus_messages"],
         bonus_images=row["bonus_images"],
         channel_bonus_at=row["channel_bonus_at"],

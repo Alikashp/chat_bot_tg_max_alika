@@ -17,10 +17,10 @@ import httpx
 import respx
 
 from app.config import Settings
-from app.core.models import MessengerKind, TariffId
+from app.core.models import MessengerKind, Subscription, TariffId
 from app.core.scenarios.deps import Deps
 from app.main import build_cards
-from app.ports.payments import PaymentMethod
+from app.ports.payments import PaymentMethod, PaymentStatus, SubscriptionStatus
 from tests.fakes import FakeCards
 
 BASE = "https://api.example/v3"
@@ -207,3 +207,127 @@ async def test_a_notice_we_cannot_verify_grants_nothing(deps: Deps) -> None:
     user = await deps.storage.get_user_by_id(order.user_id)
     assert user is not None
     assert user.tariff is TariffId.FREE
+
+
+# --- Уведомление о возврате ----------------------------------------------
+
+
+def _refund_notice(payment_id: str) -> dict[str, object]:
+    """Уведомление ЮKassa о возврате.
+
+    Нашего order_id в нём нет и быть не может: возврат делают в кабинете
+    провайдера, где про наши метаданные никто не знает.
+    """
+    return {
+        "event": "refund.succeeded",
+        "object": {"id": "refund-1", "payment_id": payment_id, "status": "succeeded"},
+    }
+
+
+async def test_a_refund_is_not_the_same_as_an_unpaid_order(deps: Deps) -> None:
+    """«Не заплатил» и «заплатил, а потом вернули» — разные события.
+
+    Слив их в одно значение, выручку за месяц посчитать уже нельзя.
+    """
+    from app.main import _build_settlement
+
+    cards = FakeCards()
+    cards.refunded = True
+    telegram = replace(deps, cards=cards)
+    order_id = await _order(telegram, MessengerKind.TELEGRAM, "yk-tg-3")
+    assert await deps.storage.mark_paid(order_id)
+
+    settlement = _build_settlement({MessengerKind.TELEGRAM: telegram})
+    await settlement.handle(_refund_notice("yk-tg-3"))
+
+    order = await deps.storage.get_payment(order_id)
+    assert order is not None
+    assert order.status == PaymentStatus.REFUNDED.value
+    assert order.status != PaymentStatus.CANCELED.value
+
+
+async def test_a_refund_notice_is_verified_with_our_own_key(deps: Deps) -> None:
+    """Уведомление не подписано ничем: само по себе оно ничего не доказывает."""
+    from app.main import _build_settlement
+
+    cards = FakeCards()
+    cards.refunded = False
+    telegram = replace(deps, cards=cards)
+    order_id = await _order(telegram, MessengerKind.TELEGRAM, "yk-tg-4")
+    assert await deps.storage.mark_paid(order_id)
+
+    settlement = _build_settlement({MessengerKind.TELEGRAM: telegram})
+    await settlement.handle(_refund_notice("yk-tg-4"))
+
+    assert cards.asked == ["yk-tg-4"]
+    order = await deps.storage.get_payment(order_id)
+    assert order is not None
+    assert order.status == PaymentStatus.PAID.value
+
+
+async def test_a_refund_stops_future_charges(deps: Deps) -> None:
+    """Списать с того, кому только что вернули деньги, — верный путь к спору.
+
+    Оплаченный период при этом не отбирается: это решение продавца, а не
+    этого кода.
+    """
+    from app.main import _build_settlement
+
+    cards = FakeCards()
+    cards.refunded = True
+    telegram = replace(deps, cards=cards)
+    order_id = await _order(telegram, MessengerKind.TELEGRAM, "yk-tg-5")
+    assert await deps.storage.mark_paid(order_id)
+    order = await deps.storage.get_payment(order_id)
+    assert order is not None
+    await deps.storage.save_subscription(
+        Subscription(
+            user_id=order.user_id,
+            tariff=TariffId.PRO,
+            method=PaymentMethod.CARD.value,
+            status=SubscriptionStatus.ACTIVE.value,
+            amount=599,
+            currency="RUB",
+            next_charge_at=deps.now(),
+            created_at=deps.now(),
+            payment_method_id="card-1",
+        )
+    )
+
+    settlement = _build_settlement({MessengerKind.TELEGRAM: telegram})
+    await settlement.handle(_refund_notice("yk-tg-5"))
+
+    subscription = await deps.storage.get_subscription(order.user_id)
+    assert subscription is not None
+    assert subscription.cancelled_at is not None
+
+
+async def test_a_repeated_refund_notice_changes_nothing(deps: Deps) -> None:
+    """Уведомлений о возврате приходит несколько, возврат при этом один."""
+    from app.main import _build_settlement
+
+    cards = FakeCards()
+    cards.refunded = True
+    telegram = replace(deps, cards=cards)
+    order_id = await _order(telegram, MessengerKind.TELEGRAM, "yk-tg-6")
+    assert await deps.storage.mark_paid(order_id)
+
+    settlement = _build_settlement({MessengerKind.TELEGRAM: telegram})
+    await settlement.handle(_refund_notice("yk-tg-6"))
+    await settlement.handle(_refund_notice("yk-tg-6"))
+
+    order = await deps.storage.get_payment(order_id)
+    assert order is not None
+    assert order.status == PaymentStatus.REFUNDED.value
+
+
+async def test_a_refund_notice_and_a_payment_notice_are_told_apart(deps: Deps) -> None:
+    """Ключи дедупликации у них разные: иначе возврат выбросили бы как повтор."""
+    from app.main import _payment_notice_key
+
+    payment_notice = {"object": {"id": "yk-1", "metadata": {"order_id": "order-1"}}}
+
+    assert _payment_notice_key(payment_notice) != _payment_notice_key(
+        _refund_notice("yk-1")
+    )
+    assert _payment_notice_key(_refund_notice("yk-1")) is not None

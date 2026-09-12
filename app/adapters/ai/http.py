@@ -62,7 +62,7 @@ async def request_json(
     headers: dict[str, str],
     json: dict[str, Any] | None = None,
     # Части multipart списком пар, а не словарём: одно поле может
-    # повторяться — так уезжают несколько исходных фото в image[].
+    # повторяться — так уезжают несколько исходных фото одним полем image.
     files: Sequence[tuple[str, Any]] | None = None,
     data: dict[str, Any] | None = None,
 ) -> dict[str, Any]:

@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import replace
 from datetime import UTC, datetime
 
@@ -18,6 +19,7 @@ from app.core.models import Chat, IncomingMessage, MessengerKind, TariffId, User
 from app.core.receipts import FiscalSettings
 from app.core.router import handle
 from app.core.scenarios.deps import Deps
+from app.infra.antiflood import FloodGuard
 from tests.fakes import FakeGuard, FakeImages, FakeLLM, FakeMessenger
 
 CHAT = Chat(messenger=MessengerKind.TELEGRAM, chat_id="1")
@@ -254,6 +256,59 @@ async def test_two_photos_reach_the_provider_as_one_request(
     await handle(deps, incoming(photo_ref="child"))
     assert len(images_.edited) == 1
     assert len(images_.edited_sources[0]) == 2
+
+
+async def test_two_photos_sent_at_once_are_not_lost(
+    deps: Deps,
+    user: User,
+    storage: InMemoryStorage,
+    images_: FakeImages,
+    messenger: FakeMessenger,
+) -> None:
+    """Настоящий случай: человек отправляет оба снимка разом.
+
+    Два обновления приходят почти одновременно и разбираются параллельно.
+    Раньше второе получало отказ «дождись предыдущего» и пропадало, а бот
+    просил прислать то, что ему уже прислали.
+
+    Ограничитель здесь настоящий: фейковый не умеет ни занимать слот, ни
+    ждать освобождения, а проверяется именно это.
+    """
+    await _open_everything(storage, user)
+    live = replace(deps, guard=FloodGuard(limit=1))
+    await handle(live, incoming(action=preset_action("polaroid_child")))
+
+    await asyncio.gather(
+        handle(live, incoming(photo_ref="adult", order_key=1)),
+        handle(live, incoming(photo_ref="child", order_key=2)),
+    )
+
+    assert len(images_.edited) == 1, messenger.texts_said()
+    assert len(images_.edited_sources[0]) == 2
+    assert messenger.downloaded[-2:] == ["adult", "child"]
+    assert texts.STILL_WORKING not in messenger.texts_said()
+
+
+async def test_the_pair_keeps_the_order_the_person_sent_it_in(
+    deps: Deps,
+    user: User,
+    storage: InMemoryStorage,
+    messenger: FakeMessenger,
+) -> None:
+    """Второй дошедший снимок мог быть отправлен первым.
+
+    Порядок решает, чьё лицо окажется слева: он берётся из нумерации
+    мессенджера, а не из того, кто первым добрался до базы.
+    """
+    await _open_everything(storage, user)
+    live = replace(deps, guard=FloodGuard(limit=1))
+    await handle(live, incoming(action=preset_action("polaroid_child")))
+
+    # Пришло сначала то, что отправлено вторым.
+    await handle(live, incoming(photo_ref="child", order_key=2))
+    await handle(live, incoming(photo_ref="adult", order_key=1))
+
+    assert messenger.downloaded[-2:] == ["adult", "child"]
 
 
 async def test_cancelling_forgets_the_first_photo(

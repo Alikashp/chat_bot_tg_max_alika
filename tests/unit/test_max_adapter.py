@@ -123,6 +123,21 @@ def test_a_photo_is_taken_by_its_address() -> None:
     assert incoming.photo_ref == "https://cdn/photo.jpg"
 
 
+def test_the_update_time_becomes_the_order_key() -> None:
+    """Номера сообщения в MAX нет — есть время обновления, и оно годится.
+
+    По нему упорядочиваются снимки прикола из двух фото: обработка идёт
+    параллельно, и её порядок ничего не говорит о порядке отправки.
+    """
+    raw = _message(text="привет")
+    raw["timestamp"] = 1771234567890
+
+    incoming = to_incoming(raw)
+
+    assert incoming is not None
+    assert incoming.order_key == 1771234567890
+
+
 def test_a_sticker_is_not_mistaken_for_a_photo() -> None:
     incoming = to_incoming(
         _message(attachments=[{"type": "sticker", "payload": {"url": "https://s"}}])

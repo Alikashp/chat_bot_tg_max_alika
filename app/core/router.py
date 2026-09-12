@@ -48,6 +48,13 @@ from config import presets as registry
 #: Команда, с которой начинается знакомство. Одинакова в обоих мессенджерах.
 START_COMMAND = "/start"
 
+#: Сколько ждать освобождения, если фото пришло, пока разбирается предыдущее.
+#:
+#: Ровно столько, сколько занимает сбор снимка: скачать и запомнить. Ждать
+#: дольше — значит держать воркера за чужой пятнадцатисекундной отрисовкой,
+#: а это та же потеря, только позже.
+_PHOTO_WAIT_SECONDS = 5.0
+
 #: Какая кнопка что ожидает найти в запомненном контексте.
 #:
 #: Контекст один на пользователя, а кнопки живут в переписке вечно. Без этого
@@ -145,7 +152,7 @@ async def handle(deps: Deps, incoming: IncomingMessage) -> None:
         return
 
     if incoming.photo_ref is not None:
-        await _handle_photo(deps, session, incoming.photo_ref)
+        await _handle_photo(deps, session, incoming.photo_ref, incoming.order_key)
         return
 
     if incoming.text:
@@ -301,7 +308,9 @@ async def _pick_preset(deps: Deps, session: Session, preset_id: str) -> None:
 # --- Содержимое ----------------------------------------------------------
 
 
-async def _handle_photo(deps: Deps, session: Session, photo_ref: str) -> None:
+async def _handle_photo(
+    deps: Deps, session: Session, photo_ref: str, order: int = 0
+) -> None:
     """Пришло фото."""
     awaited = pending.parse_await_preset(session.user.pending)
     preset = registry.PRESETS.get(awaited.preset_id) if awaited is not None else None
@@ -312,6 +321,27 @@ async def _handle_photo(deps: Deps, session: Session, photo_ref: str) -> None:
         return
 
     async def download_and_add(d: Deps, s: Session) -> None:
+        # Собранное перечитываем здесь, а не берём из сессии. Сессия — снимок
+        # на начало обработки, а два фото, присланные разом, разбираются
+        # параллельно: второе прочитало бы состояние до того, как первое
+        # успело записаться, и переписало бы его собой. Первый снимок при
+        # этом пропал бы молча — вместе с ожиданием напарника.
+        #
+        # Внутри ограничителя перечитывание достаточно: предыдущее фото
+        # записалось до того, как отпустило слот.
+        fresh = await d.storage.get_user_by_id(s.user.id) or s.user
+        now_awaited = pending.parse_await_preset(fresh.pending)
+        now_preset = (
+            registry.PRESETS.get(now_awaited.preset_id)
+            if now_awaited is not None
+            else None
+        )
+        if now_awaited is None or now_preset is None:
+            # Пока ждали очереди, человек ушёл из прикола — кнопкой меню или
+            # «Отменой». Обрабатывать фото под отменённый прикол нельзя.
+            await presets.show_menu(d, s)
+            return
+
         try:
             photo = await d.messenger.download_photo(
                 photo_ref, max_bytes=d.settings.max_photo_bytes
@@ -321,7 +351,9 @@ async def _handle_photo(deps: Deps, session: Session, photo_ref: str) -> None:
             # ни лимита, ни запроса к провайдеру (§3.5).
             await _say(d, s, texts.PHOTO_TOO_BIG)
             return
-        await presets.add_photo(d, s, preset, photo, photo_ref, awaited.collected)
+        await presets.add_photo(
+            d, s, now_preset, photo, photo_ref, order, now_awaited.collected
+        )
 
     # Скачивание внутри ограничителя, а не до него: иначе десяток фото
     # подряд означал бы десяток закачек, из которых пригодится одна.
@@ -330,7 +362,20 @@ async def _handle_photo(deps: Deps, session: Session, photo_ref: str) -> None:
     # снимков под тот же прикол, и переспрашивать на каждом было бы глупо.
     # Любое действие из меню и любой текст ожидание снимут — в том числе
     # «Отмена» на шаге, где ждём второй снимок.
-    await _guarded(deps, session, _image_key(session), download_and_add)
+    #
+    # Фото — единственное место, где ограничитель ждёт, а не отказывает сразу.
+    # Человек, приславший два снимка разом, отправляет два обновления почти
+    # одновременно: при мгновенном отказе второе пропадает, и бот просит
+    # прислать то, что ему уже прислали. Сбор снимка короткий — скачать и
+    # запомнить, — так что очередь длиной в одно фото рассасывается за
+    # доли секунды.
+    await _guarded(
+        deps,
+        session,
+        _image_key(session),
+        download_and_add,
+        wait_seconds=_PHOTO_WAIT_SECONDS,
+    )
 
 
 async def _handle_text(deps: Deps, session: Session, text: str) -> None:
@@ -375,14 +420,25 @@ async def _handle_text(deps: Deps, session: Session, text: str) -> None:
 Scenario = Callable[[Deps, Session], Awaitable[None]]
 
 
-async def _guarded(deps: Deps, session: Session, key: str, scenario: Scenario) -> None:
+async def _guarded(
+    deps: Deps,
+    session: Session,
+    key: str,
+    scenario: Scenario,
+    *,
+    wait_seconds: float = 0.0,
+) -> None:
     """Запускает сценарий, если у пользователя нет такой же работы в ходу.
 
     Ограничение существует не ради вежливости. Инвариант «списываем после
     доставки» оставляет окно между проверкой остатка и списанием, и два
     одновременных запроса одного человека могли бы пройти проверку оба.
+
+    ``wait_seconds`` больше нуля означает готовность подождать освобождения
+    вместо немедленного отказа. Это нужно там, где отказ теряет присланное,
+    а не просто откладывает работу.
     """
-    if not deps.guard.try_acquire(key):
+    if not await deps.guard.acquire(key, wait_seconds=wait_seconds):
         await _say(deps, session, texts.still_working().text)
         return
     try:

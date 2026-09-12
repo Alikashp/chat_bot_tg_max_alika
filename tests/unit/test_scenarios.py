@@ -423,7 +423,7 @@ async def test_a_two_photo_preset_needs_no_new_handler_either(
     awaited = pending.parse_await_preset(user.pending)
     assert awaited is not None
 
-    await presets.add_photo(deps, session, extra, PHOTO, "theirs", awaited.collected)
+    await presets.add_photo(deps, session, extra, PHOTO, "theirs", 2, awaited.collected)
     assert images_.edited[-1][0] == extra.instruction
     assert len(images_.edited_sources[-1]) == 2
 
@@ -842,7 +842,7 @@ async def test_the_first_photo_is_remembered_until_the_second_arrives(
     user = await storage.get_user_by_id(paid.user.id)
     assert user is not None
     assert pending.parse_await_preset(user.pending) == pending.AwaitedPreset(
-        "polaroid_child", ("adult-ref",)
+        "polaroid_child", (pending.CollectedPhoto(0, "adult-ref"),)
     )
 
 
@@ -856,13 +856,45 @@ async def test_both_photos_go_to_the_provider_in_one_request(
     """Порядок существенный: инструкция ссылается на снимки по номерам."""
     child = Photo(data=PNG_BYTES, filename="child.png")
 
-    await presets.add_photo(deps, paid, two_photos, child, "child-ref", ("adult-ref",))
+    await presets.add_photo(
+        deps,
+        paid,
+        two_photos,
+        child,
+        "child-ref",
+        2,
+        (pending.CollectedPhoto(1, "adult-ref"),),
+    )
 
     assert len(images_.edited) == 1
     assert len(images_.edited_sources[0]) == 2
     # Взрослый снимок первым — провайдер вытягивает детали первого сильнее.
-    assert messenger.downloaded == ["adult-ref"]
-    assert images_.edited_sources[0][1] is child
+    assert messenger.downloaded == ["adult-ref", "child-ref"]
+
+
+async def test_the_pair_is_ordered_by_the_messenger_not_by_arrival(
+    deps: Deps,
+    paid: Session,
+    messenger: FakeMessenger,
+    two_photos: Preset,
+) -> None:
+    """Второй дошедший снимок мог быть отправлен первым.
+
+    Два фото, присланные разом, приезжают двумя обновлениями и разбираются
+    параллельно: какое доберётся до базы раньше — решает случай. Порядок
+    берётся из нумерации мессенджера, иначе лица меняются местами.
+    """
+    await presets.add_photo(
+        deps,
+        paid,
+        two_photos,
+        PHOTO,
+        "sent-first",
+        1,
+        (pending.CollectedPhoto(2, "sent-second"),),
+    )
+
+    assert messenger.downloaded == ["sent-first", "sent-second"]
 
 
 async def test_a_lost_first_photo_starts_the_collection_over(
@@ -876,7 +908,15 @@ async def test_a_lost_first_photo_starts_the_collection_over(
     """В MAX ссылка на снимок живёт не вечно, а человек может уйти надолго."""
     messenger.fail_download = RuntimeError("ссылка протухла")
 
-    await presets.add_photo(deps, paid, two_photos, PHOTO, "child-ref", ("adult-ref",))
+    await presets.add_photo(
+        deps,
+        paid,
+        two_photos,
+        PHOTO,
+        "child-ref",
+        2,
+        (pending.CollectedPhoto(1, "adult-ref"),),
+    )
 
     assert messenger.last_text.text == texts.PRESET_PHOTO_LOST
     assert images_.edited == []
@@ -891,7 +931,15 @@ async def test_a_lost_first_photo_is_not_reported_as_a_breakdown(
     """Обрабатывать было нечего — говорить об ошибке обработки было бы неправдой."""
     messenger.fail_download = RuntimeError("ссылка протухла")
 
-    await presets.add_photo(deps, paid, two_photos, PHOTO, "child-ref", ("adult-ref",))
+    await presets.add_photo(
+        deps,
+        paid,
+        two_photos,
+        PHOTO,
+        "child-ref",
+        2,
+        (pending.CollectedPhoto(1, "adult-ref"),),
+    )
 
     assert texts.PRESET_ERROR not in messenger.texts_said()
 
@@ -946,7 +994,9 @@ async def test_a_finished_pair_is_forgotten_before_the_next_one(
     Прикол остаётся выбранным — человек может прислать подряд ещё одну пару, —
     но собранное обнуляется: два снимка отработаны, третий начинает новую пару.
     """
-    await presets.add_photo(deps, paid, two_photos, PHOTO, "adult", ("first",))
+    await presets.add_photo(
+        deps, paid, two_photos, PHOTO, "adult", 2, (pending.CollectedPhoto(1, "first"),)
+    )
 
     user = await storage.get_user_by_id(paid.user.id)
     assert user is not None
@@ -965,7 +1015,9 @@ async def test_a_failed_pair_is_forgotten_too(
     """Провайдер упал — отработанный снимок всё равно не должен ждать напарника."""
     images_.error = RuntimeError("провайдер лёг")
 
-    await presets.add_photo(deps, paid, two_photos, PHOTO, "adult", ("first",))
+    await presets.add_photo(
+        deps, paid, two_photos, PHOTO, "adult", 2, (pending.CollectedPhoto(1, "first"),)
+    )
 
     user = await storage.get_user_by_id(paid.user.id)
     assert user is not None

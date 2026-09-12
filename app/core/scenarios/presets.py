@@ -21,7 +21,7 @@ from app.core.actions import Action
 from app.core.generations import GenerationKind
 from app.core.limits import LimitKind
 from app.core.models import Photo
-from app.core.pending import await_preset
+from app.core.pending import AwaitedPreset, CollectedPhoto, await_preset
 from app.core.photos import PhotoProblem, check_photo
 from app.core.retry_context import RetryContext, RetryKind
 from app.core.scenarios import keyboards, paywall, spending, telemetry
@@ -123,26 +123,27 @@ async def add_photo(
     preset: Preset,
     photo: Photo,
     photo_ref: str,
-    collected: tuple[str, ...] = (),
+    order: int = 0,
+    collected: tuple[CollectedPhoto, ...] = (),
 ) -> None:
     """Принимает очередное фото под выбранный прикол.
 
-    ``collected`` — ссылки на снимки, присланные раньше под этот же прикол.
-    Пока их не набралось столько, сколько просит реестр, работа не начинается:
-    просим следующее фото и запоминаем то, что уже есть.
+    ``collected`` — снимки, присланные раньше под этот же прикол. Пока их не
+    набралось столько, сколько просит реестр, работа не начинается: просим
+    следующее фото и запоминаем то, что уже есть.
 
-    Байты только что присланного снимка передаются сюда готовыми — их уже
-    скачал маршрутизатор. Ранние снимки скачиваются здесь заново: между двумя
-    обращениями прошло время, и держать чужие байты у себя всё это время
-    незачем.
+    ``order`` — чем мессенджер упорядочил это сообщение. Порядок берётся
+    оттуда, а не из порядка обработки: два фото, отправленные разом, приезжают
+    двумя обновлениями и разбираются параллельно, а инструкция провайдеру
+    ссылается на снимки по номерам.
     """
     if await _reject_unsuitable(deps, session, (photo,)):
         # Ожидание не трогаем: человек просто присылает другой снимок
         # вместо этого, и переспрашивать на каждом было бы глупо.
         return
 
-    refs = (*collected, photo_ref)
-    if len(refs) < preset.photos_required:
+    gathered = (*collected, CollectedPhoto(order=order, ref=photo_ref))
+    if len(gathered) < preset.photos_required:
         # Остаток проверяем до того, как просить следующий снимок: у кого
         # картинки кончились, тот иначе прислал бы второе фото впустую.
         allowance = await spending.current_allowance(deps, session, LimitKind.IMAGES)
@@ -151,12 +152,19 @@ async def add_photo(
             await paywall.show(deps, session, LimitKind.IMAGES)
             return
 
-        await deps.storage.set_pending(session.user.id, await_preset(preset.id, refs))
-        await _ask_for_photo(deps, session, preset, collected=len(refs))
+        await deps.storage.set_pending(
+            session.user.id, await_preset(preset.id, gathered)
+        )
+        await _ask_for_photo(deps, session, preset, collected=len(gathered))
         return
 
-    earlier = await download_sources(deps, session, collected)
-    if earlier is None:
+    # Скачиваем весь набор заново, а не приклеиваем только что полученные
+    # байты в конец: после сортировки последний присланный снимок может
+    # оказаться не последним по порядку, и приклеивать его вслепую значит
+    # поменять лица местами.
+    refs = AwaitedPreset(preset_id=preset.id, collected=gathered).refs
+    photos = await download_sources(deps, session, refs)
+    if photos is None:
         return
 
     if collected:
@@ -170,7 +178,7 @@ async def add_photo(
         # отработанный снимок остался бы ждать напарника.
         await deps.storage.set_pending(session.user.id, await_preset(preset.id))
 
-    await apply(deps, session, preset, (*earlier, photo), refs)
+    await apply(deps, session, preset, photos, refs)
 
 
 async def _record(

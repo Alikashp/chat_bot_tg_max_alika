@@ -37,24 +37,57 @@ _AWAIT_EMAIL_PREFIX = "await:email:"
 #: ни в другом, поэтому разбор однозначен при любой ссылке.
 _SEPARATOR = "\n"
 
+#: Чем порядковый ключ отделён от ссылки внутри одной записи.
+#:
+#: Двоеточие в ссылках встречается (в MAX это http-адрес), поэтому делим по
+#: первому вхождению: слева всегда только цифры, и разбор однозначен.
+_ORDER_MARK = ":"
+
+
+@dataclass(frozen=True, slots=True)
+class CollectedPhoto:
+    """Присланный снимок: чем мессенджер его упорядочил и как его забрать.
+
+    Порядок хранится рядом со ссылкой, потому что по нему потом сортируют:
+    два снимка, отправленные разом, разбираются параллельно, и дойти до базы
+    они могут в любом порядке. А инструкция провайдеру ссылается на них по
+    номерам — переставленные местами лица дают другую картинку.
+    """
+
+    order: int
+    ref: str
+
 
 @dataclass(frozen=True, slots=True)
 class AwaitedPreset:
     """Прикол, под который ждём фото, и то, что уже прислали."""
 
     preset_id: str
-    #: Ссылки на присланные фото в порядке получения. Порядок существенный:
-    #: инструкция провайдеру ссылается на снимки по номерам.
-    collected: tuple[str, ...] = ()
+    #: Присланные снимки в порядке записи.
+    collected: tuple[CollectedPhoto, ...] = ()
+
+    @property
+    def refs(self) -> tuple[str, ...]:
+        """Ссылки в том порядке, в каком их отправлял человек.
+
+        Сортировка устойчивая: снимки, про которые мессенджер ничего не
+        сказал (порядок 0), остаются в порядке записи.
+        """
+        return tuple(photo.ref for photo in sorted(self.collected, key=_by_order))
 
 
-def await_preset(preset_id: str, collected: tuple[str, ...] = ()) -> str:
+def _by_order(photo: CollectedPhoto) -> int:
+    return photo.order
+
+
+def await_preset(preset_id: str, collected: tuple[CollectedPhoto, ...] = ()) -> str:
     """Состояние «ждём фото под такой-то прикол»."""
     if not preset_id:
         raise ValueError("нужен идентификатор пресета")
-    if _SEPARATOR in preset_id or any(_SEPARATOR in ref for ref in collected):
+    if _SEPARATOR in preset_id or any(_SEPARATOR in each.ref for each in collected):
         raise ValueError("перевода строки не должно быть ни в id, ни в ссылке")
-    return _AWAIT_PRESET_PREFIX + _SEPARATOR.join((preset_id, *collected))
+    entries = tuple(f"{each.order}{_ORDER_MARK}{each.ref}" for each in collected)
+    return _AWAIT_PRESET_PREFIX + _SEPARATOR.join((preset_id, *entries))
 
 
 def parse_await_preset(pending: str | None) -> AwaitedPreset | None:
@@ -66,10 +99,25 @@ def parse_await_preset(pending: str | None) -> AwaitedPreset | None:
     if pending is None or not pending.startswith(_AWAIT_PRESET_PREFIX):
         return None
 
-    preset_id, *collected = pending.removeprefix(_AWAIT_PRESET_PREFIX).split(_SEPARATOR)
-    if not preset_id or not all(collected):
+    preset_id, *entries = pending.removeprefix(_AWAIT_PRESET_PREFIX).split(_SEPARATOR)
+    if not preset_id or not all(entries):
         return None
-    return AwaitedPreset(preset_id=preset_id, collected=tuple(collected))
+    return AwaitedPreset(
+        preset_id=preset_id, collected=tuple(_entry(each) for each in entries)
+    )
+
+
+def _entry(entry: str) -> CollectedPhoto:
+    """Разбирает запись «порядок:ссылка».
+
+    Запись без числа впереди — это формат прошлой версии, оставшийся у тех,
+    кто прислал первое фото до выкладки. Такой снимок не теряем: считаем, что
+    порядка мессенджер не назвал, и оставляем его там, где он записан.
+    """
+    order, mark, ref = entry.partition(_ORDER_MARK)
+    if not mark or not ref or not order.isdigit():
+        return CollectedPhoto(order=0, ref=entry)
+    return CollectedPhoto(order=int(order), ref=ref)
 
 
 def await_email(tariff_id: str) -> str:

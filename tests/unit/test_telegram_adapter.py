@@ -345,6 +345,34 @@ def messenger(session: StubSession) -> TelegramMessenger:
     return TelegramMessenger(Bot(token="42:TEST", session=session))
 
 
+async def test_a_sent_message_carries_the_premium_emoji(
+    session: StubSession,
+) -> None:
+    """Разметка уходит вместе с текстом, а не вместо него."""
+    tuned = TelegramMessenger(
+        Bot(token="42:TEST", session=session), {"🔄": "5345906554510012647"}
+    )
+
+    await tuned.send_text(CORE_CHAT, "🔄 Делаю… ~15 сек")
+
+    sent = session.calls[0]
+    assert isinstance(sent, SendMessage)
+    assert sent.text == "🔄 Делаю… ~15 сек"
+    assert sent.entities is not None and len(sent.entities) == 1
+    assert sent.entities[0].custom_emoji_id == "5345906554510012647"
+
+
+async def test_without_the_setting_a_message_goes_exactly_as_before(
+    messenger: TelegramMessenger, session: StubSession
+) -> None:
+    """Выключатель в руках заказчика: пустая настройка ничего не добавляет."""
+    await messenger.send_text(CORE_CHAT, "🔄 Делаю… ~15 сек")
+
+    sent = session.calls[0]
+    assert isinstance(sent, SendMessage)
+    assert sent.entities is None
+
+
 async def test_a_plain_message_carries_the_menu(
     messenger: TelegramMessenger, session: StubSession
 ) -> None:

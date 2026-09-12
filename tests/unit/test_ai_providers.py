@@ -424,7 +424,7 @@ async def test_drawing_from_scratch_keeps_its_fixed_size() -> None:
 
 
 @respx.mock
-async def test_two_photos_go_in_one_request_as_an_array() -> None:
+async def test_two_photos_go_in_one_request_as_repeated_image_parts() -> None:
     """Прикол «я и я в детстве» соединяет два снимка — значит, один запрос."""
     route = respx.post(EDIT_URL).mock(return_value=httpx.Response(200, json=_drawn()))
 
@@ -439,7 +439,10 @@ async def test_two_photos_go_in_one_request_as_an_array() -> None:
 
     assert len(route.calls) == 1
     content = route.calls.last.request.content
-    assert content.count(b'name="image[]"') == 2
+    # Шлюз перед Images API не понимает image[]: на массиве он отвечал
+    # unknown_parameter, и оба прикола с двумя фото не работали в бою.
+    assert content.count(b'name="image"') == 2
+    assert b'name="image[]"' not in content
     # Порядок сохраняется: детали первого снимка провайдер вытягивает сильнее.
     assert content.index(b"adult.png") < content.index(b"child.png")
     # Имена частей разные даже при одинаковых исходных: в MAX оба снимка
@@ -463,14 +466,14 @@ async def test_photos_with_the_same_name_stay_two_parts() -> None:
     )
 
     content = route.calls.last.request.content
-    assert content.count(b'name="image[]"') == 2
+    assert content.count(b'name="image"') == 2
     assert b'filename="1-photo.jpg"' in content
     assert b'filename="2-photo.jpg"' in content
 
 
 @respx.mock
-async def test_one_photo_keeps_the_field_name_that_works_in_production() -> None:
-    """Одиночный запрос — это все приколы, кроме одного. Путь у них прежний."""
+async def test_one_photo_goes_exactly_as_it_does_in_production() -> None:
+    """Одиночный запрос — это большинство приколов. Путь у них прежний."""
     route = respx.post(EDIT_URL).mock(return_value=httpx.Response(200, json=_drawn()))
 
     await _images().edit(
@@ -480,8 +483,10 @@ async def test_one_photo_keeps_the_field_name_that_works_in_production() -> None
     )
 
     content = route.calls.last.request.content
-    assert b'name="image"' in content
+    assert content.count(b'name="image"') == 1
     assert b'name="image[]"' not in content
+    # Без номера: нумерация нужна только чтобы шлюз не склеил две части.
+    assert b'filename="in.png"' in content
 
 
 async def test_editing_without_a_photo_is_refused() -> None:

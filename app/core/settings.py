@@ -150,6 +150,10 @@ class CoreSettings:
     preset_models: Mapping[str, str] = field(default_factory=dict)
     preset_qualities: Mapping[str, ImageQuality] = field(default_factory=dict)
 
+    #: input_fidelity на отдельный прикол. Пустая строка — «не посылать этому».
+    #: Чего здесь нет, то работает значением, настроенным у провайдера.
+    preset_fidelity: Mapping[str, str] = field(default_factory=dict)
+
     #: Общая модель картинок — та же, что настроена у провайдера.
     #:
     #: Ядро её не передаёт в вызов: пустая модель означает «бери свою», и так
@@ -169,6 +173,17 @@ class CoreSettings:
     def quality_for(self, preset_id: str, default: ImageQuality) -> ImageQuality:
         """Качество для прикола. По умолчанию — то, что даёт тариф."""
         return self.preset_qualities.get(preset_id, default)
+
+    def fidelity_for(self, preset_id: str) -> str | None:
+        """input_fidelity для прикола. None — то, что настроено у провайдера.
+
+        None и пустая строка здесь значат разное, и различать их обязательно:
+        None — «про этот прикол ничего не сказано, работай как обычно», пустая
+        строка — «этой модели параметр не посылать». Свести их к одному
+        значению означало бы либо лишить настройку смысла, либо выключить
+        параметр всем.
+        """
+        return self.preset_fidelity.get(preset_id)
 
     @property
     def receipts_ready(self) -> bool:

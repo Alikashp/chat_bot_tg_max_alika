@@ -178,6 +178,15 @@ class Settings(BaseSettings):
     #: детализация независимо от того, за сколько человек платит.
     preset_qualities: dict[str, str] = Field(default_factory=dict)
 
+    #: input_fidelity на отдельный прикол: идентификатор из реестра → значение.
+    #: Пустая строка означает «этому приколу параметр не посылать».
+    #:
+    #: Нужен потому, что параметр зависит от модели, а модель у прикола своя:
+    #: gpt-image-2 отвечает на него invalid_input_fidelity_model, и один общий
+    #: IMAGE_INPUT_FIDELITY кладёт разом все приколы на такой модели. Чего в
+    #: словаре нет, то работает общим значением.
+    preset_fidelity: dict[str, str] = Field(default_factory=dict)
+
     #: Картинка рисуется десятки секунд, поэтому таймаут свой и заметно
     #: больше текстового.
     image_timeout_seconds: Annotated[float, Field(gt=0, le=300)] = 180.0

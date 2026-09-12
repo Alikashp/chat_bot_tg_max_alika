@@ -262,6 +262,9 @@ async def apply(
             # тарифа, как раньше.
             quality=deps.settings.quality_for(preset.id, session.tariff.image_quality),
             model=deps.settings.model_for(preset.id),
+            # Параметр зависит от модели, а модель у прикола своя: одно общее
+            # значение кладёт разом все приколы на модели, которая его не знает.
+            input_fidelity=deps.settings.fidelity_for(preset.id),
         )
     except ContentRefusedError as refusal:
         await _record(deps, session, preset, started=started, error=refusal)

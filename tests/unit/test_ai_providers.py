@@ -424,7 +424,7 @@ async def test_drawing_from_scratch_keeps_its_fixed_size() -> None:
 
 
 @respx.mock
-async def test_two_photos_go_in_one_request_as_repeated_image_parts() -> None:
+async def test_two_photos_go_in_one_request_as_an_array() -> None:
     """Прикол «я и я в детстве» соединяет два снимка — значит, один запрос."""
     route = respx.post(EDIT_URL).mock(return_value=httpx.Response(200, json=_drawn()))
 
@@ -439,10 +439,9 @@ async def test_two_photos_go_in_one_request_as_repeated_image_parts() -> None:
 
     assert len(route.calls) == 1
     content = route.calls.last.request.content
-    # Шлюз перед Images API не понимает image[]: на массиве он отвечал
-    # unknown_parameter, и оба прикола с двумя фото не работали в бою.
-    assert content.count(b'name="image"') == 2
-    assert b'name="image[]"' not in content
+    # Массивом, а не повторённым коротким именем: на два поля image шлюз
+    # отвечает duplicate_parameter.
+    assert content.count(b'name="image[]"') == 2
     # Порядок сохраняется: детали первого снимка провайдер вытягивает сильнее.
     assert content.index(b"adult.png") < content.index(b"child.png")
     # Имена частей разные даже при одинаковых исходных: в MAX оба снимка
@@ -466,13 +465,13 @@ async def test_photos_with_the_same_name_stay_two_parts() -> None:
     )
 
     content = route.calls.last.request.content
-    assert content.count(b'name="image"') == 2
+    assert content.count(b'name="image[]"') == 2
     assert b'filename="1-photo.jpg"' in content
     assert b'filename="2-photo.jpg"' in content
 
 
 @respx.mock
-async def test_one_photo_goes_exactly_as_it_does_in_production() -> None:
+async def test_one_photo_keeps_the_field_name_that_works_in_production() -> None:
     """Одиночный запрос — это большинство приколов. Путь у них прежний."""
     route = respx.post(EDIT_URL).mock(return_value=httpx.Response(200, json=_drawn()))
 
@@ -483,7 +482,7 @@ async def test_one_photo_goes_exactly_as_it_does_in_production() -> None:
     )
 
     content = route.calls.last.request.content
-    assert content.count(b'name="image"') == 1
+    assert b'name="image"' in content
     assert b'name="image[]"' not in content
     # Без номера: нумерация нужна только чтобы шлюз не склеил две части.
     assert b'filename="in.png"' in content
@@ -507,6 +506,52 @@ async def test_the_fidelity_parameter_can_be_switched_off() -> None:
     )
 
     assert b"input_fidelity" not in route.calls.last.request.content
+
+
+@respx.mock
+async def test_a_preset_can_switch_the_fidelity_off_for_its_own_model() -> None:
+    """gpt-image-2 отвечает на параметр invalid_input_fidelity_model."""
+    route = respx.post(EDIT_URL).mock(return_value=httpx.Response(200, json=_drawn()))
+
+    await _images(input_fidelity="high").edit(
+        [Photo(data=PNG_BYTES, mime_type="image/png", filename="in.png")],
+        "make it a pass photo",
+        quality=ImageQuality.MEDIUM,
+        model="gpt-image-2",
+        input_fidelity="",
+    )
+
+    assert b"input_fidelity" not in route.calls.last.request.content
+
+
+@respx.mock
+async def test_saying_nothing_about_the_fidelity_keeps_the_configured_one() -> None:
+    """None — «про этот прикол не сказано», а не «выключить»: разница в лице."""
+    route = respx.post(EDIT_URL).mock(return_value=httpx.Response(200, json=_drawn()))
+
+    await _images(input_fidelity="high").edit(
+        [Photo(data=PNG_BYTES, mime_type="image/png", filename="in.png")],
+        "make it lego",
+        quality=ImageQuality.MEDIUM,
+        input_fidelity=None,
+    )
+
+    assert b'name="input_fidelity"\r\n\r\nhigh' in route.calls.last.request.content
+
+
+@respx.mock
+async def test_a_preset_can_ask_for_a_fidelity_of_its_own() -> None:
+    """Настройка перебивает общую, а не только выключает её."""
+    route = respx.post(EDIT_URL).mock(return_value=httpx.Response(200, json=_drawn()))
+
+    await _images(input_fidelity="high").edit(
+        [Photo(data=PNG_BYTES, mime_type="image/png", filename="in.png")],
+        "make it lego",
+        quality=ImageQuality.MEDIUM,
+        input_fidelity="low",
+    )
+
+    assert b'name="input_fidelity"\r\n\r\nlow' in route.calls.last.request.content
 
 
 @respx.mock

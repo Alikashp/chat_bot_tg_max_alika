@@ -240,6 +240,9 @@ class FakeImages:
         #: Какую модель просили на каждый вызов. Пусто — общую, настроенную
         #: у провайдера.
         self.models: list[str] = []
+        #: Какой input_fidelity просили на каждую правку. None — настроенный
+        #: у провайдера, пустая строка — «не посылать этой модели».
+        self.fidelities: list[str | None] = []
 
     async def generate(
         self, prompt: str, *, quality: ImageQuality, model: str = ""
@@ -257,8 +260,10 @@ class FakeImages:
         *,
         quality: ImageQuality,
         model: str = "",
+        input_fidelity: str | None = None,
     ) -> Photo:
         self.models.append(model)
+        self.fidelities.append(input_fidelity)
         self.edited.append((instruction, quality))
         self.edited_sources.append(tuple(sources))
         if self.error is not None:

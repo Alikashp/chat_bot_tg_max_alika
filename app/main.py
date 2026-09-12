@@ -335,6 +335,7 @@ def build_core_settings(
             preset: ImageQuality(quality)
             for preset, quality in settings.preset_qualities.items()
         },
+        preset_fidelity=dict(settings.preset_fidelity),
     )
 
 

@@ -1112,12 +1112,21 @@ async def test_a_broken_album_does_not_cost_the_menu(
 # --- Модель и качество на отдельный прикол -------------------------------
 
 
-def _tuned(deps: Deps, *, models: dict[str, str], qualities: dict[str, Any]) -> Deps:
+def _tuned(
+    deps: Deps,
+    *,
+    models: dict[str, str],
+    qualities: dict[str, Any],
+    fidelity: dict[str, str] | None = None,
+) -> Deps:
     """Те же зависимости с переключателями на конкретные приколы."""
     return replace(
         deps,
         settings=replace(
-            deps.settings, preset_models=models, preset_qualities=qualities
+            deps.settings,
+            preset_models=models,
+            preset_qualities=qualities,
+            preset_fidelity=fidelity or {},
         ),
     )
 
@@ -1165,6 +1174,41 @@ async def test_without_its_own_quality_the_tariff_decides(
 
     _, quality = images_.edited[0]
     assert quality is session.tariff.image_quality
+
+
+async def test_a_preset_can_switch_off_the_fidelity_its_model_rejects(
+    deps: Deps, session: Session, images_: FakeImages
+) -> None:
+    """gpt-image-2 отвечает на input_fidelity ошибкой и не рисует ничего.
+
+    Параметр зависит от модели, а модель у прикола своя: без настройки на
+    прикол один общий input_fidelity кладёт разом все приколы на такой модели.
+    """
+    tuned = _tuned(
+        deps,
+        models={"id_photo": "gpt-image-2"},
+        qualities={},
+        fidelity={"id_photo": ""},
+    )
+
+    await presets.apply(tuned, _paid(session), PRESETS["id_photo"], [PHOTO])
+
+    assert images_.fidelities == [""]
+
+
+async def test_a_preset_without_its_own_fidelity_keeps_the_common_one(
+    deps: Deps, session: Session, images_: FakeImages
+) -> None:
+    """None — «про этот прикол не сказано», а не «выключить».
+
+    Разница здесь не в аккуратности: выключенный параметр возвращает человеку
+    чужое лицо, ради узнаваемости которого приколы и существуют.
+    """
+    tuned = _tuned(deps, models={}, qualities={}, fidelity={"id_photo": ""})
+
+    await presets.apply(tuned, session, PRESETS["lego"], [PHOTO])
+
+    assert images_.fidelities == [None]
 
 
 # --- Оборванный ответ и «Продолжить» -------------------------------------

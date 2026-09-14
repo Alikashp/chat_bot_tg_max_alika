@@ -97,6 +97,28 @@ def test_a_typo_in_the_quality_stops_the_start() -> None:
         )
 
 
+def test_premium_emoji_are_read_from_the_environment() -> None:
+    """Идентификаторы подбирают глазами — менять их без выкладки надо уметь."""
+    settings = Settings.model_validate(
+        {**VALID_ENV, "telegram_premium_emoji": {"🔄": "5345906554510012647"}}
+    )
+
+    assert settings.telegram_premium_emoji == {"🔄": "5345906554510012647"}
+
+
+def test_a_premium_emoji_id_that_is_not_a_number_stops_the_start() -> None:
+    """Отказ Telegram приходит на отправку: человек не получит вообще ничего."""
+    with pytest.raises(ValidationError):
+        Settings.model_validate(
+            {**VALID_ENV, "telegram_premium_emoji": {"🔄": "Загрузка"}}
+        )
+
+
+def test_no_premium_emoji_is_the_normal_case() -> None:
+    """Пустой словарь — сообщения уходят ровно как раньше."""
+    assert Settings.model_validate(VALID_ENV).telegram_premium_emoji == {}
+
+
 def test_no_switches_is_the_normal_case() -> None:
     """Пустые словари означают «общая модель и качество тарифа»."""
     settings = Settings.model_validate(VALID_ENV)

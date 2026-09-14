@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 import contextlib
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 from aiogram import Bot
@@ -23,6 +23,7 @@ from aiogram.types import (
     Message,
 )
 
+from app.adapters.telegram import emoji as tg_emoji
 from app.adapters.telegram import keyboards as tg_keyboards
 from app.core.models import Chat, Keyboard, MessageRef, Photo
 from app.core.photos import PhotoTooLargeError
@@ -38,11 +39,16 @@ _DOWNLOAD_TIMEOUT = 30
 class TelegramMessenger:
     """Исходящие операции Telegram."""
 
-    def __init__(self, bot: Bot) -> None:
+    def __init__(
+        self, bot: Bot, premium_emoji: Mapping[str, str] | None = None
+    ) -> None:
         self._bot = bot
         #: Что из отправленных альбомом картинок Telegram уже держит у себя:
         #: имя файла → file_id. См. send_album.
         self._albums: dict[str, str] = {}
+        #: Обычный эмодзи → премиальный аналог. Пусто — подмены нет, и
+        #: сообщения уходят ровно так же, как уходили раньше.
+        self._premium_emoji: Mapping[str, str] = premium_emoji or {}
 
     # --- Отправка ------------------------------------------------------
 
@@ -57,6 +63,7 @@ class TelegramMessenger:
         message = await self._bot.send_message(
             chat_id=chat.chat_id,
             text=text,
+            entities=tg_emoji.entities(text, self._premium_emoji),
             reply_markup=_markup(keyboard, show_menu),
         )
         return _ref(chat, message)
@@ -143,6 +150,7 @@ class TelegramMessenger:
             chat_id=ref.chat.chat_id,
             message_id=int(ref.message_id),
             text=text,
+            entities=tg_emoji.entities(text, self._premium_emoji),
             reply_markup=tg_keyboards.inline(keyboard) if keyboard else None,
         )
 

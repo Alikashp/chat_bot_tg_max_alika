@@ -388,7 +388,10 @@ def preset_photo_lost(preset_buttons: tuple[str, ...]) -> Screen:
     return Screen(text=PRESET_PHOTO_LOST, buttons=preset_buttons)
 
 
-PRESET_WORKING = "Делаю… ~15 сек"
+#: Эмодзи впереди не украшение: в Telegram он подменяется анимированным
+#: премиальным аналогом (см. adapters/telegram/emoji.py), и человеку видно,
+#: что бот работает, а не завис. В MAX остаётся обычный символ.
+PRESET_WORKING = "🔄 Делаю… ~15 сек"
 PRESET_ERROR = "Что-то пошло не так, попробуй ещё раз 🤷 Картинка не потратилась."
 PHOTO_TOO_BIG = "Фото слишком большое, пришли поменьше 🙏"
 PHOTO_NOT_AN_IMAGE = "Это не похоже на фото. Пришли картинку 🙏"

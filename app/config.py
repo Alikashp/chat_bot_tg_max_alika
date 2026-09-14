@@ -377,6 +377,41 @@ class Settings(BaseSettings):
     #: Наценка на оплату звёздами (§2.8: на 40% выше).
     stars_markup: Annotated[float, Field(ge=1.0, le=3.0)] = 1.4
 
+    #: Премиальные эмодзи Telegram: обычный символ → идентификатор
+    #: анимированного аналога. Пусто — подмены нет, сообщения уходят как
+    #: раньше.
+    #:
+    #: Словарём в окружении, а не в коде: идентификаторы — это данные, их
+    #: подбирают глазами, и менять их без выкладки должно быть можно. Здесь же
+    #: и выключатель: очистить переменную — значит вернуть обычные эмодзи, не
+    #: дожидаясь сборки.
+    #:
+    #: Работает только в Telegram и только пока у владельца бота есть Premium.
+    #: В MAX премиальных эмодзи нет, и там всегда виден обычный символ.
+    telegram_premium_emoji: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("telegram_premium_emoji")
+    @classmethod
+    def _validate_premium_emoji(cls, value: dict[str, str]) -> dict[str, str]:
+        """Идентификатор премиального эмодзи — только цифры.
+
+        Ловим на старте: подставленное вместо идентификатора название или
+        пустая строка не видны ничем, кроме отказа Telegram на живом человеке,
+        а отказ приходит на отправку сообщения — то есть человек не получает
+        вообще ничего.
+        """
+        wrong = {
+            emoji: emoji_id
+            for emoji, emoji_id in value.items()
+            if not emoji_id.isdigit()
+        }
+        if wrong:
+            raise ValueError(
+                f"идентификатор премиального эмодзи состоит только из цифр; "
+                f"не подходят: {wrong}"
+            )
+        return value
+
     @field_validator("preset_qualities")
     @classmethod
     def _validate_qualities(cls, value: dict[str, str]) -> dict[str, str]:

@@ -27,6 +27,8 @@ from maxapi.methods.types.sended_message import SendedMessage
 from maxapi.types import Message, MessageBody, Recipient
 from maxapi.types.attachments.upload import AttachmentPayload, AttachmentUpload
 
+from app.adapters.documents.reader import LocalDocumentReader
+from app.adapters.documents.writer import LocalDocumentWriter
 from app.adapters.max import router as max_router
 from app.adapters.max.intake import dedup_key
 from app.adapters.max.messenger import MaxMessenger
@@ -281,6 +283,8 @@ async def harness() -> AsyncIterator[Harness]:
         messenger=MaxMessenger(bot, http),  # type: ignore[arg-type]
         llm=llm,
         images=images,
+        document_reader=LocalDocumentReader(),
+        document_writer=LocalDocumentWriter(),
         settings=CoreSettings(
             bot_username="testbot",
             referral_link_host=MAX_HOST,
@@ -365,6 +369,7 @@ async def test_starting_the_bot_greets_and_shows_the_menu(harness: Harness) -> N
     assert labels == [
         texts.MENU_IMAGES,
         texts.MENU_PRESETS,
+        texts.MENU_DOCUMENTS,
         texts.MENU_PROFILE,
         texts.MENU_TARIFFS,
     ]

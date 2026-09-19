@@ -22,11 +22,21 @@ from maxapi.types.attachments.image import Image
 from maxapi.types.attachments.upload import AttachmentPayload, AttachmentUpload
 
 from app.adapters.max import keyboards as max_keyboards
-from app.core.models import Chat, Keyboard, MessageRef, Photo
+from app.core.documents import DocumentTooLargeError
+from app.core.models import Chat, Document, Keyboard, MessageRef, Photo
 from app.core.photos import PhotoTooLargeError
 
 #: По сколько байт читаем присланное фото.
 _DOWNLOAD_CHUNK = 64 * 1024
+
+#: Чем имя файла приклеено к его адресу внутри ссылки.
+#:
+#: Имя нужно ядру: по расширению определяется формат, а docx и pptx внутри
+#: одинаковы. В MAX имя приходит отдельным полем вложения, и донести его до
+#: скачивания больше нечем — ссылка на файл у нас одна строка. Решётка для
+#: этого годится: в адресе она означает конец самого адреса, и всё, что за
+#: ней, сервером не запрашивается.
+_NAME_MARK = "#"
 
 
 class MaxMessengerError(RuntimeError):
@@ -215,6 +225,49 @@ class MaxMessenger:
             mime_type=_mime_of(response.headers.get("content-type")),
             filename="photo.jpg",
         )
+
+    async def download_document(self, document_ref: str, *, max_bytes: int) -> Document:
+        """Скачивает присланный файл по его адресу.
+
+        Как и картинка, файл в MAX опознаётся адресом из вложения. Имя тоже
+        приезжает оттуда и приклеено к адресу через «#»: по расширению в нём
+        определяется формат, а docx от pptx ничем другим не отличить.
+        """
+        url, _, filename = document_ref.partition(_NAME_MARK)
+        chunks: list[bytes] = []
+        size = 0
+        async with self._http.stream("GET", url) as response:
+            response.raise_for_status()
+            declared = response.headers.get("content-length")
+            if (
+                declared is not None
+                and declared.isdigit()
+                and int(declared) > max_bytes
+            ):
+                raise DocumentTooLargeError(url)
+
+            async for chunk in response.aiter_bytes(_DOWNLOAD_CHUNK):
+                size += len(chunk)
+                if size > max_bytes:
+                    raise DocumentTooLargeError(url)
+                chunks.append(chunk)
+
+        return Document(
+            data=b"".join(chunks),
+            filename=filename or "document",
+            mime_type="application/octet-stream",
+        )
+
+    async def send_document(self, chat: Chat, document: Document) -> None:
+        """Отправляет готовый файл вложением."""
+        uploaded = await self._bot.upload_media(
+            InputMediaBuffer(
+                buffer=document.data,
+                filename=document.filename,
+                type=UploadType.FILE,
+            )
+        )
+        await self._send(chat, text=None, keyboard=None, show_menu=True, image=uploaded)
 
     # --- Внутреннее ----------------------------------------------------
 

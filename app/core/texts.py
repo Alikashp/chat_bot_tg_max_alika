@@ -108,6 +108,7 @@ MENU_IMAGES = "🎨 Картинки"
 MENU_PRESETS = "🎭 Приколы с фото"
 MENU_PROFILE = "👤 Профиль"
 MENU_TARIFFS = "⭐ Тарифы"
+MENU_DOCUMENTS = "📄 Документы"
 
 #: Четвёрка кнопок, доступная с любого экрана. В Telegram это постоянная
 #: клавиатура, в MAX постоянных клавиатур не бывает и та же четвёрка
@@ -326,6 +327,68 @@ IMAGE_REFUSED = "Такое я нарисовать не могу 🙅 Дава�
 
 def image_refused() -> Screen:
     return Screen(text=IMAGE_REFUSED, buttons=_menu_buttons())
+
+
+# --- Документы -----------------------------------------------------------
+
+DOCUMENTS_ASK = "Выбери, что сделать с файлом:"
+
+#: Что бот умеет прочитать. Перечислены расширениями, а не словами «Word» и
+#: «презентация»: человек выбирает файл в списке, где видит именно их.
+DOCUMENTS_FORMATS = "Понимаю docx, pdf и pptx — до 20 МБ"
+
+DOCUMENT_WORKING = "🔄 Читаю файл…"
+DOCUMENT_READY = "Готово! Файлы выше — Word и PDF"
+DOCUMENT_ERROR = "Что-то пошло не так, попробуй ещё раз 🤷 Разбор не потратился."
+
+#: Файл не открылся. Про пароль сказано отдельно: это самая частая причина, и
+#: человек её может исправить сам, а «не читается» звучит как приговор.
+DOCUMENT_UNREADABLE = (
+    "Файл не открылся 🤷 Бывает с повреждёнными и с теми, что под паролем"
+)
+
+#: В файле нет текстового слоя. Почти всегда это скан, и сказать надо именно
+#: про него: иначе человек пришлёт тот же файл ещё раз.
+DOCUMENT_EMPTY = (
+    "В файле нет текста — похоже, это скан. Распознавать картинки я пока не умею"
+)
+
+DOCUMENT_UNSUPPORTED = "Такой файл я не прочитаю. Пришли docx, pdf или pptx 🙏"
+DOCUMENT_TOO_BIG = "Файл слишком большой, пришли до 20 МБ 🙏"
+
+
+def documents_menu(action_buttons: tuple[str, ...]) -> Screen:
+    return Screen(text=f"{DOCUMENTS_ASK}\n{DOCUMENTS_FORMATS}", buttons=action_buttons)
+
+
+def document_ask_file(invitation: str) -> Screen:
+    """Приглашение прислать файл. Текст берётся из реестра действий."""
+    return Screen(text=invitation, buttons=(BUTTON_CANCEL,))
+
+
+def document_working() -> Screen:
+    return Screen(
+        text=DOCUMENT_WORKING,
+        next_step="живёт до минуты и заменяется готовыми файлами",
+    )
+
+
+def document_ready(action_buttons: tuple[str, ...]) -> Screen:
+    return Screen(text=DOCUMENT_READY, buttons=action_buttons)
+
+
+def document_error() -> Screen:
+    return Screen(text=DOCUMENT_ERROR, buttons=(BUTTON_RETRY,))
+
+
+def document_rejected(reason: str, action_buttons: tuple[str, ...]) -> Screen:
+    """Файл не подошёл. Причина приходит готовой строкой из этого же файла.
+
+    Кнопки действий остаются: человек уже выбрал, что хотел сделать, и
+    выкидывать его в начало из-за неподходящего файла значит заставить
+    выбирать заново.
+    """
+    return Screen(text=reason, buttons=action_buttons)
 
 
 # --- Пресеты (§2.4) ------------------------------------------------------
@@ -1209,6 +1272,15 @@ def _all_screens() -> tuple[Screen, ...]:
         still_working(),
         unsupported_input(),
         internal_error(),
+        documents_menu(("📊 Доклад", "📝 Реферат", "📌 Конспект")),
+        document_ask_file("Кинь файл — сделаю по нему доклад"),
+        document_working(),
+        document_ready(("📊 Доклад",)),
+        document_error(),
+        document_rejected(DOCUMENT_UNREADABLE, ("📊 Доклад",)),
+        document_rejected(DOCUMENT_EMPTY, ("📊 Доклад",)),
+        document_rejected(DOCUMENT_UNSUPPORTED, ("📊 Доклад",)),
+        document_rejected(DOCUMENT_TOO_BIG, ("📊 Доклад",)),
     )
 
 

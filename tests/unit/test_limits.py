@@ -226,9 +226,9 @@ def test_documents_have_no_daily_quota_on_the_free_tariff() -> None:
 
 def test_documents_have_a_daily_quota_on_paid_tariffs() -> None:
     """Там человек платит именно за неё."""
-    assert documents(make_user(tariff=TariffId.LITE), 0).daily_left == 5
-    assert documents(make_user(tariff=TariffId.PRO), 0).daily_left == 10
-    assert documents(make_user(tariff=TariffId.MAX), 0).daily_left == 30
+    assert documents(make_user(tariff=TariffId.LITE), 0).daily_left == 15
+    assert documents(make_user(tariff=TariffId.PRO), 0).daily_left == 30
+    assert documents(make_user(tariff=TariffId.MAX), 0).daily_left == 60
 
 
 def test_a_free_user_spends_documents_from_the_bonus() -> None:

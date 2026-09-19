@@ -11,16 +11,21 @@
 from __future__ import annotations
 
 from app.core import texts
-from app.core.actions import Action, buy_action, preset_action
+from app.core.actions import Action, buy_action, document_action, preset_action
 from app.core.models import Button, Keyboard
 from app.core.tariffs import PAID_TARIFFS
 
-#: Постоянное меню из четырёх кнопок (§2.1).
+#: Постоянное меню (§2.1).
+#:
+#: Документы стоят третьими, отдельной строкой: это не развлечение, как первые
+#: две кнопки, и не служебное, как последние две. Своя строка отделяет работу
+#: от игры и от настроек, и порядок не приходится читать как случайный.
 MENU_ACTIONS: tuple[tuple[tuple[str, Action], ...], ...] = (
     (
         (texts.MENU_IMAGES, Action.MENU_IMAGES),
         (texts.MENU_PRESETS, Action.MENU_PRESETS),
     ),
+    ((texts.MENU_DOCUMENTS, Action.MENU_DOCUMENTS),),
     (
         (texts.MENU_PROFILE, Action.MENU_PROFILE),
         (texts.MENU_TARIFFS, Action.MENU_TARIFFS),
@@ -29,7 +34,7 @@ MENU_ACTIONS: tuple[tuple[tuple[str, Action], ...], ...] = (
 
 
 def main_menu() -> Keyboard:
-    """Четвёрка кнопок, доступная с любого экрана."""
+    """Кнопки, доступные с любого экрана."""
     return Keyboard(
         rows=tuple(
             tuple(Button(text=label, action=action) for label, action in row)
@@ -262,3 +267,23 @@ def action_for_label(label: str | None) -> str | None:
     if label is None:
         return None
     return _MENU_BY_LABEL.get(label.strip())
+
+
+def documents_menu(actions: tuple[tuple[str, str], ...]) -> Keyboard:
+    """Кнопки действий над файлом: пары «подпись, идентификатор»."""
+    return Keyboard(
+        rows=tuple(
+            (Button(text=button, action=document_action(action_id)),)
+            for button, action_id in actions
+        )
+    )
+
+
+def document_result(actions: tuple[tuple[str, str], ...]) -> Keyboard:
+    """Кнопки под готовыми файлами — те же действия.
+
+    Отдельной кнопки «ещё раз» здесь нет намеренно: файл уже обработан, и
+    повторять ровно то же незачем, а вот сделать по нему же конспект после
+    доклада — обычное желание. Для этого нужно то же меню.
+    """
+    return documents_menu(actions)

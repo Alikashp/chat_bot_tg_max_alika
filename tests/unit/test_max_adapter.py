@@ -199,6 +199,7 @@ def test_the_menu_is_attached_to_every_message() -> None:
     assert labels == [
         texts.MENU_IMAGES,
         texts.MENU_PRESETS,
+        texts.MENU_DOCUMENTS,
         texts.MENU_PROFILE,
         texts.MENU_TARIFFS,
     ]
@@ -215,7 +216,8 @@ def test_screen_buttons_and_the_menu_live_together() -> None:
     )
 
     assert attachment is not None
-    assert len(attachment.payload.buttons) == 3
+    # Ряд кнопок экрана плюс три ряда меню.
+    assert len(attachment.payload.buttons) == 4
     assert attachment.payload.buttons[0][0].text == "Повторить"
 
 

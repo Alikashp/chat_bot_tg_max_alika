@@ -64,6 +64,14 @@ class CoreSettings:
     presentation_signup_images: int = 5
     signup_documents: int = 3
 
+    #: Потолок размера присланного файла. Двадцать мегабайт — не наш выбор, а
+    #: предел, до которого Telegram вообще отдаёт файл боту.
+    max_document_bytes: int = 20 * 1024 * 1024
+
+    #: Сколько знаков текста из файла уезжает провайдеру. Ограничение про
+    #: деньги: стостраничная методичка стоила бы как десяток обычных ответов.
+    document_text_limit: int = 60_000
+
     #: Награда за приглашённого друга — обоим (§2.7).
     referral_bonus_messages: int = 50
     referral_bonus_images: int = 2

@@ -26,7 +26,8 @@ from aiogram.types import (
 
 from app.adapters.telegram import emoji as tg_emoji
 from app.adapters.telegram import keyboards as tg_keyboards
-from app.core.models import Chat, Keyboard, MessageRef, Photo
+from app.core.documents import DocumentTooLargeError
+from app.core.models import Chat, Document, Keyboard, MessageRef, Photo
 from app.core.photos import PhotoTooLargeError
 
 #: По сколько байт читаем файл. Больше смысла нет: фото у нас в пределах
@@ -266,6 +267,50 @@ class TelegramMessenger:
             data=data,
             mime_type=_mime_by_path(file.file_path),
             filename=file.file_path.rsplit("/", maxsplit=1)[-1],
+        )
+
+    async def download_document(self, document_ref: str, *, max_bytes: int) -> Document:
+        """Скачивает присланный файл.
+
+        Размер проверяется дважды, как и у фото: сперва по заявленному в
+        getFile — он бесплатный и отсекает большое до скачивания, — потом по
+        фактически прочитанному, потому что заявленный приходит снаружи.
+
+        Имя файла берётся телеграмное, а не придуманное: по расширению в нём
+        определяется формат, и docx от pptx различается только им.
+        """
+        file = await self._bot.get_file(document_ref)
+        if file.file_size is not None and file.file_size > max_bytes:
+            raise DocumentTooLargeError(document_ref)
+        if file.file_path is None:
+            raise RuntimeError("Telegram не вернул путь к файлу")
+
+        chunks: list[bytes] = []
+        size = 0
+        stream = self._bot.session.stream_content(
+            url=self._bot.session.api.file_url(self._bot.token, file.file_path),
+            timeout=_DOWNLOAD_TIMEOUT,
+            chunk_size=_DOWNLOAD_CHUNK,
+            raise_for_status=True,
+        )
+        async for chunk in stream:
+            size += len(chunk)
+            if size > max_bytes:
+                await stream.aclose()
+                raise DocumentTooLargeError(document_ref)
+            chunks.append(chunk)
+
+        return Document(
+            data=b"".join(chunks),
+            filename=file.file_path.rsplit("/", maxsplit=1)[-1],
+            mime_type="application/octet-stream",
+        )
+
+    async def send_document(self, chat: Chat, document: Document) -> None:
+        """Отправляет готовый файл."""
+        await self._bot.send_document(
+            chat_id=chat.chat_id,
+            document=BufferedInputFile(document.data, filename=document.filename),
         )
 
 

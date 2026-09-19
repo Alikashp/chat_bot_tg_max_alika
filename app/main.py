@@ -29,6 +29,8 @@ from app.adapters.ai.http import create_client
 from app.adapters.ai.images import OpenAIImages
 from app.adapters.ai.resilience import ProviderPolicy, ResilientCaller
 from app.adapters.ai.text import OpenAICompatibleLLM
+from app.adapters.documents.reader import LocalDocumentReader
+from app.adapters.documents.writer import LocalDocumentWriter
 from app.adapters.max import router as max_router
 from app.adapters.max.intake import dedup_key as max_dedup_key
 from app.adapters.max.messenger import MaxMessenger
@@ -400,6 +402,11 @@ async def build_wiring(settings: Settings) -> Wiring:
     # меню незачем. Оба мессенджера получают одни и те же байты.
     examples = load_examples(tuple(PRESETS), logger=get_logger("examples"))
 
+    # Разбор и сборка файлов состояния не держат, поэтому по одному на
+    # приложение: создавать их на каждое обращение незачем.
+    document_reader = LocalDocumentReader()
+    document_writer = LocalDocumentWriter()
+
     def build_deps(
         messenger: Any,
         core_settings: CoreSettings,
@@ -416,6 +423,8 @@ async def build_wiring(settings: Settings) -> Wiring:
             images=images,
             settings=core_settings,
             logger=get_logger("scenarios"),
+            document_reader=document_reader,
+            document_writer=document_writer,
             guard=guard,
             cards=cards,
             stars=stars,

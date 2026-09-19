@@ -15,6 +15,7 @@ from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import (
     BufferedInputFile,
+    InlineKeyboardMarkup,
     InputMediaAudio,
     InputMediaDocument,
     InputMediaLivePhoto,
@@ -40,7 +41,10 @@ class TelegramMessenger:
     """Исходящие операции Telegram."""
 
     def __init__(
-        self, bot: Bot, premium_emoji: Mapping[str, str] | None = None
+        self,
+        bot: Bot,
+        premium_emoji: Mapping[str, str] | None = None,
+        premium_button_emoji: Mapping[str, str] | None = None,
     ) -> None:
         self._bot = bot
         #: Что из отправленных альбомом картинок Telegram уже держит у себя:
@@ -49,6 +53,9 @@ class TelegramMessenger:
         #: Обычный эмодзи → премиальный аналог. Пусто — подмены нет, и
         #: сообщения уходят ровно так же, как уходили раньше.
         self._premium_emoji: Mapping[str, str] = premium_emoji or {}
+        #: То же для ведущих эмодзи на inline-кнопках. Словарь свой: один
+        #: символ на кнопке и в тексте значит разное (см. config.py).
+        self._premium_button_emoji: Mapping[str, str] = premium_button_emoji or {}
 
     # --- Отправка ------------------------------------------------------
 
@@ -64,7 +71,7 @@ class TelegramMessenger:
             chat_id=chat.chat_id,
             text=text,
             entities=tg_emoji.entities(text, self._premium_emoji),
-            reply_markup=_markup(keyboard, show_menu),
+            reply_markup=self._markup(keyboard, show_menu),
         )
         return _ref(chat, message)
 
@@ -81,7 +88,7 @@ class TelegramMessenger:
             chat_id=chat.chat_id,
             photo=BufferedInputFile(photo.data, filename=photo.filename),
             caption=caption,
-            reply_markup=_markup(keyboard, show_menu),
+            reply_markup=self._markup(keyboard, show_menu),
         )
         return _ref(chat, message)
 
@@ -103,7 +110,7 @@ class TelegramMessenger:
             chat_id=chat.chat_id,
             photo=photo_ref,
             caption=caption,
-            reply_markup=_markup(keyboard, show_menu),
+            reply_markup=self._markup(keyboard, show_menu),
         )
         return _ref(chat, message)
 
@@ -137,6 +144,26 @@ class TelegramMessenger:
             if message.photo:
                 self._albums.setdefault(photo.filename, message.photo[-1].file_id)
 
+    # --- Клавиатуры ----------------------------------------------------
+
+    def _markup(self, keyboard: Keyboard | None, show_menu: bool) -> Any:
+        """Выбирает единственную клавиатуру, которую разрешает Telegram.
+
+        Inline-кнопки под сообщением важнее: без них экран становится тупиком.
+        Постоянное меню от этого не пропадает — reply-клавиатура остаётся на
+        экране с предыдущего сообщения.
+        """
+        if keyboard is not None:
+            return self._inline(keyboard)
+        if show_menu:
+            return tg_keyboards.main_menu()
+        return None
+
+    def _inline(self, keyboard: Keyboard | None) -> InlineKeyboardMarkup | None:
+        if keyboard is None:
+            return None
+        return tg_keyboards.inline(keyboard, self._premium_button_emoji)
+
     # --- Замена уже отправленного --------------------------------------
 
     async def edit_text(
@@ -151,7 +178,7 @@ class TelegramMessenger:
             message_id=int(ref.message_id),
             text=text,
             entities=tg_emoji.entities(text, self._premium_emoji),
-            reply_markup=tg_keyboards.inline(keyboard) if keyboard else None,
+            reply_markup=self._inline(keyboard),
         )
 
     async def edit_to_photo(
@@ -186,7 +213,7 @@ class TelegramMessenger:
             chat_id=ref.chat.chat_id,
             photo=BufferedInputFile(photo.data, filename=photo.filename),
             caption=caption,
-            reply_markup=tg_keyboards.inline(keyboard) if keyboard else None,
+            reply_markup=self._inline(keyboard),
         )
         return _photo_file_id(message)
 
@@ -243,20 +270,6 @@ class TelegramMessenger:
 
 
 # --- Вспомогательное -----------------------------------------------------
-
-
-def _markup(keyboard: Keyboard | None, show_menu: bool) -> Any:
-    """Выбирает единственную клавиатуру, которую разрешает Telegram.
-
-    Inline-кнопки под сообщением важнее: без них экран становится тупиком.
-    Постоянное меню от этого не пропадает — reply-клавиатура остаётся на
-    экране с предыдущего сообщения.
-    """
-    if keyboard is not None:
-        return tg_keyboards.inline(keyboard)
-    if show_menu:
-        return tg_keyboards.main_menu()
-    return None
 
 
 def _ref(chat: Chat, message: Message) -> MessageRef:

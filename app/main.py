@@ -424,7 +424,11 @@ async def build_wiring(settings: Settings) -> Wiring:
         )
 
     deps = build_deps(
-        TelegramMessenger(bot, settings.telegram_premium_emoji),
+        TelegramMessenger(
+            bot,
+            settings.telegram_premium_emoji,
+            settings.telegram_premium_button_emoji,
+        ),
         build_core_settings(settings, me.username, referral_link_host=TELEGRAM_HOST),
         # Звёзды бывают только в Telegram: в MAX такого механизма нет.
         stars=TelegramStars(bot),

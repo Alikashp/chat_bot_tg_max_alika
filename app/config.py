@@ -390,7 +390,21 @@ class Settings(BaseSettings):
     #: В MAX премиальных эмодзи нет, и там всегда виден обычный символ.
     telegram_premium_emoji: dict[str, str] = Field(default_factory=dict)
 
-    @field_validator("telegram_premium_emoji")
+    #: То же для ведущих эмодзи на inline-кнопках: символ → идентификатор
+    #: иконки. Эмодзи из подписи при этом убирается — иконку Telegram рисует
+    #: слева сам, и оставленный символ встал бы рядом с ней вторым.
+    #:
+    #: Словарь отдельный, а не общий с текстовым, и это не дублирование. Один
+    #: и тот же символ в тексте и на кнопке значит разное: 🔄 в «Делаю…» — это
+    #: крутящаяся загрузка, а 🔄 на кнопке «Ещё раз» — это повтор, и вечно
+    #: крутящийся спиннер на ней был бы обманом. Общий словарь такого различия
+    #: не позволяет.
+    #:
+    #: Постоянного меню не касается: там подпись кнопки — единственное, по чему
+    #: опознаётся нажатие (см. adapters/telegram/keyboards.py::main_menu).
+    telegram_premium_button_emoji: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("telegram_premium_emoji", "telegram_premium_button_emoji")
     @classmethod
     def _validate_premium_emoji(cls, value: dict[str, str]) -> dict[str, str]:
         """Идентификатор премиального эмодзи — только цифры.

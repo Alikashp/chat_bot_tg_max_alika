@@ -13,6 +13,8 @@ reply-клавиатура остаётся на экране после отп�
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from aiogram.types import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
@@ -20,22 +22,36 @@ from aiogram.types import (
     ReplyKeyboardMarkup,
 )
 
-from app.core.models import Keyboard
+from app.adapters.telegram import emoji as tg_emoji
+from app.core.models import Button, Keyboard
 from app.core.scenarios import keyboards as core_keyboards
 
 
-def inline(keyboard: Keyboard) -> InlineKeyboardMarkup:
-    """Кнопки под конкретным сообщением."""
+def inline(
+    keyboard: Keyboard, premium_emoji: Mapping[str, str] | None = None
+) -> InlineKeyboardMarkup:
+    """Кнопки под конкретным сообщением.
+
+    ``premium_emoji`` — ведущие эмодзи, которым Telegram нарисует премиальную
+    иконку вместо символа. Пусто — кнопки те же, что и раньше.
+    """
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [
-                InlineKeyboardButton(text=button.text, url=button.url)
-                if button.action is None
-                else InlineKeyboardButton(text=button.text, callback_data=button.action)
-                for button in row
-            ]
+            [_button(button, premium_emoji or {}) for button in row]
             for row in keyboard.rows
         ]
+    )
+
+
+def _button(button: Button, premium_emoji: Mapping[str, str]) -> InlineKeyboardButton:
+    """Одна кнопка: ссылка или действие, с иконкой или без."""
+    text, emoji_id = tg_emoji.icon(button.text, premium_emoji)
+    if button.action is None:
+        return InlineKeyboardButton(
+            text=text, url=button.url, icon_custom_emoji_id=emoji_id
+        )
+    return InlineKeyboardButton(
+        text=text, callback_data=button.action, icon_custom_emoji_id=emoji_id
     )
 
 
@@ -45,6 +61,11 @@ def main_menu() -> ReplyKeyboardMarkup:
     Нажатие возвращается обычным текстом — самой подписью кнопки. Обратно в
     действие его переводит core/scenarios/keyboards.py::action_for_label,
     поэтому подписи здесь и там не могут разойтись: источник один.
+
+    Премиальных иконок здесь поэтому и нет. Иконка ставится вместо эмодзи в
+    подписи, а подпись — это единственное, по чему нажатие опознаётся: убрав
+    из неё эмодзи, мы получили бы обратно текст, которого нет в таблице, и
+    меню перестало бы работать целиком. Цена иконки — четыре мёртвые кнопки.
     """
     return ReplyKeyboardMarkup(
         keyboard=[

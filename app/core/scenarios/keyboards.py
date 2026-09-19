@@ -135,7 +135,7 @@ def presets_menu(presets: tuple[tuple[str, str], ...]) -> Keyboard:
     )
 
 
-def paywall(invite_label: str, channel_label: str = "") -> Keyboard:
+def paywall(invite_label: str = "", channel_label: str = "") -> Keyboard:
     """Выходы с экрана исчерпания (§2.5). Тупика быть не должно.
 
     Кнопка канала появляется только тогда, когда бонус за него человеку ещё
@@ -145,10 +145,12 @@ def paywall(invite_label: str, channel_label: str = "") -> Keyboard:
     Каждая кнопка своим рядом: подписи с числами длинные, и в паре они
     обрежутся до нечитаемого огрызка.
     """
-    rows = [
-        (Button(text=texts.BUTTON_OPEN_TARIFFS, action=Action.OPEN_TARIFFS),),
-        (Button(text=invite_label, action=Action.INVITE_FRIEND),),
-    ]
+    rows = [(Button(text=texts.BUTTON_OPEN_TARIFFS, action=Action.OPEN_TARIFFS),)]
+    # Приглашение зовут не на всякий исчерпанный лимит: за друга дарят
+    # сообщения и картинки, но не разборы документов, и звать за тем, чего
+    # не дадут, — это обещание, которое экран не выполнит.
+    if invite_label:
+        rows.append((Button(text=invite_label, action=Action.INVITE_FRIEND),))
     if channel_label:
         rows.append((Button(text=channel_label, action=Action.CHANNEL_OFFER),))
     return Keyboard(rows=tuple(rows))

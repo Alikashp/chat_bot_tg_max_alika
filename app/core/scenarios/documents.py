@@ -41,6 +41,10 @@ _REJECTION_TEXTS: dict[DocumentProblem, str] = {
     DocumentProblem.UNSUPPORTED_FORMAT: texts.DOCUMENT_UNSUPPORTED,
 }
 
+#: Короче этого тема не принимается. Одно слово вместо темы даёт сочинение
+#: ни о чём, а заплатит за него человек полным разбором.
+_MIN_TOPIC_LENGTH = 3
+
 #: В каких форматах отдаём результат. Оба сразу и всегда: выбор формата ничего
 #: не стоит по деньгам (модель вызывается один раз), а лишний экран стоит
 #: человеку нажатия.
@@ -85,6 +89,8 @@ async def choose(deps: Deps, session: Session, action: DocumentAction) -> None:
         return
 
     await deps.storage.set_pending(session.user.id, await_document(action.id))
+    # Просьба берётся из реестра, а не строится по флагу: «кинь файл» и
+    # «напиши тему» — разные фразы, и записаны они там же, где действие.
     screen = texts.document_ask_file(action.invitation)
     await deps.messenger.send_text(
         session.chat, screen.text, keyboard=keyboards.preset_cancel()
@@ -119,6 +125,46 @@ async def apply(
         await _reject(deps, session, texts.DOCUMENT_EMPTY)
         return
 
+    await _produce(deps, session, action, source)
+
+
+async def apply_topic(
+    deps: Deps, session: Session, action: DocumentAction, topic: str
+) -> None:
+    """Делает документ по теме, которую человек написал словами.
+
+    Файла здесь нет, и проверять нечего: тема — обычный текст сообщения.
+    Слишком короткая отсекается до провайдера — «доклад» одним словом даст
+    сочинение ни о чём, за которое человек заплатит разбором.
+    """
+    cleaned = topic.strip()
+    if len(cleaned) < _MIN_TOPIC_LENGTH:
+        await _reject(deps, session, texts.DOCUMENT_TOPIC_TOO_SHORT)
+        return
+
+    allowance = await spending.current_allowance(deps, session, LimitKind.DOCUMENTS)
+    if allowance.exhausted:
+        await paywall.show(deps, session, LimitKind.DOCUMENTS)
+        return
+
+    await _produce(deps, session, action, cleaned, title=cleaned)
+
+
+async def _produce(
+    deps: Deps,
+    session: Session,
+    action: DocumentAction,
+    source: str,
+    *,
+    title: str | None = None,
+) -> None:
+    """Общая часть: спросить провайдера, собрать файлы, отдать, списать.
+
+    Одна на оба входа намеренно. Разница между «по файлу» и «по теме» — это
+    откуда взялся исходный текст, и только. Дальше и порядок действий, и
+    правило списания обязаны совпадать, иначе один из двух путей однажды
+    начнёт брать деньги за упавшую работу.
+    """
     # Ожидание снимаем до обращения к провайдеру: оно может упасть, а
     # следующий присланный файл не должен приклеиться к прошлому выбору.
     await deps.storage.set_pending(session.user.id, None)
@@ -166,7 +212,7 @@ async def apply(
 
     built = [
         deps.document_writer.build(
-            action.title, answer.text, document_format=document_format
+            title or action.title, answer.text, document_format=document_format
         )
         for document_format in _OUTPUT_FORMATS
     ]

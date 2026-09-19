@@ -28,6 +28,7 @@ from tests.fakes import FakeLLM, FakeMessenger
 
 REPORT = DOCUMENT_ACTIONS["report"]
 ABSTRACT = DOCUMENT_ACTIONS["abstract"]
+TOPIC = DOCUMENT_ACTIONS["topic_report"]
 
 
 def _docx(text: str = "Текст исходного документа про урожай 2026 года.") -> Document:
@@ -276,3 +277,96 @@ async def test_a_rejected_file_keeps_the_chosen_action(
     fresh = await storage.get_user_by_id(ready.user.id)
     assert fresh is not None
     assert parse_await_document(fresh.pending) == REPORT.id
+
+
+# --- Документ по теме ----------------------------------------------------
+
+
+async def test_a_topic_action_needs_no_file() -> None:
+    """Иначе человек искал бы, что прикрепить, к «напиши тему»."""
+    assert TOPIC.needs_file is False
+    assert all(
+        action.needs_file
+        for action in DOCUMENT_ACTIONS.values()
+        if action.id != TOPIC.id
+    )
+
+
+async def test_a_topic_comes_back_as_two_files(
+    deps: Deps, session: Session, storage: InMemoryStorage, messenger: FakeMessenger
+) -> None:
+    ready = await _with_documents(storage, session, 1)
+
+    await documents.apply_topic(deps, ready, TOPIC, "Влияние климата на урожай")
+
+    names = [document.filename for document in messenger.documents_sent]
+    assert len(names) == 2
+    assert any(name.endswith(".docx") for name in names)
+    assert any(name.endswith(".pdf") for name in names)
+
+
+async def test_the_topic_reaches_the_provider_with_its_instruction(
+    deps: Deps, session: Session, storage: InMemoryStorage, llm: FakeLLM
+) -> None:
+    ready = await _with_documents(storage, session, 1)
+
+    await documents.apply_topic(deps, ready, TOPIC, "Влияние климата на урожай")
+
+    turns, _ = llm.calls[0]
+    assert "Влияние климата на урожай" in turns[0].content
+    assert TOPIC.instruction in turns[0].content
+
+
+async def test_the_topic_becomes_the_file_name(
+    deps: Deps, session: Session, storage: InMemoryStorage, messenger: FakeMessenger
+) -> None:
+    """Человек узнаёт файл в загрузках по теме, а не по слову «Доклад»."""
+    ready = await _with_documents(storage, session, 1)
+
+    await documents.apply_topic(deps, ready, TOPIC, "Влияние климата на урожай")
+
+    assert all("климата" in d.filename for d in messenger.documents_sent)
+
+
+async def test_a_one_word_topic_costs_nothing(
+    deps: Deps, session: Session, storage: InMemoryStorage, llm: FakeLLM
+) -> None:
+    """«Доклад» одним словом дал бы сочинение ни о чём за полный разбор."""
+    ready = await _with_documents(storage, session, 2)
+    before = await _left(deps, ready)
+
+    await documents.apply_topic(deps, ready, TOPIC, "  ы ")
+
+    assert await _left(deps, ready) == before
+    assert llm.calls == []
+
+
+async def test_a_finished_topic_costs_one(
+    deps: Deps, session: Session, storage: InMemoryStorage
+) -> None:
+    ready = await _with_documents(storage, session, 3)
+    before = await _left(deps, ready)
+
+    await documents.apply_topic(deps, ready, TOPIC, "Влияние климата на урожай")
+
+    assert await _left(deps, ready) == before - 1
+
+
+async def test_a_failed_topic_costs_nothing(
+    deps: Deps, session: Session, storage: InMemoryStorage, llm: FakeLLM
+) -> None:
+    ready = await _with_documents(storage, session, 2)
+    before = await _left(deps, ready)
+    llm.error = RuntimeError("провайдер лёг")
+
+    await documents.apply_topic(deps, ready, TOPIC, "Влияние климата на урожай")
+
+    assert await _left(deps, ready) == before
+
+
+async def test_an_exhausted_person_never_reaches_the_provider_by_topic(
+    deps: Deps, session: Session, llm: FakeLLM
+) -> None:
+    await documents.apply_topic(deps, session, TOPIC, "Влияние климата на урожай")
+
+    assert llm.calls == []

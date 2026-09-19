@@ -461,13 +461,14 @@ async def test_profile_shows_real_numbers(
     """Критерий приёмки №8."""
     await storage.add_usage(session.user.id, session.day, messages=12)
     assert await storage.spend_bonus(session.user.id, images=1)
+    await storage.add_bonus(session.user.id, documents=3)
 
     await profile.show(deps, session)
 
     assert messenger.last_text.text == (
         "Твой тариф: Бесплатный\n"
         "Сообщений сегодня: 12 из 20\n"
-        "Картинок: 2\n"
+        "Картинок: 2 · Разборов: 3\n"
         "Друзей позвал: 0"
     )
 

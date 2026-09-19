@@ -450,6 +450,25 @@ async def _handle_text(deps: Deps, session: Session, text: str) -> None:
         await payments.remember_email(deps, session, text)
         return
 
+    awaited_document = pending.parse_await_document(session.user.pending)
+    if awaited_document is not None:
+        action = document_registry.action_of(awaited_document)
+        if action is not None and not action.needs_file:
+            # Ждём тему словами. Ограничитель тот же, что у файла: работа
+            # одинаково долгая, и двум сразу от одного человека идти незачем.
+            async def make_by_topic(d: Deps, s: Session) -> None:
+                await _clear_pending(d, s)
+                await documents.apply_topic(d, s, action, text)
+
+            await _guarded(deps, session, _image_key(session), make_by_topic)
+            return
+        # Действию нужен файл, а пришёл текст. Это не реплика в чат: человек
+        # только что выбрал действие и, скорее всего, промахнулся кнопкой
+        # прикрепления. Повторяем просьбу, а не отвечаем как на вопрос.
+        if action is not None:
+            await _say(deps, session, action.invitation)
+            return
+
     if pending.is_awaiting_image_prompt(session.user.pending):
 
         async def draw(d: Deps, s: Session) -> None:

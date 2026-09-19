@@ -354,6 +354,10 @@ DOCUMENT_EMPTY = (
 )
 
 DOCUMENT_UNSUPPORTED = "Такой файл я не прочитаю. Пришли docx, pdf или pptx 🙏"
+
+#: Тема в одно слово даёт сочинение ни о чём, а заплатит за него человек
+#: полным разбором. Просим написать подробнее до всякого обращения.
+DOCUMENT_TOPIC_TOO_SHORT = "Напиши тему подробнее — одного слова мало 🙏"
 DOCUMENT_TOO_BIG = "Файл слишком большой, пришли до 20 МБ 🙏"
 
 
@@ -494,6 +498,25 @@ def preset_refused(preset_buttons: tuple[str, ...]) -> Screen:
 # --- Пейволл (§2.5) ------------------------------------------------------
 
 
+def paywall_documents(*, renews_tomorrow: bool) -> Screen:
+    """Разборы кончились.
+
+    Ни канала, ни награды за друга здесь нет, и это не забывчивость: разовые
+    подарки заведены под картинки и обещают картинки. Обещать за друга
+    разборы значило бы сказать неправду на экране, который человек читает
+    ровно в тот момент, когда решает, платить ли.
+    """
+    first = (
+        "Разборы на сегодня кончились — завтра будут ещё"
+        if renews_tomorrow
+        else "Бесплатные разборы кончились"
+    )
+    return Screen(
+        text=f"{first}\nНа платном тарифе их больше 👇",
+        buttons=(MENU_TARIFFS,),
+    )
+
+
 def paywall_images(
     *,
     renews_tomorrow: bool,
@@ -556,6 +579,7 @@ def profile(
     messages_used: int,
     messages_limit: int,
     images_left: int,
+    documents_left: int,
     friends: int,
     user_number: int | None = None,
 ) -> Screen:
@@ -568,7 +592,10 @@ def profile(
     lines = [
         f"Твой тариф: {TARIFF_TITLES[tariff_id]}",
         f"Сообщений сегодня: {messages_used} из {messages_limit}",
-        f"Картинок: {images_left}",
+        # Одной строкой, а не двумя: экран и так на пределе в пять строк
+        # (§2.9), а номер для поддержки добавляет шестую. Точка посередине
+        # читается лучше запятой — это два отдельных счёта, а не перечень.
+        f"Картинок: {images_left} · Разборов: {documents_left}",
         f"Друзей позвал: {friends}",
     ]
     if user_number is not None:
@@ -1183,6 +1210,7 @@ def _all_screens() -> tuple[Screen, ...]:
             messages_used=12,
             messages_limit=20,
             images_left=2,
+            documents_left=2,
             friends=3,
         ),
         profile(
@@ -1190,6 +1218,7 @@ def _all_screens() -> tuple[Screen, ...]:
             messages_used=12,
             messages_limit=20,
             images_left=2,
+            documents_left=2,
             friends=3,
             user_number=1234,
         ),
@@ -1272,6 +1301,8 @@ def _all_screens() -> tuple[Screen, ...]:
         still_working(),
         unsupported_input(),
         internal_error(),
+        paywall_documents(renews_tomorrow=True),
+        paywall_documents(renews_tomorrow=False),
         documents_menu(("📊 Доклад", "📝 Реферат", "📌 Конспект")),
         document_ask_file("Кинь файл — сделаю по нему доклад"),
         document_working(),
@@ -1281,6 +1312,7 @@ def _all_screens() -> tuple[Screen, ...]:
         document_rejected(DOCUMENT_EMPTY, ("📊 Доклад",)),
         document_rejected(DOCUMENT_UNSUPPORTED, ("📊 Доклад",)),
         document_rejected(DOCUMENT_TOO_BIG, ("📊 Доклад",)),
+        document_rejected(DOCUMENT_TOPIC_TOO_SHORT, ("📊 Доклад",)),
     )
 
 

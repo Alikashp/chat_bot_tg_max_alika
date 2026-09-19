@@ -16,6 +16,7 @@ async def show(deps: Deps, session: Session) -> None:
     """Показывает профиль с реальными цифрами."""
     usage = await deps.storage.get_usage(session.user.id, session.day)
     images = await spending.current_allowance(deps, session, LimitKind.IMAGES)
+    docs = await spending.current_allowance(deps, session, LimitKind.DOCUMENTS)
     friends = await deps.storage.count_referrals(session.user.id)
     # Кнопка подписки нужна тому, у кого подписка есть: §4.14 оферты обещает
     # отмену «в разделе Профиль», и вести туда надо отсюда. Остальным она
@@ -27,6 +28,7 @@ async def show(deps: Deps, session: Session) -> None:
         messages_used=usage.messages_used,
         messages_limit=daily_messages(session.tariff),
         images_left=images.total_left,
+        documents_left=docs.total_left,
         friends=friends,
         user_number=(
             session.user.support_number if deps.settings.show_user_number else None

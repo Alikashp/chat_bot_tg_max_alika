@@ -63,6 +63,7 @@ class CoreSettings:
     #: То же для пришедших по deeplink из бота презентаций (§2.1).
     presentation_signup_images: int = 5
     signup_documents: int = 3
+    document_max_tokens: int = 4000
 
     #: Потолок размера присланного файла. Двадцать мегабайт — не наш выбор, а
     #: предел, до которого Telegram вообще отдаёт файл боту.

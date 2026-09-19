@@ -190,19 +190,14 @@ def test_an_unsubscribed_update_is_ignored() -> None:
 # --- Клавиатуры ----------------------------------------------------------
 
 
-def test_the_menu_is_attached_to_every_message() -> None:
-    """Постоянных клавиатур в MAX нет, поэтому меню едет с каждым сообщением."""
+def test_one_button_leads_to_the_menu_instead_of_the_menu_itself() -> None:
+    """Постоянных клавиатур в MAX нет, но и вешать пять пунктов под каждым
+    сообщением нельзя: они заслоняют переписку, ради которой человек пришёл."""
     attachment = max_keyboards.build(None, show_menu=True)
 
     assert attachment is not None
     labels = [button.text for row in attachment.payload.buttons for button in row]
-    assert labels == [
-        texts.MENU_IMAGES,
-        texts.MENU_PRESETS,
-        texts.MENU_DOCUMENTS,
-        texts.MENU_PROFILE,
-        texts.MENU_TARIFFS,
-    ]
+    assert labels == [texts.BUTTON_SHOW_MENU]
 
 
 def test_screen_buttons_and_the_menu_live_together() -> None:
@@ -216,8 +211,8 @@ def test_screen_buttons_and_the_menu_live_together() -> None:
     )
 
     assert attachment is not None
-    # Ряд кнопок экрана плюс три ряда меню.
-    assert len(attachment.payload.buttons) == 4
+    # Ряд кнопок экрана плюс одна кнопка «в меню».
+    assert len(attachment.payload.buttons) == 2
     assert attachment.payload.buttons[0][0].text == "Повторить"
 
 

@@ -517,3 +517,16 @@ async def test_a_file_without_a_chosen_action_shows_the_menu(
     await handle(deps, incoming(document_ref="file-1", document_name="отчёт.docx"))
 
     assert messenger.last_text.text.startswith(texts.DOCUMENTS_ASK)
+
+
+async def test_the_menu_button_opens_the_menu_itself(
+    deps: Deps, user: User, messenger: FakeMessenger
+) -> None:
+    """Кнопка «в меню» обязана привести в меню, иначе она никуда не ведёт."""
+    await handle(deps, incoming(action=Action.MENU_SHOW))
+
+    keyboard = messenger.last_text.keyboard
+    assert keyboard is not None
+    labels = [button.text for row in keyboard.rows for button in row]
+    assert texts.MENU_DOCUMENTS in labels
+    assert texts.MENU_TARIFFS in labels

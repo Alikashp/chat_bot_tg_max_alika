@@ -110,6 +110,13 @@ MENU_PROFILE = "👤 Профиль"
 MENU_TARIFFS = "⭐ Тарифы"
 MENU_DOCUMENTS = "📄 Документы"
 
+#: Кнопка, открывающая само меню. Видна только там, где постоянного меню не
+#: бывает (MAX): вешать под каждым сообщением все пять пунктов — значит
+#: закрывать ими переписку, а человек смотрит на присланный файл, а не на меню.
+BUTTON_SHOW_MENU = "☰ В меню"
+
+MENU_ASK = "Что делаем?"
+
 #: Четвёрка кнопок, доступная с любого экрана. В Telegram это постоянная
 #: клавиатура, в MAX постоянных клавиатур не бывает и та же четвёрка
 #: прикрепляется к каждому сообщению (docs/research.md §1.6). Ядро про
@@ -339,6 +346,12 @@ DOCUMENTS_FORMATS = "Понимаю docx, pdf и pptx — до 20 МБ"
 
 DOCUMENT_WORKING = "🔄 Читаю файл…"
 DOCUMENT_READY = "Готово! Файлы выше — Word и PDF"
+
+#: Документ упёрся в потолок длины и оборван на полуслове. Сказать об этом
+#: обязательно: иначе человек отдаст обрубок как готовую работу.
+DOCUMENT_READY_CUT = (
+    "Готово, но текст вышел длинным и оборвался в конце.\nФайлы выше — Word и PDF"
+)
 DOCUMENT_ERROR = "Что-то пошло не так, попробуй ещё раз 🤷 Разбор не потратился."
 
 #: Файл не открылся. Про пароль сказано отдельно: это самая частая причина, и
@@ -361,6 +374,11 @@ DOCUMENT_TOPIC_TOO_SHORT = "Напиши тему подробнее — одн�
 DOCUMENT_TOO_BIG = "Файл слишком большой, пришли до 20 МБ 🙏"
 
 
+def menu(menu_buttons: tuple[str, ...]) -> Screen:
+    """Само меню отдельным экраном — для мессенджера без постоянных кнопок."""
+    return Screen(text=MENU_ASK, buttons=menu_buttons)
+
+
 def documents_menu(action_buttons: tuple[str, ...]) -> Screen:
     return Screen(text=f"{DOCUMENTS_ASK}\n{DOCUMENTS_FORMATS}", buttons=action_buttons)
 
@@ -377,8 +395,13 @@ def document_working() -> Screen:
     )
 
 
-def document_ready(action_buttons: tuple[str, ...]) -> Screen:
-    return Screen(text=DOCUMENT_READY, buttons=action_buttons)
+def document_ready(
+    action_buttons: tuple[str, ...], *, truncated: bool = False
+) -> Screen:
+    return Screen(
+        text=DOCUMENT_READY_CUT if truncated else DOCUMENT_READY,
+        buttons=action_buttons,
+    )
 
 
 def document_error() -> Screen:
@@ -1301,12 +1324,14 @@ def _all_screens() -> tuple[Screen, ...]:
         still_working(),
         unsupported_input(),
         internal_error(),
+        menu((MENU_IMAGES, MENU_PRESETS, MENU_DOCUMENTS, MENU_PROFILE, MENU_TARIFFS)),
         paywall_documents(renews_tomorrow=True),
         paywall_documents(renews_tomorrow=False),
         documents_menu(("📊 Доклад", "📝 Реферат", "📌 Конспект")),
         document_ask_file("Кинь файл — сделаю по нему доклад"),
         document_working(),
         document_ready(("📊 Доклад",)),
+        document_ready(("📊 Доклад",), truncated=True),
         document_error(),
         document_rejected(DOCUMENT_UNREADABLE, ("📊 Доклад",)),
         document_rejected(DOCUMENT_EMPTY, ("📊 Доклад",)),

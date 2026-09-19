@@ -1,13 +1,16 @@
 """Перевод абстрактных клавиатур ядра в клавиатуры MAX.
 
 Главное расхождение с Telegram (docs/research.md §1.6): постоянных клавиатур в
-MAX нет вовсе, есть только inline-вложение к конкретному сообщению. Поэтому
-четвёрка главного меню прикрепляется к каждому сообщению заново.
+MAX нет вовсе, есть только inline-вложение к конкретному сообщению.
 
-Из этого следует и приятное отличие. В Telegram у сообщения может быть только
-одна клавиатура, и кнопки под сообщением вытесняют меню. Здесь обе живут в
-одном вложении: сначала кнопки экрана, под ними меню. Пользователю в MAX
-доступно и то и другое одновременно.
+Отсюда и решение: к каждому сообщению цепляется **одна** кнопка «☰ В меню», а
+не все пять пунктов. Пять пунктов под каждым ответом заслоняют собой саму
+переписку — человек смотрит на присланный файл, а под ним вырастает меню
+высотой в экран. Кнопка открывает меню одним нажатием, и оно приходит
+отдельным сообщением, где ему и место.
+
+В Telegram этого не происходит: там меню живёт постоянной клавиатурой снизу и
+ничего не заслоняет.
 """
 
 from __future__ import annotations
@@ -18,8 +21,9 @@ from maxapi.types.attachments.attachment import ButtonsPayload
 from maxapi.types.attachments.buttons import InlineButtonUnion
 from maxapi.types.attachments.buttons.attachment_button import AttachmentButton
 
+from app.core import texts
+from app.core.actions import Action
 from app.core.models import Button, Keyboard
-from app.core.scenarios import keyboards as core_keyboards
 
 #: Тип кнопки в MAX. Из восьми возможных нам нужны две: нажатие и ссылка.
 InlineButton = InlineButtonUnion
@@ -31,7 +35,9 @@ def build(keyboard: Keyboard | None, *, show_menu: bool) -> AttachmentButton | N
     if keyboard is not None:
         rows.extend(_row(row) for row in keyboard.rows)
     if show_menu:
-        rows.extend(_row(row) for row in core_keyboards.main_menu().rows)
+        rows.append(
+            [CallbackButton(text=texts.BUTTON_SHOW_MENU, payload=Action.MENU_SHOW)]
+        )
     if not rows:
         return None
     return AttachmentButton(

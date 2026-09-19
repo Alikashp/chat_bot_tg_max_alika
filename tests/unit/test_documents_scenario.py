@@ -370,3 +370,30 @@ async def test_an_exhausted_person_never_reaches_the_provider_by_topic(
     await documents.apply_topic(deps, session, TOPIC, "Влияние климата на урожай")
 
     assert llm.calls == []
+
+
+async def test_a_document_asks_for_more_room_than_a_chat_reply(
+    deps: Deps, session: Session, storage: InMemoryStorage, llm: FakeLLM
+) -> None:
+    """Потолок разговора обрывает доклад на полуслове посреди раздела."""
+    ready = await _with_documents(storage, session, 1)
+
+    await documents.apply(deps, ready, REPORT, _docx())
+
+    assert llm.token_caps == [deps.settings.document_max_tokens]
+
+
+async def test_a_cut_off_document_says_so(
+    deps: Deps,
+    session: Session,
+    storage: InMemoryStorage,
+    messenger: FakeMessenger,
+    llm: FakeLLM,
+) -> None:
+    """Иначе человек отдаст обрубок как готовую работу."""
+    ready = await _with_documents(storage, session, 1)
+    llm.truncated = True
+
+    await documents.apply(deps, ready, REPORT, _docx())
+
+    assert "оборвал" in messenger.text_edits[-1].text

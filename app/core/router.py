@@ -232,6 +232,17 @@ async def _route_action(deps: Deps, session: Session, action: str) -> None:
         case Action.MENU_PRESETS | Action.PRESET_ANOTHER:
             await _clear_pending(deps, session)
             await presets.show_menu(deps, session)
+        case Action.MENU_SHOW:
+            # Само меню отдельным сообщением. Нужно там, где постоянной
+            # клавиатуры не бывает: в MAX под каждым ответом висит одна
+            # кнопка, а не все пять пунктов.
+            await _clear_pending(deps, session)
+            await deps.messenger.send_text(
+                session.chat,
+                texts.menu(keyboards.menu_labels()).text,
+                keyboard=keyboards.main_menu(),
+                show_menu=False,
+            )
         case Action.MENU_DOCUMENTS | Action.DOCUMENT_ANOTHER:
             await _clear_pending(deps, session)
             await documents.show_menu(deps, session)

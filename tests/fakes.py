@@ -221,6 +221,8 @@ class FakeLLM:
         self.answer = answer
         self.error = error
         self.calls: list[tuple[tuple[ChatTurn, ...], str]] = []
+        #: Потолок длины, запрошенный на каждый вызов. Ноль — «как настроено».
+        self.token_caps: list[int] = []
         #: Оборвался ли ответ на потолке длины. Про это бот обязан сказать
         #: человеку кнопкой, а не выдавать огрызок за законченную мысль.
         self.truncated = False
@@ -233,8 +235,11 @@ class FakeLLM:
         self.clock: FrozenClock | None = None
         self.takes_seconds = 0.0
 
-    async def complete(self, turns: Sequence[ChatTurn], *, model: str) -> Answer:
+    async def complete(
+        self, turns: Sequence[ChatTurn], *, model: str, max_tokens: int = 0
+    ) -> Answer:
         self.calls.append((tuple(turns), model))
+        self.token_caps.append(max_tokens)
         if self.clock is not None and self.takes_seconds:
             self.clock.advance(seconds=self.takes_seconds)
         if self.error is not None:

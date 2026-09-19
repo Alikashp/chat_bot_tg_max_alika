@@ -24,6 +24,8 @@ class Action(StrEnum):
     MENU_PROFILE = "m:me"
     MENU_TARIFFS = "m:pay"
     MENU_DOCUMENTS = "m:doc"
+    #: Показать само меню. Нужен там, где постоянной клавиатуры нет (MAX).
+    MENU_SHOW = "m:show"
 
     # Чат (§2.2)
     CHAT_RETRY = "c:retry"

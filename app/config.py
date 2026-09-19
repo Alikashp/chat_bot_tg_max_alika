@@ -217,6 +217,14 @@ class Settings(BaseSettings):
     #: каждые сутки.
     signup_documents: Annotated[int, Field(ge=0, le=100)] = 3
 
+    #: Потолок длины готового документа в токенах. Свой, а не общий с чатом:
+    #: LLM_MAX_TOKENS рассчитан на реплику в разговоре, и доклад в него не
+    #: помещается — обрывается на полуслове посреди раздела.
+    #:
+    #: Больше токенов — дороже запрос, поэтому число здесь, а не в коде:
+    #: менять его можно переменной, без выкладки.
+    document_max_tokens: Annotated[int, Field(ge=256, le=8192)] = 4000
+
     #: Награда за приглашённого друга — обоим.
     referral_bonus_images: Annotated[int, Field(ge=0, le=100)] = 2
     referral_bonus_messages: Annotated[int, Field(ge=0, le=1000)] = 50

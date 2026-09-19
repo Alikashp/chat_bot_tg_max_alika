@@ -178,6 +178,7 @@ async def _produce(
         answer = await deps.llm.complete(
             (ChatTurn(Role.USER, f"{action.instruction}\n\n{source}"),),
             model=session.model(deps.settings),
+            max_tokens=deps.settings.document_max_tokens,
         )
     except ContentRefusedError as refusal:
         await _record(deps, session, action, started=started, error=refusal)
@@ -221,7 +222,10 @@ async def _produce(
 
     await deps.messenger.edit_text(
         waiting,
-        texts.document_ready(_buttons()).text,
+        # Про обрыв говорим прямо. Упёршись в потолок длины, модель бросает
+        # фразу на полуслове, и человек, не зная об этом, отдаст обрубок
+        # преподавателю как готовую работу.
+        texts.document_ready(_buttons(), truncated=answer.truncated).text,
         keyboard=keyboards.document_result(_choices()),
     )
     await spending.charge(deps, session, LimitKind.DOCUMENTS)

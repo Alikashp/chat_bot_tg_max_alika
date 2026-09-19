@@ -289,3 +289,8 @@ def document_result(actions: tuple[tuple[str, str], ...]) -> Keyboard:
     доклада — обычное желание. Для этого нужно то же меню.
     """
     return documents_menu(actions)
+
+
+def menu_labels() -> tuple[str, ...]:
+    """Подписи пунктов меню — для экрана, который перечисляет их текстом."""
+    return tuple(label for row in MENU_ACTIONS for label, _ in row)

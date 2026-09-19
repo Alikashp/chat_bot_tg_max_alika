@@ -49,8 +49,14 @@ class OpenAICompatibleLLM:
         self._max_tokens = max_tokens
         self._logger = logger
 
-    async def complete(self, turns: Sequence[ChatTurn], *, model: str) -> Answer:
+    async def complete(
+        self, turns: Sequence[ChatTurn], *, model: str, max_tokens: int = 0
+    ) -> Answer:
         """Возвращает ответ на диалог.
+
+        ``max_tokens`` ноль — берётся настроенный. Явный нужен работе, которая
+        заведомо длиннее реплики в чате: доклад в потолок разговора не
+        помещается и обрывается на полуслове.
 
         Системный блок стоит первым и не меняется от запроса к запросу —
         именно в таком виде провайдер может переиспользовать посчитанное
@@ -72,7 +78,7 @@ class OpenAICompatibleLLM:
         payload = {
             "model": model,
             "messages": messages,
-            "max_completion_tokens": self._max_tokens,
+            "max_completion_tokens": max_tokens or self._max_tokens,
         }
 
         async def call() -> dict[str, object]:

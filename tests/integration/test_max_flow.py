@@ -366,13 +366,7 @@ async def test_starting_the_bot_greets_and_shows_the_menu(harness: Harness) -> N
     assert len(sent) == 1
     assert harness.texts_said()[0].startswith("Привет!")
     labels = [button.text for row in sent[0].buttons for button in row]
-    assert labels == [
-        texts.MENU_IMAGES,
-        texts.MENU_PRESETS,
-        texts.MENU_DOCUMENTS,
-        texts.MENU_PROFILE,
-        texts.MENU_TARIFFS,
-    ]
+    assert labels == [texts.BUTTON_SHOW_MENU]
 
 
 async def test_the_menu_rides_along_with_every_message(started: Harness) -> None:

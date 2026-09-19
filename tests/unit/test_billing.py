@@ -138,6 +138,7 @@ async def test_one_broken_subscription_does_not_stop_the_rest(
         referral_code="code2",
         support_number=support.generate_number(),
         bonus_images=3,
+        bonus_documents=0,
     )
     await _subscribe(recurring, user, charge_at=timedelta(0))
     await _subscribe(recurring, second, charge_at=timedelta(0))
@@ -164,6 +165,7 @@ async def test_a_subscription_from_a_disabled_messenger_is_skipped(
         referral_code="max1",
         support_number=support.generate_number(),
         bonus_images=3,
+        bonus_documents=0,
     )
     await _subscribe(recurring, person, charge_at=timedelta(0))
 

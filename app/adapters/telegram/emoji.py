@@ -72,3 +72,25 @@ def entities(text: str, premium: Mapping[str, str]) -> list[MessageEntity] | Non
 def _utf16_length(text: str) -> int:
     """Длина в кодовых единицах UTF-16 — в них Telegram считает смещения."""
     return len(text.encode("utf-16-le")) // 2
+
+
+def icon(label: str, premium: Mapping[str, str]) -> tuple[str, str | None]:
+    """Делит подпись кнопки на текст и премиальную иконку.
+
+    Возвращает ``(подпись, идентификатор иконки)``. Иконки нет — подпись
+    возвращается нетронутой, и кнопка выглядит ровно как раньше.
+
+    Эмодзи из подписи **убирается**: иконка рисуется Telegram отдельно и
+    слева, а оставленный в тексте символ встал бы рядом с ней вторым.
+
+    Берётся только ведущий эмодзи. Подписи у нас устроены одинаково —
+    «эмодзи пробел слово», — и эмодзи в середине подписи это не украшение
+    кнопки, а часть фразы: вырезать его значит испортить предложение.
+    """
+    if not premium:
+        return label, None
+
+    for key in sorted(premium, key=len, reverse=True):
+        if label.startswith(key):
+            return label[len(key) :].lstrip(), premium[key]
+    return label, None

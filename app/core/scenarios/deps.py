@@ -18,6 +18,7 @@ from app.core.tariffs import ModelTier, Tariff, active_tariff, tariff_of
 from app.ports.ai import ImageProvider, LLMProvider
 from app.ports.channel import Channel
 from app.ports.concurrency import Concurrency
+from app.ports.documents import DocumentReader, DocumentWriter
 from app.ports.messenger import Messenger
 from app.ports.observability import Logger
 from app.ports.payments import CardPayments, StarsPayments
@@ -34,6 +35,11 @@ class Deps:
     images: ImageProvider
     settings: CoreSettings
     logger: Logger
+    #: Разбор присланных файлов и сборка готовых. Ядро само в форматы не
+    #: лезет: docx, pdf и pptx разбираются тремя чужими библиотеками, и
+    #: держать их здесь значило бы затащить их в чистую часть.
+    document_reader: DocumentReader
+    document_writer: DocumentWriter
     #: Ограничитель одновременных задач на пользователя (§3.4.8).
     guard: Concurrency
     #: Оплата картой. None — не настроена: ключей провайдера нет.

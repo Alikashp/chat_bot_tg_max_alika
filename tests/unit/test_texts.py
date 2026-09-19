@@ -130,20 +130,22 @@ def test_the_channel_button_appears_only_when_the_bonus_is_still_owed() -> None:
     assert with_channel.buttons[-1] == "📣 Канал → +2 картинки"
 
 
-def test_profile_shows_four_numbers() -> None:
-    """§2.6: все четыре числа настоящие."""
+def test_profile_shows_every_number() -> None:
+    """§2.6: все числа настоящие. Разборы стоят рядом с картинками одной
+    строкой: экран ограничен пятью, а номер для поддержки берёт шестую."""
     screen = texts.profile(
         tariff_id=TariffId.FREE,
         messages_used=12,
         messages_limit=20,
         images_left=2,
+        documents_left=2,
         friends=3,
     )
 
     assert screen.lines == [
         "Твой тариф: Бесплатный",
         "Сообщений сегодня: 12 из 20",
-        "Картинок: 2",
+        "Картинок: 2 · Разборов: 2",
         "Друзей позвал: 3",
     ]
 

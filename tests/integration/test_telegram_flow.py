@@ -42,6 +42,8 @@ from aiogram.types import (
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+from app.adapters.documents.reader import LocalDocumentReader
+from app.adapters.documents.writer import LocalDocumentWriter
 from app.adapters.storage.memory import InMemoryStorage
 from app.adapters.telegram import router as telegram_router
 from app.adapters.telegram.messenger import TelegramMessenger
@@ -322,6 +324,8 @@ async def harness() -> AsyncIterator[Harness]:
             docs_version="2026-08-31",
         ),
         logger=logger,
+        document_reader=LocalDocumentReader(),
+        document_writer=LocalDocumentWriter(),
         guard=FloodGuard(limit=1),
         cards=cards,
         stars=stars,
@@ -396,6 +400,7 @@ async def test_start_greets_and_shows_the_menu(harness: Harness) -> None:
     assert labels == [
         texts.MENU_IMAGES,
         texts.MENU_PRESETS,
+        texts.MENU_DOCUMENTS,
         texts.MENU_PROFILE,
         texts.MENU_TARIFFS,
     ]

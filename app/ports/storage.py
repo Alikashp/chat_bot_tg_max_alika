@@ -61,6 +61,7 @@ class Storage(Protocol):
         referral_code: str,
         support_number: int,
         bonus_images: int,
+        bonus_documents: int,
         username: str = NO_USERNAME,
         source: str = sources.DIRECT,
     ) -> User:
@@ -77,7 +78,8 @@ class Storage(Protocol):
         случайные величины, и коллизия означает «возьми другую». На неё
         реализация обязана бросить ValueError.
 
-        ``bonus_images`` — картинки, которые человек получает при регистрации.
+        ``bonus_images`` — картинки, которые человек получает при регистрации,
+        ``bonus_documents`` — то же для разборов документов.
         Кладутся в бонусный баланс сразу, одной вставкой с пользователем:
         отдельным начислением следом они бы терялись у того, кому не повезло
         с падением между двумя запросами.
@@ -139,6 +141,7 @@ class Storage(Protocol):
         *,
         messages: int = 0,
         images: int = 0,
+        documents: int = 0,
     ) -> Usage:
         """Атомарно увеличивает дневной расход и возвращает новое значение."""
         ...
@@ -149,6 +152,7 @@ class Storage(Protocol):
         *,
         messages: int = 0,
         images: int = 0,
+        documents: int = 0,
     ) -> bool:
         """Атомарно списывает бонусный баланс.
 
@@ -163,6 +167,7 @@ class Storage(Protocol):
         *,
         messages: int = 0,
         images: int = 0,
+        documents: int = 0,
     ) -> None:
         """Атомарно начисляет бонусный баланс (награда за реферала)."""
         ...

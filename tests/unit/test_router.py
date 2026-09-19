@@ -20,6 +20,7 @@ from app.core.receipts import FiscalSettings
 from app.core.router import handle
 from app.core.scenarios.deps import Deps
 from app.infra.antiflood import FloodGuard
+from config.documents import DOCUMENT_ACTIONS
 from tests.fakes import FakeGuard, FakeImages, FakeLLM, FakeMessenger
 
 CHAT = Chat(messenger=MessengerKind.TELEGRAM, chat_id="1")
@@ -469,3 +470,50 @@ async def test_the_referral_button_leads_to_the_offer_then_the_invitation(
     await handle(deps, incoming(action=Action.REFERRAL_SEND))
 
     assert messenger.texts_said()[-1].startswith("Тут бесплатный ChatGPT")
+
+
+# --- Документы -----------------------------------------------------------
+
+
+async def test_a_topic_goes_to_the_documents_section_not_to_chat(
+    deps: Deps,
+    user: User,
+    storage: InMemoryStorage,
+    llm: FakeLLM,
+    messenger: FakeMessenger,
+) -> None:
+    """Человек написал тему, а не вопрос: ответить репликой было бы мимо."""
+    await storage.add_bonus(user.id, documents=2)
+    await storage.set_pending(user.id, pending.await_document("topic_report"))
+
+    await handle(deps, incoming(text="Влияние климата на урожай"))
+
+    assert messenger.documents_sent
+    turns, _ = llm.calls[0]
+    assert "доклад" in turns[0].content.lower()
+
+
+async def test_text_instead_of_a_file_repeats_the_request(
+    deps: Deps,
+    user: User,
+    storage: InMemoryStorage,
+    llm: FakeLLM,
+    messenger: FakeMessenger,
+) -> None:
+    """Скорее всего человек промахнулся мимо скрепки, а не задал вопрос."""
+    await storage.add_bonus(user.id, documents=2)
+    await storage.set_pending(user.id, pending.await_document("report"))
+
+    await handle(deps, incoming(text="сделай доклад"))
+
+    assert llm.calls == []
+    assert messenger.last_text.text == DOCUMENT_ACTIONS["report"].invitation
+
+
+async def test_a_file_without_a_chosen_action_shows_the_menu(
+    deps: Deps, user: User, messenger: FakeMessenger
+) -> None:
+    """Угадывать, что делать с файлом, нельзя — показываем, что бот умеет."""
+    await handle(deps, incoming(document_ref="file-1", document_name="отчёт.docx"))
+
+    assert messenger.last_text.text.startswith(texts.DOCUMENTS_ASK)

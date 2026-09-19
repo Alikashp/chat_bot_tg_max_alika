@@ -102,6 +102,27 @@ async def test_presentation_deeplink_raises_the_signup_grant(
     assert session.user.bonus_images == 5
 
 
+async def test_a_fresh_user_gets_documents_to_try(deps: Deps) -> None:
+    """Разборы выдаются разово, как и картинки: дневной нормы у них нет.
+
+    Без этой выдачи раздел документов на бесплатном тарифе был бы закрыт
+    сразу и наглухо — человек не увидел бы, за что ему предлагают платить.
+    """
+    session = await start(deps)
+
+    assert session.user.bonus_documents == 3
+
+
+async def test_the_document_grant_is_separate_from_the_image_one(
+    deps: Deps,
+) -> None:
+    """Пять картинок из презентаций не должны превращаться в пять разборов."""
+    session = await start(deps, payload="pres_autumn")
+
+    assert session.user.bonus_images == 5
+    assert session.user.bonus_documents == 3
+
+
 # --- Источник регистрации ------------------------------------------------
 
 
@@ -251,6 +272,7 @@ async def test_existing_user_earns_nothing_on_a_second_start(
         referral_code="code200",
         support_number=support.generate_number(),
         bonus_images=3,
+        bonus_documents=0,
     )
 
     await start(deps, payload=f"ref_{other.referral_code}", external_id="1")

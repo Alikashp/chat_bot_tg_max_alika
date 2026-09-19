@@ -35,6 +35,7 @@ class GenerationKind(StrEnum):
     CHAT = "chat"
     IMAGE = "image"
     PRESET = "preset"
+    DOCUMENT = "document"
 
 
 class GenerationStatus(StrEnum):

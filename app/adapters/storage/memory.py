@@ -86,6 +86,7 @@ class InMemoryStorage:
         referral_code: str,
         support_number: int,
         bonus_images: int,
+        bonus_documents: int,
         username: str = NO_USERNAME,
         source: str = sources.DIRECT,
     ) -> User:
@@ -109,6 +110,7 @@ class InMemoryStorage:
             support_number=support_number,
             created_at=self._now(),
             bonus_images=bonus_images,
+            bonus_documents=bonus_documents,
             username=username,
             source=source,
         )
@@ -157,6 +159,7 @@ class InMemoryStorage:
         *,
         messages: int = 0,
         images: int = 0,
+        documents: int = 0,
     ) -> Usage:
         self._require_user(user_id)
         current = self._usage.get((user_id, day), Usage(day=day))
@@ -164,6 +167,7 @@ class InMemoryStorage:
             day=day,
             messages_used=current.messages_used + messages,
             images_used=current.images_used + images,
+            documents_used=current.documents_used + documents,
         )
         self._usage[(user_id, day)] = updated
         return updated
@@ -174,14 +178,20 @@ class InMemoryStorage:
         *,
         messages: int = 0,
         images: int = 0,
+        documents: int = 0,
     ) -> bool:
         user = self._require_user(user_id)
-        if user.bonus_messages < messages or user.bonus_images < images:
+        if (
+            user.bonus_messages < messages
+            or user.bonus_images < images
+            or user.bonus_documents < documents
+        ):
             return False
         self._users[user_id] = replace(
             user,
             bonus_messages=user.bonus_messages - messages,
             bonus_images=user.bonus_images - images,
+            bonus_documents=user.bonus_documents - documents,
         )
         return True
 
@@ -191,12 +201,14 @@ class InMemoryStorage:
         *,
         messages: int = 0,
         images: int = 0,
+        documents: int = 0,
     ) -> None:
         user = self._require_user(user_id)
         self._users[user_id] = replace(
             user,
             bonus_messages=user.bonus_messages + messages,
             bonus_images=user.bonus_images + images,
+            bonus_documents=user.bonus_documents + documents,
         )
 
     async def record_generation(self, generation: Generation) -> None:

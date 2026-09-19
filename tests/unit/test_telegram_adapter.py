@@ -225,6 +225,7 @@ def test_the_menu_is_a_persistent_reply_keyboard() -> None:
     assert labels == [
         texts.MENU_IMAGES,
         texts.MENU_PRESETS,
+        texts.MENU_DOCUMENTS,
         texts.MENU_PROFILE,
         texts.MENU_TARIFFS,
     ]
@@ -371,6 +372,46 @@ async def test_without_the_setting_a_message_goes_exactly_as_before(
     sent = session.calls[0]
     assert isinstance(sent, SendMessage)
     assert sent.entities is None
+
+
+async def test_an_inline_button_gets_a_premium_icon(session: StubSession) -> None:
+    """Эмодзи уходит из подписи в иконку, иначе он встал бы рядом с ней вторым."""
+    tuned = TelegramMessenger(
+        Bot(token="42:TEST", session=session),
+        premium_button_emoji={"🔒": "6037249452824072506"},
+    )
+
+    await tuned.send_text(
+        CORE_CHAT,
+        "привет",
+        keyboard=Keyboard.row(Button(text="🔒 Конфиденциальность", url="https://e.x")),
+    )
+
+    markup = _markup_of(session)
+    assert isinstance(markup, InlineKeyboardMarkup)
+    button = markup.inline_keyboard[0][0]
+    assert button.text == "Конфиденциальность"
+    assert button.icon_custom_emoji_id == "6037249452824072506"
+
+
+async def test_the_main_menu_never_gets_icons(session: StubSession) -> None:
+    """Подпись меню — единственное, по чему опознаётся нажатие.
+
+    Убрав из неё эмодзи ради иконки, мы получили бы обратно текст, которого
+    нет в таблице действий, и все четыре кнопки перестали бы работать.
+    """
+    tuned = TelegramMessenger(
+        Bot(token="42:TEST", session=session),
+        premium_button_emoji={"👤": "5870994129244131212"},
+    )
+
+    await tuned.send_text(CORE_CHAT, "привет")
+
+    markup = _markup_of(session)
+    assert isinstance(markup, ReplyKeyboardMarkup)
+    labels = [b.text for row in markup.keyboard for b in row]
+    assert "👤 Профиль" in labels
+    assert all(b.icon_custom_emoji_id is None for row in markup.keyboard for b in row)
 
 
 async def test_a_plain_message_carries_the_menu(

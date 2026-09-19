@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Protocol
 
-from app.core.models import Chat, Keyboard, MessageRef, Photo
+from app.core.models import Chat, Document, Keyboard, MessageRef, Photo
 
 
 class Messenger(Protocol):
@@ -100,6 +100,24 @@ class Messenger(Protocol):
 
         Нужно для «Поделиться» (§2.3) и «Отправить другу» (§2.4): картинка уже
         лежит у мессенджера, и заливать её повторно незачем.
+        """
+        ...
+
+    async def send_document(self, chat: Chat, document: Document) -> None:
+        """Отправляет готовый файл.
+
+        Именно файлом, а не текстом в сообщении: доклад на несколько страниц
+        в сообщение не поместится, а человеку он нужен таким, чтобы открыть
+        в Word и править дальше.
+        """
+        ...
+
+    async def download_document(self, document_ref: str, *, max_bytes: int) -> Document:
+        """Забирает присланный файл.
+
+        Размер проверяется до загрузки байтов: двадцатимегабайтный файл не
+        стоит тянуть, чтобы потом отказать (§3.5). Слишком большой —
+        DocumentTooLargeError.
         """
         ...
 

@@ -618,6 +618,7 @@ async def test_the_answer_goes_to_the_messenger_the_person_came_from(
         referral_code="max42",
         support_number=support.generate_number(),
         bonus_images=3,
+        bonus_documents=0,
     )
     subscription = await _subscribe(deps, person, charge_at=timedelta(hours=12))
 

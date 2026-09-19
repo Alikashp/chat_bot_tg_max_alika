@@ -125,6 +125,7 @@ class PostgresStorage:
         referral_code: str,
         support_number: int,
         bonus_images: int,
+        bonus_documents: int,
         username: str = NO_USERNAME,
         source: str = sources.DIRECT,
     ) -> User:
@@ -138,6 +139,7 @@ class PostgresStorage:
                 support_number=support_number,
                 created_at=self._now(),
                 bonus_images=bonus_images,
+                bonus_documents=bonus_documents,
                 username=username,
                 source=source,
             )
@@ -222,6 +224,7 @@ class PostgresStorage:
             day=row["day"],
             messages_used=row["messages_used"],
             images_used=row["images_used"],
+            documents_used=row["documents_used"],
         )
 
     async def add_usage(
@@ -231,6 +234,7 @@ class PostgresStorage:
         *,
         messages: int = 0,
         images: int = 0,
+        documents: int = 0,
     ) -> Usage:
         """Атомарный инкремент.
 
@@ -243,12 +247,14 @@ class PostgresStorage:
             day=day,
             messages_used=messages,
             images_used=images,
+            documents_used=documents,
         )
         query = statement.on_conflict_do_update(
             index_elements=[usage.c.user_id, usage.c.day],
             set_={
                 "messages_used": usage.c.messages_used + messages,
                 "images_used": usage.c.images_used + images,
+                "documents_used": usage.c.documents_used + documents,
             },
         ).returning(usage)
 
@@ -258,6 +264,7 @@ class PostgresStorage:
             day=row["day"],
             messages_used=row["messages_used"],
             images_used=row["images_used"],
+            documents_used=row["documents_used"],
         )
 
     async def spend_bonus(
@@ -266,6 +273,7 @@ class PostgresStorage:
         *,
         messages: int = 0,
         images: int = 0,
+        documents: int = 0,
     ) -> bool:
         """Списание всё-или-ничего.
 
@@ -280,10 +288,12 @@ class PostgresStorage:
                 users.c.id == user_id,
                 users.c.bonus_messages >= messages,
                 users.c.bonus_images >= images,
+                users.c.bonus_documents >= documents,
             )
             .values(
                 bonus_messages=users.c.bonus_messages - messages,
                 bonus_images=users.c.bonus_images - images,
+                bonus_documents=users.c.bonus_documents - documents,
             )
             .returning(users.c.id)
         )
@@ -297,6 +307,7 @@ class PostgresStorage:
         *,
         messages: int = 0,
         images: int = 0,
+        documents: int = 0,
     ) -> None:
         query = (
             update(users)
@@ -304,6 +315,7 @@ class PostgresStorage:
             .values(
                 bonus_messages=users.c.bonus_messages + messages,
                 bonus_images=users.c.bonus_images + images,
+                bonus_documents=users.c.bonus_documents + documents,
             )
         )
         async with self._session() as session, session.begin():
@@ -772,6 +784,7 @@ def _to_user(row: Any) -> User:
         source=row["source"],
         bonus_messages=row["bonus_messages"],
         bonus_images=row["bonus_images"],
+        bonus_documents=row["bonus_documents"],
         channel_bonus_at=row["channel_bonus_at"],
         tariff_expires_at=row["tariff_expires_at"],
         email=row["email"],

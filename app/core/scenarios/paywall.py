@@ -32,6 +32,19 @@ async def show(deps: Deps, session: Session, kind: LimitKind) -> None:
         )
         return
 
+    if kind is LimitKind.DOCUMENTS:
+        screen = texts.paywall_documents(
+            # На бесплатном тарифе дневной нормы разборов нет, и «завтра
+            # будет ещё» там было бы обманом.
+            renews_tomorrow=session.tariff.daily_documents > 0,
+        )
+        await deps.messenger.send_text(
+            session.chat,
+            screen.text,
+            keyboard=keyboards.paywall(),
+        )
+        return
+
     bonus = deps.settings.referral_bonus_images
     for_channel = channel.available(deps, session)
     screen = texts.paywall_images(

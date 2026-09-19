@@ -25,6 +25,11 @@ AWAIT_IMAGE_PROMPT = "await:image"
 #: и ссылки на уже присланные фото.
 _AWAIT_PRESET_PREFIX = "await:preset:"
 
+#: Ждём файл под выбранное действие. За префиксом — идентификатор действия
+#: из реестра. Собирать здесь нечего: файл нужен ровно один, и второго
+#: обращения между выбором и разбором не бывает.
+_AWAIT_DOCUMENT_PREFIX = "await:doc:"
+
 #: Ждём почту для фискального чека. За префиксом — тариф, за которым человек
 #: шёл: спросив адрес, надо вернуть его туда же, а не в начало витрины.
 _AWAIT_EMAIL_PREFIX = "await:email:"
@@ -137,3 +142,17 @@ def parse_await_email(pending: str | None) -> str | None:
 def is_awaiting_image_prompt(pending: str | None) -> bool:
     """Ждём ли описание картинки."""
     return pending == AWAIT_IMAGE_PROMPT
+
+
+def await_document(action_id: str) -> str:
+    """Состояние «ждём файл под такое-то действие»."""
+    if not action_id:
+        raise ValueError("нужен идентификатор действия над файлом")
+    return f"{_AWAIT_DOCUMENT_PREFIX}{action_id}"
+
+
+def parse_await_document(pending: str | None) -> str | None:
+    """Возвращает действие, под которое ждём файл; None — ждём не файл."""
+    if pending is None or not pending.startswith(_AWAIT_DOCUMENT_PREFIX):
+        return None
+    return pending.removeprefix(_AWAIT_DOCUMENT_PREFIX) or None

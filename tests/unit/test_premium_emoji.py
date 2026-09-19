@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from aiogram.types import MessageEntity
 
-from app.adapters.telegram.emoji import entities
+from app.adapters.telegram.emoji import entities, icon
 
 LOADING = "5345906554510012647"
 HEART = "6037249452824072506"
@@ -111,3 +111,32 @@ def test_the_same_emoji_twice_is_marked_twice() -> None:
 
     assert found is not None and len(found) == 2
     assert [_covered(text, one) for one in found] == ["🔄", "🔄"]
+
+
+# --- Иконки на кнопках ---------------------------------------------------
+
+
+def test_a_leading_emoji_becomes_an_icon_and_leaves_the_label() -> None:
+    """Иконку Telegram рисует слева сам: оставленный символ встал бы вторым."""
+    assert icon("🔒 Конфиденциальность", {"🔒": HEART}) == (
+        "Конфиденциальность",
+        HEART,
+    )
+
+
+def test_a_label_without_a_known_emoji_is_untouched() -> None:
+    assert icon("🎭 Другой прикол", {"🔒": HEART}) == ("🎭 Другой прикол", None)
+
+
+def test_nothing_configured_leaves_every_label_alone() -> None:
+    assert icon("🔒 Конфиденциальность", {}) == ("🔒 Конфиденциальность", None)
+
+
+def test_an_emoji_in_the_middle_of_a_label_stays_in_the_words() -> None:
+    """Там это не украшение кнопки, а часть фразы — вырезать значит испортить."""
+    assert icon("Открыть 🔒 замок", {"🔒": HEART}) == ("Открыть 🔒 замок", None)
+
+
+def test_a_label_with_a_variation_selector_loses_the_whole_emoji() -> None:
+    """Иначе модификатор начертания остался бы висеть в начале подписи."""
+    assert icon("❤️ Половинки", {"❤️": HEART}) == ("Половинки", HEART)

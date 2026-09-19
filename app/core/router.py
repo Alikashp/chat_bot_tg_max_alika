@@ -19,16 +19,19 @@ from app.core import pending, texts
 from app.core.actions import (
     Action,
     parse_buy_action,
+    parse_document_action,
     parse_email_action,
     parse_method_action,
     parse_preset_action,
 )
+from app.core.documents import DocumentTooLargeError
 from app.core.models import IncomingMessage, TariffId
 from app.core.photos import PhotoTooLargeError
 from app.core.retry_context import RetryKind
 from app.core.scenarios import (
     channel,
     chat,
+    documents,
     identity,
     images,
     keyboards,
@@ -43,6 +46,7 @@ from app.core.scenarios import (
 )
 from app.core.scenarios.deps import Deps, Session
 from app.ports.payments import PaymentMethod
+from config import documents as document_registry
 from config import presets as registry
 
 #: Команда, с которой начинается знакомство. Одинакова в обоих мессенджерах.
@@ -155,6 +159,12 @@ async def handle(deps: Deps, incoming: IncomingMessage) -> None:
         await _handle_photo(deps, session, incoming.photo_ref, incoming.order_key)
         return
 
+    if incoming.document_ref is not None:
+        await _handle_document(
+            deps, session, incoming.document_ref, incoming.document_name or ""
+        )
+        return
+
     if incoming.text:
         await _handle_text(deps, session, incoming.text)
         return
@@ -171,6 +181,11 @@ async def _route_action(deps: Deps, session: Session, action: str) -> None:
     preset_id = parse_preset_action(action)
     if preset_id is not None:
         await _pick_preset(deps, session, preset_id)
+        return
+
+    document_action_id = parse_document_action(action)
+    if document_action_id is not None:
+        await _pick_document_action(deps, session, document_action_id)
         return
 
     repeat_kind = _REPEAT_KINDS.get(action)
@@ -217,6 +232,9 @@ async def _route_action(deps: Deps, session: Session, action: str) -> None:
         case Action.MENU_PRESETS | Action.PRESET_ANOTHER:
             await _clear_pending(deps, session)
             await presets.show_menu(deps, session)
+        case Action.MENU_DOCUMENTS | Action.DOCUMENT_ANOTHER:
+            await _clear_pending(deps, session)
+            await documents.show_menu(deps, session)
         case Action.MENU_PROFILE:
             await _clear_pending(deps, session)
             await profile.show(deps, session)
@@ -308,6 +326,45 @@ async def _pick_preset(deps: Deps, session: Session, preset_id: str) -> None:
 # --- Содержимое ----------------------------------------------------------
 
 
+async def _pick_document_action(deps: Deps, session: Session, action_id: str) -> None:
+    """Нажата кнопка действия над файлом."""
+    action = document_registry.action_of(action_id)
+    if action is None:
+        # Кнопка из переписки, которой в реестре больше нет. Меню покажет,
+        # что есть сейчас, — это лучше, чем молчание под старой кнопкой.
+        await documents.show_menu(deps, session)
+        return
+    await documents.choose(deps, session, action)
+
+
+async def _handle_document(
+    deps: Deps, session: Session, document_ref: str, filename: str
+) -> None:
+    """Пришёл файл."""
+    action_id = pending.parse_await_document(session.user.pending)
+    action = document_registry.action_of(action_id) if action_id else None
+    if action is None:
+        # Файл без выбранного действия. Угадывать, что с ним делать, нельзя —
+        # показываем, что бот вообще умеет с файлами.
+        await documents.show_menu(deps, session)
+        return
+
+    async def download_and_apply(d: Deps, s: Session) -> None:
+        try:
+            document = await d.messenger.download_document(
+                document_ref, max_bytes=d.settings.max_document_bytes
+            )
+        except DocumentTooLargeError:
+            # Размер известен до загрузки байтов: отказ ничего не стоит.
+            await _say(d, s, texts.DOCUMENT_TOO_BIG)
+            return
+        await documents.apply(d, s, action, document)
+
+    # Под тем же ключом, что и картинки: разбор файла — такая же долгая
+    # работа, и двум сразу от одного человека идти незачем.
+    await _guarded(deps, session, _image_key(session), download_and_apply)
+
+
 async def _handle_photo(
     deps: Deps, session: Session, photo_ref: str, order: int = 0
 ) -> None:
@@ -392,6 +449,25 @@ async def _handle_text(deps: Deps, session: Session, text: str) -> None:
         # на середине покупки отказом «дождись предыдущего» было бы обидно.
         await payments.remember_email(deps, session, text)
         return
+
+    awaited_document = pending.parse_await_document(session.user.pending)
+    if awaited_document is not None:
+        action = document_registry.action_of(awaited_document)
+        if action is not None and not action.needs_file:
+            # Ждём тему словами. Ограничитель тот же, что у файла: работа
+            # одинаково долгая, и двум сразу от одного человека идти незачем.
+            async def make_by_topic(d: Deps, s: Session) -> None:
+                await _clear_pending(d, s)
+                await documents.apply_topic(d, s, action, text)
+
+            await _guarded(deps, session, _image_key(session), make_by_topic)
+            return
+        # Действию нужен файл, а пришёл текст. Это не реплика в чат: человек
+        # только что выбрал действие и, скорее всего, промахнулся кнопкой
+        # прикрепления. Повторяем просьбу, а не отвечаем как на вопрос.
+        if action is not None:
+            await _say(deps, session, action.invitation)
+            return
 
     if pending.is_awaiting_image_prompt(session.user.pending):
 

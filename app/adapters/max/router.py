@@ -21,6 +21,7 @@ logger = get_logger(__name__)
 
 #: Тип вложения с картинкой.
 _IMAGE = "image"
+_FILE = "file"
 
 
 async def handle_update(deps: Any, raw_update: dict[str, Any]) -> None:
@@ -125,6 +126,8 @@ def _from_message(raw: dict[str, Any]) -> IncomingMessage | None:
         username=_username(message, "sender"),
         text=text,
         photo_ref=_photo_url(body.get("attachments")),
+        document_ref=_document_url(body.get("attachments")),
+        document_name=_document_name(body.get("attachments")),
         # Номера сообщения, растущего по переписке, в MAX нет — есть время
         # обновления в миллисекундах. Два снимка, отправленные разом, всё
         # равно приходят с разными отметками, и порядок по ним верный.
@@ -181,6 +184,43 @@ def _photo_url(attachments: Any) -> str | None:
         url = _dig(attachment, "payload", "url")
         if isinstance(url, str) and url:
             return url
+    return None
+
+
+def _document_url(attachments: Any) -> str | None:
+    """Адрес присланного файла вместе с его именем.
+
+    Имя приклеивается к адресу через решётку: ядру оно нужно (по расширению
+    определяется формат), а донести его отдельно некуда — ссылка на файл у нас
+    одна строка. В адресе решётка означает конец самого адреса, поэтому
+    сервером хвост не запрашивается.
+    """
+    found = _first_file(attachments)
+    if found is None:
+        return None
+    url, name = found
+    return f"{url}#{name}" if name else url
+
+
+def _document_name(attachments: Any) -> str | None:
+    """Имя присланного файла; None — файла нет."""
+    found = _first_file(attachments)
+    return found[1] if found is not None else None
+
+
+def _first_file(attachments: Any) -> tuple[str, str] | None:
+    """Первый файл во вложениях: адрес и имя. Берём первый — альбом файлов
+    мы не обещали разбирать, как и альбом картинок."""
+    if not isinstance(attachments, list):
+        return None
+    for attachment in attachments:
+        if not isinstance(attachment, dict) or attachment.get("type") != _FILE:
+            continue
+        url = _dig(attachment, "payload", "url")
+        if not isinstance(url, str) or not url:
+            continue
+        name = _dig(attachment, "filename")
+        return url, name if isinstance(name, str) else ""
     return None
 
 

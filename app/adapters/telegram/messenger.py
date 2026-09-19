@@ -15,6 +15,7 @@ from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import (
     BufferedInputFile,
+    InlineKeyboardMarkup,
     InputMediaAudio,
     InputMediaDocument,
     InputMediaLivePhoto,
@@ -25,7 +26,8 @@ from aiogram.types import (
 
 from app.adapters.telegram import emoji as tg_emoji
 from app.adapters.telegram import keyboards as tg_keyboards
-from app.core.models import Chat, Keyboard, MessageRef, Photo
+from app.core.documents import DocumentTooLargeError
+from app.core.models import Chat, Document, Keyboard, MessageRef, Photo
 from app.core.photos import PhotoTooLargeError
 
 #: По сколько байт читаем файл. Больше смысла нет: фото у нас в пределах
@@ -40,7 +42,10 @@ class TelegramMessenger:
     """Исходящие операции Telegram."""
 
     def __init__(
-        self, bot: Bot, premium_emoji: Mapping[str, str] | None = None
+        self,
+        bot: Bot,
+        premium_emoji: Mapping[str, str] | None = None,
+        premium_button_emoji: Mapping[str, str] | None = None,
     ) -> None:
         self._bot = bot
         #: Что из отправленных альбомом картинок Telegram уже держит у себя:
@@ -49,6 +54,9 @@ class TelegramMessenger:
         #: Обычный эмодзи → премиальный аналог. Пусто — подмены нет, и
         #: сообщения уходят ровно так же, как уходили раньше.
         self._premium_emoji: Mapping[str, str] = premium_emoji or {}
+        #: То же для ведущих эмодзи на inline-кнопках. Словарь свой: один
+        #: символ на кнопке и в тексте значит разное (см. config.py).
+        self._premium_button_emoji: Mapping[str, str] = premium_button_emoji or {}
 
     # --- Отправка ------------------------------------------------------
 
@@ -64,7 +72,7 @@ class TelegramMessenger:
             chat_id=chat.chat_id,
             text=text,
             entities=tg_emoji.entities(text, self._premium_emoji),
-            reply_markup=_markup(keyboard, show_menu),
+            reply_markup=self._markup(keyboard, show_menu),
         )
         return _ref(chat, message)
 
@@ -81,7 +89,7 @@ class TelegramMessenger:
             chat_id=chat.chat_id,
             photo=BufferedInputFile(photo.data, filename=photo.filename),
             caption=caption,
-            reply_markup=_markup(keyboard, show_menu),
+            reply_markup=self._markup(keyboard, show_menu),
         )
         return _ref(chat, message)
 
@@ -103,7 +111,7 @@ class TelegramMessenger:
             chat_id=chat.chat_id,
             photo=photo_ref,
             caption=caption,
-            reply_markup=_markup(keyboard, show_menu),
+            reply_markup=self._markup(keyboard, show_menu),
         )
         return _ref(chat, message)
 
@@ -137,6 +145,26 @@ class TelegramMessenger:
             if message.photo:
                 self._albums.setdefault(photo.filename, message.photo[-1].file_id)
 
+    # --- Клавиатуры ----------------------------------------------------
+
+    def _markup(self, keyboard: Keyboard | None, show_menu: bool) -> Any:
+        """Выбирает единственную клавиатуру, которую разрешает Telegram.
+
+        Inline-кнопки под сообщением важнее: без них экран становится тупиком.
+        Постоянное меню от этого не пропадает — reply-клавиатура остаётся на
+        экране с предыдущего сообщения.
+        """
+        if keyboard is not None:
+            return self._inline(keyboard)
+        if show_menu:
+            return tg_keyboards.main_menu()
+        return None
+
+    def _inline(self, keyboard: Keyboard | None) -> InlineKeyboardMarkup | None:
+        if keyboard is None:
+            return None
+        return tg_keyboards.inline(keyboard, self._premium_button_emoji)
+
     # --- Замена уже отправленного --------------------------------------
 
     async def edit_text(
@@ -151,7 +179,7 @@ class TelegramMessenger:
             message_id=int(ref.message_id),
             text=text,
             entities=tg_emoji.entities(text, self._premium_emoji),
-            reply_markup=tg_keyboards.inline(keyboard) if keyboard else None,
+            reply_markup=self._inline(keyboard),
         )
 
     async def edit_to_photo(
@@ -186,7 +214,7 @@ class TelegramMessenger:
             chat_id=ref.chat.chat_id,
             photo=BufferedInputFile(photo.data, filename=photo.filename),
             caption=caption,
-            reply_markup=tg_keyboards.inline(keyboard) if keyboard else None,
+            reply_markup=self._inline(keyboard),
         )
         return _photo_file_id(message)
 
@@ -241,22 +269,52 @@ class TelegramMessenger:
             filename=file.file_path.rsplit("/", maxsplit=1)[-1],
         )
 
+    async def download_document(self, document_ref: str, *, max_bytes: int) -> Document:
+        """Скачивает присланный файл.
+
+        Размер проверяется дважды, как и у фото: сперва по заявленному в
+        getFile — он бесплатный и отсекает большое до скачивания, — потом по
+        фактически прочитанному, потому что заявленный приходит снаружи.
+
+        Имя файла берётся телеграмное, а не придуманное: по расширению в нём
+        определяется формат, и docx от pptx различается только им.
+        """
+        file = await self._bot.get_file(document_ref)
+        if file.file_size is not None and file.file_size > max_bytes:
+            raise DocumentTooLargeError(document_ref)
+        if file.file_path is None:
+            raise RuntimeError("Telegram не вернул путь к файлу")
+
+        chunks: list[bytes] = []
+        size = 0
+        stream = self._bot.session.stream_content(
+            url=self._bot.session.api.file_url(self._bot.token, file.file_path),
+            timeout=_DOWNLOAD_TIMEOUT,
+            chunk_size=_DOWNLOAD_CHUNK,
+            raise_for_status=True,
+        )
+        async for chunk in stream:
+            size += len(chunk)
+            if size > max_bytes:
+                await stream.aclose()
+                raise DocumentTooLargeError(document_ref)
+            chunks.append(chunk)
+
+        return Document(
+            data=b"".join(chunks),
+            filename=file.file_path.rsplit("/", maxsplit=1)[-1],
+            mime_type="application/octet-stream",
+        )
+
+    async def send_document(self, chat: Chat, document: Document) -> None:
+        """Отправляет готовый файл."""
+        await self._bot.send_document(
+            chat_id=chat.chat_id,
+            document=BufferedInputFile(document.data, filename=document.filename),
+        )
+
 
 # --- Вспомогательное -----------------------------------------------------
-
-
-def _markup(keyboard: Keyboard | None, show_menu: bool) -> Any:
-    """Выбирает единственную клавиатуру, которую разрешает Telegram.
-
-    Inline-кнопки под сообщением важнее: без них экран становится тупиком.
-    Постоянное меню от этого не пропадает — reply-клавиатура остаётся на
-    экране с предыдущего сообщения.
-    """
-    if keyboard is not None:
-        return tg_keyboards.inline(keyboard)
-    if show_menu:
-        return tg_keyboards.main_menu()
-    return None
 
 
 def _ref(chat: Chat, message: Message) -> MessageRef:

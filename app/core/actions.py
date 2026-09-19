@@ -23,6 +23,7 @@ class Action(StrEnum):
     MENU_PRESETS = "m:fun"
     MENU_PROFILE = "m:me"
     MENU_TARIFFS = "m:pay"
+    MENU_DOCUMENTS = "m:doc"
 
     # Чат (§2.2)
     CHAT_RETRY = "c:retry"
@@ -39,6 +40,9 @@ class Action(StrEnum):
     PRESET_SHARE = "p:share"
     PRESET_ANOTHER = "p:other"
     PRESET_RETRY = "p:retry"
+
+    # Документы
+    DOCUMENT_ANOTHER = "d:other"
 
     # Подписка (§4.14 оферты: отмена — в профиле)
     SUBSCRIPTION = "s:show"
@@ -57,6 +61,9 @@ class Action(StrEnum):
 
 #: Префикс выбора пресета. За ним идёт идентификатор из реестра.
 PRESET_PREFIX = "p:pick:"
+
+#: Префикс выбора действия над файлом. За ним идентификатор из реестра.
+DOCUMENT_PREFIX = "d:pick:"
 
 #: Префикс покупки тарифа. За ним идёт идентификатор тарифа.
 BUY_PREFIX = "t:buy:"
@@ -79,6 +86,18 @@ def parse_preset_action(action: str) -> str | None:
     if not action.startswith(PRESET_PREFIX):
         return None
     return action.removeprefix(PRESET_PREFIX) or None
+
+
+def document_action(action_id: str) -> str:
+    """Действие «выбрано такое-то действие над файлом»."""
+    return f"{DOCUMENT_PREFIX}{action_id}"
+
+
+def parse_document_action(action: str) -> str | None:
+    """Достаёт идентификатор действия над файлом; None — если это не оно."""
+    if not action.startswith(DOCUMENT_PREFIX):
+        return None
+    return action.removeprefix(DOCUMENT_PREFIX) or None
 
 
 def method_action(method: str, tariff_id: str) -> str:

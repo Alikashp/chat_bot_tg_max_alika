@@ -26,6 +26,7 @@ def make_user(
     tariff: TariffId = TariffId.FREE,
     bonus_messages: int = 0,
     bonus_images: int = 0,
+    bonus_documents: int = 0,
 ) -> User:
     return User(
         id=UserId(1),
@@ -37,6 +38,7 @@ def make_user(
         created_at=datetime(2026, 8, 1, tzinfo=UTC),
         bonus_messages=bonus_messages,
         bonus_images=bonus_images,
+        bonus_documents=bonus_documents,
     )
 
 
@@ -55,6 +57,15 @@ def images(user: User, used: int) -> Allowance:
         Usage(day=DAY, images_used=used),
         tariff_of(user.tariff),
         LimitKind.IMAGES,
+    )
+
+
+def documents(user: User, used: int) -> Allowance:
+    return allowance(
+        user,
+        Usage(day=DAY, documents_used=used),
+        tariff_of(user.tariff),
+        LimitKind.DOCUMENTS,
     )
 
 
@@ -203,3 +214,52 @@ def test_naive_datetime_is_rejected() -> None:
     """Иначе сутки съезжали бы на три часа незаметно."""
     with pytest.raises(ValueError, match="часовым поясом"):
         current_day(datetime(2026, 8, 28, 22, 0), "Europe/Moscow")
+
+
+# --- Разбор документов ---------------------------------------------------
+
+
+def test_documents_have_no_daily_quota_on_the_free_tariff() -> None:
+    """Разбор длинного файла — самый дорогой запрос: сутками он не возобновляется."""
+    assert documents(make_user(), 0).daily_left == 0
+
+
+def test_documents_have_a_daily_quota_on_paid_tariffs() -> None:
+    """Там человек платит именно за неё."""
+    assert documents(make_user(tariff=TariffId.LITE), 0).daily_left == 15
+    assert documents(make_user(tariff=TariffId.PRO), 0).daily_left == 30
+    assert documents(make_user(tariff=TariffId.MAX), 0).daily_left == 60
+
+
+def test_a_free_user_spends_documents_from_the_bonus() -> None:
+    """На бесплатном тарифе разовая выдача — единственный источник."""
+    user = make_user(bonus_documents=3)
+
+    left = documents(user, 0)
+    assert left.total_left == 3
+    assert left.next_source is Source.BONUS
+
+
+def test_documents_do_not_borrow_from_the_image_basket() -> None:
+    """Иначе разбор файла молча съедал бы картинки, за которые заплачено отдельно."""
+    user = make_user(bonus_images=9, bonus_documents=0)
+
+    assert documents(user, 0).total_left == 0
+    assert images(user, 0).total_left == 9
+
+
+def test_spent_documents_do_not_touch_the_image_counter() -> None:
+    """Расход у них раздельный: в профиле человеку видно, что именно кончилось."""
+    usage = Usage(day=DAY, images_used=0, documents_used=4)
+    user = make_user(tariff=TariffId.PRO)
+
+    spent = allowance(user, usage, tariff_of(user.tariff), LimitKind.DOCUMENTS)
+    untouched = allowance(user, usage, tariff_of(user.tariff), LimitKind.IMAGES)
+
+    assert spent.daily_used == 4
+    assert untouched.daily_used == 0
+
+
+def test_documents_run_out_and_show_the_paywall() -> None:
+    assert documents(make_user(), 0).exhausted is True
+    assert documents(make_user(bonus_documents=1), 0).exhausted is False

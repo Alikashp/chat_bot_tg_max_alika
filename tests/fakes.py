@@ -16,6 +16,7 @@ from datetime import UTC, datetime
 from app.core.models import (
     Chat,
     ChatTurn,
+    Document,
     Keyboard,
     MessageRef,
     Photo,
@@ -81,6 +82,13 @@ class FakeMessenger:
         self.typing: list[Chat] = []
         self.downloaded: list[str] = []
         self.answered_callbacks: list[str] = []
+        #: Готовые файлы, отданные человеку. По ним видно, что отдали оба
+        #: формата, а не один.
+        self.documents_sent: list[Document] = []
+        #: Что вернуть на скачивание присланного файла.
+        self.incoming_document: Document | None = None
+        self.fail_download_document: Exception | None = None
+        self.fail_send_document: Exception | None = None
         #: Если задано, отправка текста падает. Нужно для проверки инварианта:
         #: лимит не списывается, когда результат до пользователя не доехал.
         self.fail_send: Exception | None = None
@@ -168,6 +176,18 @@ class FakeMessenger:
 
     async def send_typing(self, chat: Chat) -> None:
         self.typing.append(chat)
+
+    async def send_document(self, chat: Chat, document: Document) -> None:
+        if self.fail_send_document is not None:
+            raise self.fail_send_document
+        self.documents_sent.append(document)
+
+    async def download_document(self, document_ref: str, *, max_bytes: int) -> Document:
+        if self.fail_download_document is not None:
+            raise self.fail_download_document
+        return self.incoming_document or Document(
+            data=b"", filename="файл.docx", mime_type="application/x"
+        )
 
     async def download_photo(self, file_id: str, *, max_bytes: int) -> Photo:
         # Уступаем управление, как это делает всякая настоящая закачка. Без

@@ -48,33 +48,35 @@ async def charge(deps: Deps, session: Session, kind: LimitKind) -> None:
     usage = await deps.storage.get_usage(user.id, session.day)
     source = allowance(user, usage, session.tariff, kind).next_source
 
+    one = _one_of(kind)
+
     if source is Source.DAILY:
-        await deps.storage.add_usage(
-            user.id,
-            session.day,
-            messages=1 if kind is LimitKind.MESSAGES else 0,
-            images=1 if kind is LimitKind.IMAGES else 0,
-        )
+        await deps.storage.add_usage(user.id, session.day, **one)
         return
 
     if source is Source.BONUS:
-        spent = await deps.storage.spend_bonus(
-            user.id,
-            messages=1 if kind is LimitKind.MESSAGES else 0,
-            images=1 if kind is LimitKind.IMAGES else 0,
-        )
+        spent = await deps.storage.spend_bonus(user.id, **one)
         if not spent:
             # Бонус успели потратить параллельно. Результат пользователь уже
             # получил, отбирать его поздно — записываем в дневной расход.
-            await deps.storage.add_usage(
-                user.id,
-                session.day,
-                messages=1 if kind is LimitKind.MESSAGES else 0,
-                images=1 if kind is LimitKind.IMAGES else 0,
-            )
+            await deps.storage.add_usage(user.id, session.day, **one)
         return
 
     # Списывать неоткуда: результат отдан сверх лимита. Одновременные задачи
     # одного пользователя ограничены (§3.4.8), так что в норме сюда не
     # попадаем, но знать о таком надо.
     deps.logger.warning("charged_over_limit", user_id=int(user.id), kind=kind.value)
+
+
+def _one_of(kind: LimitKind) -> dict[str, int]:
+    """Единица расхода нужного вида — в терминах хранилища.
+
+    Одним местом, а не тройкой условий на каждый вызов: видов ресурса стало
+    три, и забытая ветка означала бы, что человек получил работу бесплатно,
+    а мы этого даже не заметили.
+    """
+    return {
+        "messages": 1 if kind is LimitKind.MESSAGES else 0,
+        "images": 1 if kind is LimitKind.IMAGES else 0,
+        "documents": 1 if kind is LimitKind.DOCUMENTS else 0,
+    }

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import pytest
 
+from app.adapters.documents.reader import LocalDocumentReader
+from app.adapters.documents.writer import LocalDocumentWriter
 from app.adapters.storage.memory import InMemoryStorage
 from app.core import support
 from app.core.models import Chat, MessengerKind, User
@@ -119,6 +121,8 @@ def deps(
         images=images_,
         settings=settings,
         logger=logger,
+        document_reader=LocalDocumentReader(),
+        document_writer=LocalDocumentWriter(),
         guard=guard,
         cards=cards,
         stars=stars,
@@ -135,6 +139,7 @@ async def user(storage: InMemoryStorage) -> User:
         referral_code="code1",
         support_number=support.generate_number(),
         bonus_images=3,
+        bonus_documents=0,
     )
 
 

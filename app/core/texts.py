@@ -108,6 +108,7 @@ MENU_IMAGES = "🎨 Картинки"
 MENU_PRESETS = "🎭 Приколы с фото"
 MENU_PROFILE = "👤 Профиль"
 MENU_TARIFFS = "⭐ Тарифы"
+MENU_DOCUMENTS = "📄 Документы"
 
 #: Четвёрка кнопок, доступная с любого экрана. В Telegram это постоянная
 #: клавиатура, в MAX постоянных клавиатур не бывает и та же четвёрка
@@ -328,6 +329,72 @@ def image_refused() -> Screen:
     return Screen(text=IMAGE_REFUSED, buttons=_menu_buttons())
 
 
+# --- Документы -----------------------------------------------------------
+
+DOCUMENTS_ASK = "Выбери, что сделать с файлом:"
+
+#: Что бот умеет прочитать. Перечислены расширениями, а не словами «Word» и
+#: «презентация»: человек выбирает файл в списке, где видит именно их.
+DOCUMENTS_FORMATS = "Понимаю docx, pdf и pptx — до 20 МБ"
+
+DOCUMENT_WORKING = "🔄 Читаю файл…"
+DOCUMENT_READY = "Готово! Файлы выше — Word и PDF"
+DOCUMENT_ERROR = "Что-то пошло не так, попробуй ещё раз 🤷 Разбор не потратился."
+
+#: Файл не открылся. Про пароль сказано отдельно: это самая частая причина, и
+#: человек её может исправить сам, а «не читается» звучит как приговор.
+DOCUMENT_UNREADABLE = (
+    "Файл не открылся 🤷 Бывает с повреждёнными и с теми, что под паролем"
+)
+
+#: В файле нет текстового слоя. Почти всегда это скан, и сказать надо именно
+#: про него: иначе человек пришлёт тот же файл ещё раз.
+DOCUMENT_EMPTY = (
+    "В файле нет текста — похоже, это скан. Распознавать картинки я пока не умею"
+)
+
+DOCUMENT_UNSUPPORTED = "Такой файл я не прочитаю. Пришли docx, pdf или pptx 🙏"
+
+#: Тема в одно слово даёт сочинение ни о чём, а заплатит за него человек
+#: полным разбором. Просим написать подробнее до всякого обращения.
+DOCUMENT_TOPIC_TOO_SHORT = "Напиши тему подробнее — одного слова мало 🙏"
+DOCUMENT_TOO_BIG = "Файл слишком большой, пришли до 20 МБ 🙏"
+
+
+def documents_menu(action_buttons: tuple[str, ...]) -> Screen:
+    return Screen(text=f"{DOCUMENTS_ASK}\n{DOCUMENTS_FORMATS}", buttons=action_buttons)
+
+
+def document_ask_file(invitation: str) -> Screen:
+    """Приглашение прислать файл. Текст берётся из реестра действий."""
+    return Screen(text=invitation, buttons=(BUTTON_CANCEL,))
+
+
+def document_working() -> Screen:
+    return Screen(
+        text=DOCUMENT_WORKING,
+        next_step="живёт до минуты и заменяется готовыми файлами",
+    )
+
+
+def document_ready(action_buttons: tuple[str, ...]) -> Screen:
+    return Screen(text=DOCUMENT_READY, buttons=action_buttons)
+
+
+def document_error() -> Screen:
+    return Screen(text=DOCUMENT_ERROR, buttons=(BUTTON_RETRY,))
+
+
+def document_rejected(reason: str, action_buttons: tuple[str, ...]) -> Screen:
+    """Файл не подошёл. Причина приходит готовой строкой из этого же файла.
+
+    Кнопки действий остаются: человек уже выбрал, что хотел сделать, и
+    выкидывать его в начало из-за неподходящего файла значит заставить
+    выбирать заново.
+    """
+    return Screen(text=reason, buttons=action_buttons)
+
+
 # --- Пресеты (§2.4) ------------------------------------------------------
 
 PRESETS_ASK = "Выбери, что сделаем с фото:"
@@ -431,6 +498,25 @@ def preset_refused(preset_buttons: tuple[str, ...]) -> Screen:
 # --- Пейволл (§2.5) ------------------------------------------------------
 
 
+def paywall_documents(*, renews_tomorrow: bool) -> Screen:
+    """Разборы кончились.
+
+    Ни канала, ни награды за друга здесь нет, и это не забывчивость: разовые
+    подарки заведены под картинки и обещают картинки. Обещать за друга
+    разборы значило бы сказать неправду на экране, который человек читает
+    ровно в тот момент, когда решает, платить ли.
+    """
+    first = (
+        "Разборы на сегодня кончились — завтра будут ещё"
+        if renews_tomorrow
+        else "Бесплатные разборы кончились"
+    )
+    return Screen(
+        text=f"{first}\nНа платном тарифе их больше 👇",
+        buttons=(MENU_TARIFFS,),
+    )
+
+
 def paywall_images(
     *,
     renews_tomorrow: bool,
@@ -493,6 +579,7 @@ def profile(
     messages_used: int,
     messages_limit: int,
     images_left: int,
+    documents_left: int,
     friends: int,
     user_number: int | None = None,
 ) -> Screen:
@@ -505,7 +592,10 @@ def profile(
     lines = [
         f"Твой тариф: {TARIFF_TITLES[tariff_id]}",
         f"Сообщений сегодня: {messages_used} из {messages_limit}",
-        f"Картинок: {images_left}",
+        # Одной строкой, а не двумя: экран и так на пределе в пять строк
+        # (§2.9), а номер для поддержки добавляет шестую. Точка посередине
+        # читается лучше запятой — это два отдельных счёта, а не перечень.
+        f"Картинок: {images_left} · Разборов: {documents_left}",
         f"Друзей позвал: {friends}",
     ]
     if user_number is not None:
@@ -1120,6 +1210,7 @@ def _all_screens() -> tuple[Screen, ...]:
             messages_used=12,
             messages_limit=20,
             images_left=2,
+            documents_left=2,
             friends=3,
         ),
         profile(
@@ -1127,6 +1218,7 @@ def _all_screens() -> tuple[Screen, ...]:
             messages_used=12,
             messages_limit=20,
             images_left=2,
+            documents_left=2,
             friends=3,
             user_number=1234,
         ),
@@ -1209,6 +1301,18 @@ def _all_screens() -> tuple[Screen, ...]:
         still_working(),
         unsupported_input(),
         internal_error(),
+        paywall_documents(renews_tomorrow=True),
+        paywall_documents(renews_tomorrow=False),
+        documents_menu(("📊 Доклад", "📝 Реферат", "📌 Конспект")),
+        document_ask_file("Кинь файл — сделаю по нему доклад"),
+        document_working(),
+        document_ready(("📊 Доклад",)),
+        document_error(),
+        document_rejected(DOCUMENT_UNREADABLE, ("📊 Доклад",)),
+        document_rejected(DOCUMENT_EMPTY, ("📊 Доклад",)),
+        document_rejected(DOCUMENT_UNSUPPORTED, ("📊 Доклад",)),
+        document_rejected(DOCUMENT_TOO_BIG, ("📊 Доклад",)),
+        document_rejected(DOCUMENT_TOPIC_TOO_SHORT, ("📊 Доклад",)),
     )
 
 

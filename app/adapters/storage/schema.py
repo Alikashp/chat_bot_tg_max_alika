@@ -53,6 +53,7 @@ users = Table(
     Column("email", String(254), nullable=True),
     Column("bonus_messages", Integer, nullable=False, server_default="0"),
     Column("bonus_images", Integer, nullable=False, server_default="0"),
+    Column("bonus_documents", Integer, nullable=False, server_default="0"),
     # Когда выдали разовый бонус за подписку на канал. NULL — не выдавали.
     # Отметка и есть защита от повторной выдачи: начисление ставит её тем же
     # UPDATE, который добавляет картинки, и условие NULL стоит в его WHERE.
@@ -74,6 +75,7 @@ users = Table(
     # Бонус не может уйти в минус ни при какой гонке.
     CheckConstraint("bonus_messages >= 0", name="ck_users_bonus_messages"),
     CheckConstraint("bonus_images >= 0", name="ck_users_bonus_images"),
+    CheckConstraint("bonus_documents >= 0", name="ck_users_bonus_documents"),
 )
 
 usage = Table(
@@ -90,6 +92,7 @@ usage = Table(
     Column("day", Date, primary_key=True),
     Column("messages_used", Integer, nullable=False, server_default="0"),
     Column("images_used", Integer, nullable=False, server_default="0"),
+    Column("documents_used", Integer, nullable=False, server_default="0"),
 )
 
 dialogs = Table(

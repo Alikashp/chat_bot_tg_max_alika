@@ -121,6 +121,7 @@ async def _make_user(
         referral_code=f"code{external_id}",
         support_number=support.generate_number(),
         bonus_images=bonus_images,
+        bonus_documents=0,
     )
 
 
@@ -168,6 +169,7 @@ async def test_same_external_id_in_other_messenger_is_another_user(
         referral_code="code-max-7",
         support_number=support.generate_number(),
         bonus_images=3,
+        bonus_documents=0,
     )
 
     assert telegram_user.id != max_user.id
@@ -188,6 +190,7 @@ async def test_a_second_registration_returns_the_same_person(
         referral_code="другой-код",
         support_number=support.generate_number(),
         bonus_images=3,
+        bonus_documents=0,
     )
 
     assert second.id == first.id
@@ -208,6 +211,7 @@ async def test_concurrent_registrations_create_one_person(storage: Storage) -> N
                 referral_code=f"code-{index}",
                 support_number=support.generate_number(),
                 bonus_images=3,
+                bonus_documents=0,
             )
             for index in range(5)
         )
@@ -226,6 +230,7 @@ async def test_duplicate_referral_code_is_rejected(storage: Storage) -> None:
             referral_code="code1",
             support_number=support.generate_number(),
             bonus_images=3,
+            bonus_documents=0,
         )
 
 
@@ -340,6 +345,72 @@ async def test_spending_more_bonus_than_available_changes_nothing(
     assert updated is not None
     assert updated.bonus_messages == 1
     assert updated.bonus_images == 1
+
+
+async def test_the_document_bonus_is_added_and_spent(storage: Storage) -> None:
+    """Третья корзина живёт отдельно от двух прежних."""
+    user = await _make_user(storage)
+
+    await storage.add_bonus(user.id, documents=3)
+    assert await storage.spend_bonus(user.id, documents=1) is True
+
+    updated = await storage.get_user_by_id(user.id)
+    assert updated is not None
+    assert updated.bonus_documents == 2
+
+
+async def test_spending_documents_does_not_touch_the_other_baskets(
+    storage: Storage,
+) -> None:
+    """Иначе разбор файла молча съедал бы картинки, оплаченные отдельно."""
+    user = await _make_user(storage)
+    await storage.add_bonus(user.id, messages=7, images=5, documents=3)
+
+    assert await storage.spend_bonus(user.id, documents=2) is True
+
+    updated = await storage.get_user_by_id(user.id)
+    assert updated is not None
+    assert (updated.bonus_messages, updated.bonus_images) == (7, 5)
+    assert updated.bonus_documents == 1
+
+
+async def test_documents_cannot_be_overspent(storage: Storage) -> None:
+    """Всё-или-ничего и здесь: остаток не уходит в минус."""
+    user = await _make_user(storage)
+    await storage.add_bonus(user.id, documents=1)
+
+    assert await storage.spend_bonus(user.id, documents=2) is False
+
+    updated = await storage.get_user_by_id(user.id)
+    assert updated is not None
+    assert updated.bonus_documents == 1
+
+
+async def test_a_short_document_basket_blocks_the_whole_spend(
+    storage: Storage,
+) -> None:
+    """Списание сразу из двух корзин не должно пройти наполовину."""
+    user = await _make_user(storage)
+    await storage.add_bonus(user.id, images=5, documents=0)
+
+    assert await storage.spend_bonus(user.id, images=1, documents=1) is False
+
+    updated = await storage.get_user_by_id(user.id)
+    assert updated is not None
+    assert updated.bonus_images == 5
+
+
+async def test_document_usage_is_counted_apart_from_images(
+    storage: Storage,
+) -> None:
+    """В профиле человеку видно, что именно у него кончилось."""
+    user = await _make_user(storage)
+
+    await storage.add_usage(user.id, DAY, images=2)
+    usage = await storage.add_usage(user.id, DAY, documents=3)
+
+    assert usage.images_used == 2
+    assert usage.documents_used == 3
 
 
 async def test_bonus_cannot_be_overspent_concurrently(storage: Storage) -> None:
@@ -1030,6 +1101,7 @@ async def test_the_name_is_kept_from_the_start(storage: Storage) -> None:
         referral_code="codename2",
         support_number=support.generate_number(),
         bonus_images=3,
+        bonus_documents=0,
         username="durov",
     )
 

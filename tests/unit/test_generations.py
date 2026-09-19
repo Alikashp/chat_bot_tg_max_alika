@@ -196,6 +196,7 @@ async def test_a_broken_record_does_not_break_the_answer(
         referral_code="code-broken",
         support_number=424242,
         bonus_images=3,
+        bonus_documents=0,
     )
     with_broken = replace_deps(deps, storage=broken_storage)
     broken_session = replace_deps(session, user=user)

@@ -37,6 +37,7 @@ class LimitKind(StrEnum):
 
     MESSAGES = "messages"
     IMAGES = "images"
+    DOCUMENTS = "documents"
 
 
 class Source(StrEnum):
@@ -101,6 +102,16 @@ def daily_images(tariff: Tariff) -> int:
     return tariff.daily_images
 
 
+def daily_documents(tariff: Tariff) -> int:
+    """Дневная норма разборов документов.
+
+    На бесплатном тарифе нулевая, как и у картинок: разбор длинного файла —
+    самый дорогой запрос в сервисе. Бесплатное приходит разово и лежит в
+    бонусе, дневная норма есть только там, где за неё платят.
+    """
+    return tariff.daily_documents
+
+
 def allowance(user: User, usage: Usage, tariff: Tariff, kind: LimitKind) -> Allowance:
     """Считает остаток по виду ресурса."""
     if kind is LimitKind.MESSAGES:
@@ -109,6 +120,13 @@ def allowance(user: User, usage: Usage, tariff: Tariff, kind: LimitKind) -> Allo
             daily_limit=daily_messages(tariff),
             daily_used=usage.messages_used,
             bonus=user.bonus_messages,
+        )
+    if kind is LimitKind.DOCUMENTS:
+        return Allowance(
+            kind=kind,
+            daily_limit=daily_documents(tariff),
+            daily_used=usage.documents_used,
+            bonus=user.bonus_documents,
         )
     return Allowance(
         kind=kind,

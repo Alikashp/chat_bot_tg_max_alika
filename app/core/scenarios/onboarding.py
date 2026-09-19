@@ -97,6 +97,7 @@ async def _create_user(
                 referral_code=referral.generate_code(),
                 support_number=support.generate_number(),
                 bonus_images=granted,
+                bonus_documents=deps.settings.signup_documents,
                 username=username_or_none(username),
                 source=source,
             )

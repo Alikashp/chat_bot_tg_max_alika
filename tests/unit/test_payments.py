@@ -263,6 +263,7 @@ async def test_someone_elses_order_is_refused(
         referral_code="stranger",
         support_number=support.generate_number(),
         bonus_images=3,
+        bonus_documents=0,
     )
     order = await storage.create_payment(
         user_id=stranger.id,

@@ -139,6 +139,7 @@ async def _order(deps: Deps, messenger: MessengerKind, external_id: str) -> str:
         referral_code=f"code-{messenger.value}",
         support_number=support.generate_number(),
         bonus_images=3,
+        bonus_documents=0,
     )
     order = await deps.storage.create_payment(
         user_id=user.id,

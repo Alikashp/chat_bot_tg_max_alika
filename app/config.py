@@ -211,6 +211,12 @@ class Settings(BaseSettings):
     #: То же для пришедших по deeplink из бота презентаций.
     presentation_signup_images: Annotated[int, Field(ge=0, le=100)] = 5
 
+    #: Сколько разборов документов человек получает при регистрации. Разово,
+    #: по той же причине, что и картинки: дневной нормы на бесплатном тарифе
+    #: у них нет — разбор длинного файла слишком дорог, чтобы возобновляться
+    #: каждые сутки.
+    signup_documents: Annotated[int, Field(ge=0, le=100)] = 3
+
     #: Награда за приглашённого друга — обоим.
     referral_bonus_images: Annotated[int, Field(ge=0, le=100)] = 2
     referral_bonus_messages: Annotated[int, Field(ge=0, le=1000)] = 50

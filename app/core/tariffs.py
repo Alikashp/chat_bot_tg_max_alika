@@ -49,6 +49,10 @@ class Tariff:
     price_rub: int
     daily_messages: int
     daily_images: int
+    #: Дневная норма разборов документов. На бесплатном тарифе ноль: разбор
+    #: длинного файла — самый дорогой запрос в сервисе, и возобновлять его
+    #: каждые сутки бесплатно нельзя. Там работает разовая выдача (bonus).
+    daily_documents: int
     model_tier: ModelTier
     image_quality: ImageQuality
 
@@ -81,6 +85,7 @@ TARIFFS: Mapping[TariffId, Tariff] = MappingProxyType(
             # бонусном балансе, который не сгорает. Дневная норма осталась
             # только у платных тарифов, где человек платит именно за неё.
             daily_images=0,
+            daily_documents=0,
             model_tier=ModelTier.ECONOMY,
             image_quality=ImageQuality.MEDIUM,
         ),
@@ -89,6 +94,7 @@ TARIFFS: Mapping[TariffId, Tariff] = MappingProxyType(
             price_rub=299,
             daily_messages=100,
             daily_images=40,
+            daily_documents=5,
             model_tier=ModelTier.ECONOMY,
             image_quality=ImageQuality.MEDIUM,
         ),
@@ -97,6 +103,7 @@ TARIFFS: Mapping[TariffId, Tariff] = MappingProxyType(
             price_rub=599,
             daily_messages=100,
             daily_images=60,
+            daily_documents=10,
             model_tier=ModelTier.STANDARD,
             image_quality=ImageQuality.MEDIUM,
         ),
@@ -105,6 +112,7 @@ TARIFFS: Mapping[TariffId, Tariff] = MappingProxyType(
             price_rub=1490,
             daily_messages=200,
             daily_images=150,
+            daily_documents=30,
             model_tier=ModelTier.STANDARD,
             image_quality=ImageQuality.MEDIUM,
         ),

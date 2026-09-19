@@ -135,6 +135,7 @@ async def user(storage: InMemoryStorage) -> User:
         referral_code="code1",
         support_number=support.generate_number(),
         bonus_images=3,
+        bonus_documents=0,
     )
 
 

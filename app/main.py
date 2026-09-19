@@ -316,6 +316,7 @@ def build_core_settings(
         max_photo_bytes=settings.max_photo_bytes,
         signup_images=settings.signup_images,
         presentation_signup_images=settings.presentation_signup_images,
+        signup_documents=settings.signup_documents,
         referral_bonus_images=settings.referral_bonus_images,
         referral_bonus_messages=settings.referral_bonus_messages,
         referral_daily_reward_limit=settings.referral_daily_reward_limit,

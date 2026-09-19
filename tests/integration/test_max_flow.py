@@ -385,6 +385,7 @@ async def test_a_deeplink_gift_reaches_the_invited_user(harness: Harness) -> Non
         referral_code="friend01",
         support_number=support.generate_number(),
         bonus_images=3,
+        bonus_documents=0,
     )
 
     assert await harness.post(start_update("ref_friend01")) == 200

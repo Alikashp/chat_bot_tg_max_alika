@@ -289,6 +289,20 @@ class Photo:
 
 
 @dataclass(frozen=True, slots=True)
+class Document:
+    """Файл в виде байтов: присланный человеком или собранный нами.
+
+    Имя здесь существеннее, чем у картинки, и по двум причинам. Оно решает,
+    чем файл откроется у человека, и оно же отличает docx от pptx: оба формата
+    внутри — обычный zip, и по сигнатуре они неразличимы.
+    """
+
+    data: bytes
+    filename: str
+    mime_type: str
+
+
+@dataclass(frozen=True, slots=True)
 class IncomingMessage:
     """Входящее сообщение, приведённое к общему виду обоими адаптерами.
 

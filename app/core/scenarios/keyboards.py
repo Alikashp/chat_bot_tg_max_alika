@@ -261,7 +261,7 @@ def payments_soon() -> Keyboard:
 #: MENU_ACTIONS, поэтому расходиться с самой клавиатурой не может.
 _MENU_BY_LABEL: dict[str, Action] = {
     label: action for row in MENU_ACTIONS for label, action in row
-}
+} | dict.fromkeys(texts.RETIRED_MENU_DOCUMENTS, Action.MENU_DOCUMENTS)
 
 
 def action_for_label(label: str | None) -> str | None:

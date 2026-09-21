@@ -530,3 +530,16 @@ async def test_the_menu_button_opens_the_menu_itself(
     labels = [button.text for row in keyboard.rows for button in row]
     assert texts.MENU_DOCUMENTS in labels
     assert texts.MENU_TARIFFS in labels
+
+
+async def test_the_old_documents_label_still_works(
+    deps: Deps, user: User, messenger: FakeMessenger
+) -> None:
+    """У человека на экране может лежать меню, пришедшее до переименования.
+
+    Постоянная клавиатура возвращает нажатие своей подписью, и без этого одно
+    нажатие по старой кнопке уехало бы в чат вопросом — за его же сообщение.
+    """
+    await handle(deps, incoming(text="📄 Документы"))
+
+    assert messenger.last_text.text.startswith(texts.DOCUMENTS_ASK)

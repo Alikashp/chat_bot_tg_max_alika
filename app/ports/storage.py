@@ -9,6 +9,7 @@ core/limits.py, а хранилище лишь выполняет атомарн
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
+from enum import StrEnum
 from typing import Protocol
 
 from app.core import sources
@@ -24,6 +25,18 @@ from app.core.models import (
     User,
     UserId,
 )
+
+
+class GrantOutcome(StrEnum):
+    """Чем кончилась попытка выдать оплаченное (``complete_payment``)."""
+
+    #: Заказ стал paid, тариф и подписка записаны — всё одним шагом.
+    GRANTED = "granted"
+    #: Заказ уже не pending: его подтвердили раньше. Ничего не изменилось.
+    ALREADY = "already"
+    #: Тариф или срок человека поменялись, пока считали новый срок.
+    #: Ничего не изменилось; срок надо пересчитать и попробовать снова.
+    STALE = "stale"
 
 
 class Storage(Protocol):
@@ -279,6 +292,33 @@ class Storage(Protocol):
         Возвращает True только при первом переходе и только из «оплачен»:
         вернуть можно лишь то, что получили, а уведомлений о возврате
         приходит несколько.
+        """
+        ...
+
+    async def complete_payment(
+        self,
+        payment_id: str,
+        *,
+        tariff: TariffId,
+        expires_at: datetime,
+        seen_tariff: TariffId,
+        seen_expiry: datetime | None,
+        subscription: Subscription | None,
+    ) -> GrantOutcome:
+        """Выдаёт оплаченное одной транзакцией: всё или ничего (П4).
+
+        Заказ переходит pending → paid, человеку пишется тариф и срок, а
+        подписка заводится или переносится. Сбой на любом из шагов не
+        оставляет заказа paid без тарифа или без перенесённой подписки: тогда
+        не меняется ничего, и подтверждение можно повторить.
+
+        ``seen_tariff`` и ``seen_expiry`` — что вызывающий видел, считая
+        новый срок. Если с тех пор их поменяли (второй заказ того же
+        человека подтвердился раньше), ответ STALE: срок, посчитанный от
+        старой даты, потерял бы оплаченный месяц.
+
+        Обращений к провайдеру внутри нет и быть не должно: транзакция не
+        ждёт чужую сеть.
         """
         ...
 

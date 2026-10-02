@@ -49,6 +49,7 @@ from app.core.models import (
     UserId,
 )
 from app.ports.payments import PaymentStatus, SubscriptionStatus
+from app.ports.storage import GrantOutcome
 
 
 def create_engine(dsn: str, *, echo: bool = False) -> AsyncEngine:
@@ -477,6 +478,56 @@ class PostgresStorage:
         except IntegrityError:
             return False
 
+    async def complete_payment(
+        self,
+        payment_id: str,
+        *,
+        tariff: TariffId,
+        expires_at: datetime,
+        seen_tariff: TariffId,
+        seen_expiry: datetime | None,
+        subscription: Subscription | None,
+    ) -> GrantOutcome:
+        """Заказ, тариф и подписка — одной транзакцией (П4).
+
+        Каждый шаг — условный UPDATE с RETURNING. Не нашёл строку — шаг не
+        прошёл, и транзакция откатывается целиком: на этот случай служит
+        исключение ``_RollbackError``, а не ранний выход из блока, который
+        закоммитил бы уже сделанное.
+        """
+        paid = (
+            update(payments)
+            .where(
+                payments.c.id == payment_id,
+                payments.c.status == PaymentStatus.PENDING.value,
+            )
+            .values(status=PaymentStatus.PAID.value, paid_at=self._now())
+            .returning(payments.c.user_id)
+        )
+        try:
+            async with self._session() as session, session.begin():
+                row = (await session.execute(paid)).one_or_none()
+                if row is None:
+                    raise _RollbackError(GrantOutcome.ALREADY)
+                user_id = row[0]
+                granted = (
+                    update(users)
+                    .where(
+                        users.c.id == user_id,
+                        users.c.tariff == seen_tariff.value,
+                        users.c.tariff_expires_at.is_not_distinct_from(seen_expiry),
+                    )
+                    .values(tariff=tariff.value, tariff_expires_at=expires_at)
+                    .returning(users.c.id)
+                )
+                if (await session.execute(granted)).one_or_none() is None:
+                    raise _RollbackError(GrantOutcome.STALE)
+                if subscription is not None:
+                    await session.execute(_upsert_subscription(subscription))
+        except _RollbackError as rollback:
+            return rollback.outcome
+        return GrantOutcome.GRANTED
+
     async def mark_paid(self, payment_id: str) -> bool:
         """Переход в «оплачен» ровно один раз.
 
@@ -540,32 +591,8 @@ class PostgresStorage:
         успевает вклиниться параллельное обновление, и тогда у человека
         оказалось бы две подписки — то есть два списания в месяц.
         """
-        values = {
-            "user_id": int(subscription.user_id),
-            "tariff": subscription.tariff.value,
-            "method": subscription.method,
-            "status": subscription.status,
-            "amount": subscription.amount,
-            "currency": subscription.currency,
-            "next_charge_at": subscription.next_charge_at,
-            "created_at": subscription.created_at,
-            "payment_method_id": subscription.payment_method_id,
-            "charge_id": subscription.charge_id,
-            "reminded_for": subscription.reminded_for,
-            "price_checked_for": subscription.price_checked_for,
-            "failed_since": subscription.failed_since,
-            "cancelled_at": subscription.cancelled_at,
-        }
-        updates = {key: value for key, value in values.items() if key != "user_id"}
-        query = (
-            insert(subscriptions)
-            .values(**values)
-            .on_conflict_do_update(
-                index_elements=[subscriptions.c.user_id], set_=updates
-            )
-        )
         async with self._session() as session, session.begin():
-            await session.execute(query)
+            await session.execute(_upsert_subscription(subscription))
 
     async def advance_subscription(
         self,
@@ -845,3 +872,37 @@ def _to_user(row: Any) -> User:
 
 def _utc_now() -> datetime:
     return datetime.now(UTC)
+
+
+class _RollbackError(Exception):
+    """Откатить транзакцию выдачи и вернуть исход, а не уронить вызов."""
+
+    def __init__(self, outcome: GrantOutcome) -> None:
+        super().__init__(outcome.value)
+        self.outcome = outcome
+
+
+def _upsert_subscription(subscription: Subscription) -> Any:
+    """Подписка «завести или заменить» — одним запросом, без чтения перед ним."""
+    values = {
+        "user_id": int(subscription.user_id),
+        "tariff": subscription.tariff.value,
+        "method": subscription.method,
+        "status": subscription.status,
+        "amount": subscription.amount,
+        "currency": subscription.currency,
+        "next_charge_at": subscription.next_charge_at,
+        "created_at": subscription.created_at,
+        "payment_method_id": subscription.payment_method_id,
+        "charge_id": subscription.charge_id,
+        "reminded_for": subscription.reminded_for,
+        "price_checked_for": subscription.price_checked_for,
+        "failed_since": subscription.failed_since,
+        "cancelled_at": subscription.cancelled_at,
+    }
+    updates = {key: value for key, value in values.items() if key != "user_id"}
+    return (
+        insert(subscriptions)
+        .values(**values)
+        .on_conflict_do_update(index_elements=[subscriptions.c.user_id], set_=updates)
+    )

@@ -36,7 +36,7 @@ from app.core.models import (
     User,
 )
 from app.ports.payments import PaymentStatus
-from app.ports.storage import Storage
+from app.ports.storage import GrantOutcome, Storage
 
 DAY = date(2026, 8, 28)
 NEXT_DAY = date(2026, 8, 29)
@@ -1245,3 +1245,101 @@ async def test_a_long_address_still_fits(storage: Storage) -> None:
     found = await storage.get_user_by_id(user.id)
     assert found is not None
     assert found.email == longest
+
+
+# --- Атомарная выдача (фаза 11, П4) --------------------------------------
+
+
+def _new_subscription(user: User, *, amount: int = 599) -> Subscription:
+    return Subscription(
+        user_id=user.id,
+        tariff=TariffId.PRO,
+        method="card",
+        status="active",
+        amount=amount,
+        currency="RUB",
+        next_charge_at=MOMENT + timedelta(days=30),
+        created_at=MOMENT,
+        payment_method_id="card-1",
+    )
+
+
+async def test_completing_a_payment_grants_once(storage: Storage) -> None:
+    """П4: заказ, тариф и подписка — одним шагом и ровно один раз."""
+    user = await _make_user(storage, "grant-1")
+    order = await _payment(storage, user)
+    until = MOMENT + timedelta(days=30)
+
+    first = await storage.complete_payment(
+        order.id,
+        tariff=TariffId.PRO,
+        expires_at=until,
+        seen_tariff=user.tariff,
+        seen_expiry=user.tariff_expires_at,
+        subscription=_new_subscription(user),
+    )
+    second = await storage.complete_payment(
+        order.id,
+        tariff=TariffId.PRO,
+        expires_at=until + timedelta(days=30),
+        seen_tariff=TariffId.PRO,
+        seen_expiry=until,
+        subscription=None,
+    )
+
+    assert (first, second) == (GrantOutcome.GRANTED, GrantOutcome.ALREADY)
+    paid = await storage.get_payment(order.id)
+    assert paid is not None and paid.status == PaymentStatus.PAID.value
+    fresh = await storage.get_user_by_id(user.id)
+    assert fresh is not None
+    assert (fresh.tariff, fresh.tariff_expires_at) == (TariffId.PRO, until)
+    subscription = await storage.get_subscription(user.id)
+    assert subscription is not None and subscription.next_charge_at == until
+
+
+async def test_two_notices_at_once_grant_once(storage: Storage) -> None:
+    """П4: два одновременных подтверждения — одна выдача, один срок."""
+    user = await _make_user(storage, "grant-2")
+    order = await _payment(storage, user)
+    until = MOMENT + timedelta(days=30)
+
+    outcomes = await asyncio.gather(
+        *(
+            storage.complete_payment(
+                order.id,
+                tariff=TariffId.PRO,
+                expires_at=until,
+                seen_tariff=user.tariff,
+                seen_expiry=user.tariff_expires_at,
+                subscription=None,
+            )
+            for _ in range(5)
+        )
+    )
+
+    assert outcomes.count(GrantOutcome.GRANTED) == 1
+
+
+async def test_a_stale_view_of_the_tariff_grants_nothing(storage: Storage) -> None:
+    """Срок поменялся, пока считали новый, — заказ остаётся ждать пересчёта.
+
+    Иначе два разных заказа одного человека, оплаченные почти одновременно,
+    продлили бы срок от одной и той же старой даты, и месяц потерялся бы.
+    """
+    user = await _make_user(storage, "grant-3")
+    order = await _payment(storage, user)
+
+    outcome = await storage.complete_payment(
+        order.id,
+        tariff=TariffId.PRO,
+        expires_at=MOMENT + timedelta(days=30),
+        seen_tariff=TariffId.PRO,
+        seen_expiry=MOMENT,
+        subscription=None,
+    )
+
+    assert outcome is GrantOutcome.STALE
+    pending = await storage.get_payment(order.id)
+    assert pending is not None and pending.status == PaymentStatus.PENDING.value
+    fresh = await storage.get_user_by_id(user.id)
+    assert fresh is not None and fresh.tariff is TariffId.FREE

@@ -34,6 +34,7 @@ from app.core.models import (
     UserId,
 )
 from app.ports.payments import PaymentStatus, SubscriptionStatus
+from app.ports.storage import GrantOutcome
 
 
 class InMemoryStorage:
@@ -296,6 +297,33 @@ class InMemoryStorage:
             return False
         self._payments[payment_id] = replace(payment, external_id=external_id)
         return True
+
+    async def complete_payment(
+        self,
+        payment_id: str,
+        *,
+        tariff: TariffId,
+        expires_at: datetime,
+        seen_tariff: TariffId,
+        seen_expiry: datetime | None,
+        subscription: Subscription | None,
+    ) -> GrantOutcome:
+        # Ни одного await внутри: в памяти это и есть транзакция.
+        payment = self._payments.get(payment_id)
+        if payment is None or payment.status != PaymentStatus.PENDING.value:
+            return GrantOutcome.ALREADY
+        user = self._require_user(payment.user_id)
+        if user.tariff is not seen_tariff or user.tariff_expires_at != seen_expiry:
+            return GrantOutcome.STALE
+        self._payments[payment_id] = replace(
+            payment, status=PaymentStatus.PAID.value, paid_at=self._now()
+        )
+        self._users[user.id] = replace(
+            user, tariff=tariff, tariff_expires_at=expires_at
+        )
+        if subscription is not None:
+            self._subscriptions[subscription.user_id] = subscription
+        return GrantOutcome.GRANTED
 
     async def mark_paid(self, payment_id: str) -> bool:
         payment = self._payments.get(payment_id)

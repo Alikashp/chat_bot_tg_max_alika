@@ -47,6 +47,7 @@ from app.core.scenarios import keyboards
 from app.core.scenarios.deps import Deps, Session
 from app.core.tariffs import RUB, STARS, stars_price, tariff_of
 from app.ports.payments import PaymentMethod, PaymentStatus, SubscriptionStatus
+from app.ports.storage import GrantOutcome
 
 
 async def choose_method(deps: Deps, session: Session, tariff_id: TariffId) -> None:
@@ -343,6 +344,11 @@ async def approve(
     await deps.stars.approve(request_id, ok=known)
 
 
+#: Сколько раз пересчитать срок, если его поменяли во время выдачи. Это
+#: два заказа одного человека в одну и ту же секунду — третьего не бывает.
+_GRANT_ATTEMPTS = 3
+
+
 async def _renews(deps: Deps, user_id: UserId) -> bool:
     """Есть ли у человека подписка, по которой ждём очередного списания."""
     subscription = await deps.storage.get_subscription(user_id)
@@ -382,25 +388,49 @@ async def confirm(
         if order is None:
             return None
 
-    if not await deps.storage.mark_paid(order.id):
+    if order.status != PaymentStatus.PENDING.value:
         # Уведомления об оплате приходят по несколько раз. Это не ошибка —
         # просто продлевать подписку на каждое нельзя.
         deps.logger.info("payment_already_confirmed", user_id=int(order.user_id))
         return None
 
-    user = await deps.storage.get_user_by_id(order.user_id)
-    if user is None:
-        deps.logger.error("payment_user_missing", user_id=int(order.user_id))
-        return None
+    # Всё, что спрашивается у провайдера, — до выдачи. Выдача — одна
+    # транзакция хранилища (П4), и ждать в ней чужую сеть нельзя.
+    subscription = await _subscription_for(deps, order, charge_id=charge_id)
 
-    expires_at = _new_expiry(
-        deps,
-        current=user.tariff_expires_at,
-        bought=order.tariff,
-        current_tariff=user.tariff,
-    )
-    await deps.storage.set_tariff(order.user_id, order.tariff, expires_at)
-    await _record_subscription(deps, order, charge_id=charge_id, until=expires_at)
+    for _ in range(_GRANT_ATTEMPTS):
+        user = await deps.storage.get_user_by_id(order.user_id)
+        if user is None:
+            deps.logger.error("payment_user_missing", user_id=int(order.user_id))
+            return None
+        expires_at = _new_expiry(
+            deps,
+            current=user.tariff_expires_at,
+            bought=order.tariff,
+            current_tariff=user.tariff,
+        )
+        outcome = await deps.storage.complete_payment(
+            order.id,
+            tariff=order.tariff,
+            expires_at=expires_at,
+            seen_tariff=user.tariff,
+            seen_expiry=user.tariff_expires_at,
+            subscription=(
+                replace(subscription, next_charge_at=expires_at)
+                if subscription is not None
+                else None
+            ),
+        )
+        if outcome is GrantOutcome.GRANTED:
+            break
+        if outcome is GrantOutcome.ALREADY:
+            deps.logger.info("payment_already_confirmed", user_id=int(order.user_id))
+            return None
+        # STALE: срок поменялся, пока считали, — пересчитываем от нового.
+    else:
+        # Заказ остался pending — его доведёт следующее уведомление или сверка.
+        deps.logger.error("payment_grant_contended", user_id=int(order.user_id))
+        return None
 
     deps.logger.info(
         "payment_confirmed",
@@ -574,10 +604,10 @@ async def _renewal_order(
     return order
 
 
-async def _record_subscription(
-    deps: Deps, order: Payment, *, charge_id: str | None, until: datetime
-) -> None:
-    """Заводит или продлевает подписку — если продление вообще будет.
+async def _subscription_for(
+    deps: Deps, order: Payment, *, charge_id: str | None
+) -> Subscription | None:
+    """Подписка, которую заведёт или перенесёт выдача; None — продления нет.
 
     Решение принимается здесь, а не на экране: экран показал ровно то же
     самое, потому что оба места спрашивают об одном — умеет ли выбранный
@@ -606,27 +636,27 @@ async def _record_subscription(
         recurring = False
 
     if not recurring:
-        return
+        return None
 
-    await deps.storage.save_subscription(
-        Subscription(
-            user_id=order.user_id,
-            tariff=order.tariff,
-            method=order.method,
-            status=SubscriptionStatus.ACTIVE.value,
-            amount=order.amount,
-            currency=order.currency,
-            next_charge_at=until,
-            created_at=current.created_at if current is not None else deps.now(),
-            payment_method_id=method_id,
-            charge_id=charge_id,
-            # Прошлые отметки относятся к прошлому списанию: о новом надо
-            # предупредить заново, и цену к нему сверить заново.
-            reminded_for=None,
-            price_checked_for=None,
-            failed_since=None,
-            cancelled_at=None,
-        )
+    # Срок списания ставит вызывающий: он считается внутри выдачи, от того
+    # срока тарифа, который выдача и запишет.
+    return Subscription(
+        user_id=order.user_id,
+        tariff=order.tariff,
+        method=order.method,
+        status=SubscriptionStatus.ACTIVE.value,
+        amount=order.amount,
+        currency=order.currency,
+        next_charge_at=deps.now(),
+        created_at=current.created_at if current is not None else deps.now(),
+        payment_method_id=method_id,
+        charge_id=charge_id,
+        # Прошлые отметки относятся к прошлому списанию: о новом надо
+        # предупредить заново, и цену к нему сверить заново.
+        reminded_for=None,
+        price_checked_for=None,
+        failed_since=None,
+        cancelled_at=None,
     )
 
 

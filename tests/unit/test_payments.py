@@ -8,8 +8,11 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import replace
 from datetime import timedelta
+
+import pytest
 
 from app.adapters.storage.memory import InMemoryStorage
 from app.core import support, texts
@@ -535,3 +538,82 @@ async def test_a_paid_tariff_without_a_date_does_not_last_forever(
 async def test_the_free_tariff_never_expires(session: Session) -> None:
     assert session.user.tariff is TariffId.FREE
     assert session.tariff.id is TariffId.FREE
+
+
+# --- Атомарная выдача (фаза 11, П4) --------------------------------------
+
+
+async def test_a_failure_inside_the_grant_leaves_the_order_to_retry(
+    deps: Deps,
+    session: Session,
+    storage: InMemoryStorage,
+    stars: FakeStars,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """П4: выдача упала — заказ не paid и тариф прежний; повтор доводит её."""
+    await payments.start_stars(deps, session, PRO)
+    order_id = stars.invoices[0].order_id
+    real = storage.complete_payment
+
+    async def broken(*args: object, **kwargs: object) -> object:
+        raise RuntimeError("база отвалилась посреди выдачи")
+
+    monkeypatch.setattr(storage, "complete_payment", broken)
+    with pytest.raises(RuntimeError):
+        await payments.confirm(deps, order_id)
+
+    order = await storage.get_payment(order_id)
+    assert order is not None and order.status == PaymentStatus.PENDING.value
+    user = await storage.get_user_by_id(session.user.id)
+    assert user is not None and user.tariff is TariffId.FREE
+
+    monkeypatch.setattr(storage, "complete_payment", real)
+    assert await payments.confirm(deps, order_id) is not None
+    assert await payments.confirm(deps, order_id) is None
+
+
+async def test_the_provider_is_asked_before_the_grant(
+    deps: Deps,
+    session: Session,
+    storage: InMemoryStorage,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Обращения к провайдеру — до транзакции выдачи, а не внутри неё."""
+    cards = FakeCards(recurring=True)
+    with_cards = replace(deps, cards=cards)
+    steps: list[str] = []
+    real_method, real_grant = cards.saved_method_of, storage.complete_payment
+
+    async def method(external_id: str) -> str | None:
+        steps.append("провайдер")
+        return await real_method(external_id)
+
+    async def grant(*args: object, **kwargs: object) -> object:
+        steps.append("выдача")
+        return await real_grant(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(cards, "saved_method_of", method)
+    monkeypatch.setattr(storage, "complete_payment", grant)
+    await payments.start_card(with_cards, session, PRO)
+    order_id = cards.created[0][0]
+
+    await payments.confirm(with_cards, order_id)
+
+    assert steps == ["провайдер", "выдача"]
+    subscription = await storage.get_subscription(session.user.id)
+    assert subscription is not None and subscription.payment_method_id == "card-1"
+
+
+async def test_a_concurrent_extension_is_recounted_not_lost(
+    deps: Deps, session: Session, storage: InMemoryStorage, stars: FakeStars
+) -> None:
+    """Два разных заказа почти разом: оба месяца на месте, а не один."""
+    await payments.start_stars(deps, session, PRO)
+    await payments.start_stars(deps, session, PRO)
+    first, second = (invoice.order_id for invoice in stars.invoices)
+
+    await asyncio.gather(payments.confirm(deps, first), payments.confirm(deps, second))
+
+    user = await storage.get_user_by_id(session.user.id)
+    assert user is not None
+    assert user.tariff_expires_at == deps.now() + timedelta(days=60)

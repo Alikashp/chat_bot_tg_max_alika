@@ -265,3 +265,67 @@ async def test_presentations_cannot_go_negative(engine: AsyncEngine) -> None:
                 text("UPDATE users SET bonus_presentations = -1 WHERE id = :id"),
                 {"id": user_id},
             )
+
+
+# --- Атомарная выдача (фаза 11, П4) --------------------------------------
+
+
+async def test_a_failure_inside_the_grant_leaves_nothing_half_done(
+    engine: AsyncEngine,
+) -> None:
+    """П4: сбой посреди выдачи — ни заказа paid, ни тарифа, ни подписки.
+
+    Сбой настоящий: подписка с нулевой суммой нарушает ограничение схемы на
+    последнем шаге выдачи. Транзакция обязана откатить и первые два шага.
+    """
+    from datetime import timedelta
+
+    from app.adapters.storage.postgres import PostgresStorage
+    from app.core.models import MessengerKind, Subscription, TariffId
+    from app.ports.payments import PaymentStatus
+
+    storage = PostgresStorage(engine)
+    user = await storage.create_user(
+        messenger=MessengerKind.TELEGRAM,
+        external_id="grant-fail",
+        referral_code="grantfail",
+        support_number=654321,
+        bonus_images=0,
+        bonus_documents=0,
+    )
+    order = await storage.create_payment(
+        user_id=user.id,
+        tariff=TariffId.PRO,
+        method="card",
+        amount=599,
+        currency="RUB",
+        docs_version="2026-08-31",
+    )
+    now = datetime.now(UTC)
+    broken = Subscription(
+        user_id=user.id,
+        tariff=TariffId.PRO,
+        method="card",
+        status="active",
+        amount=0,
+        currency="RUB",
+        next_charge_at=now + timedelta(days=30),
+        created_at=now,
+        payment_method_id="card-1",
+    )
+
+    with pytest.raises(SQLAlchemyError):
+        await storage.complete_payment(
+            order.id,
+            tariff=TariffId.PRO,
+            expires_at=now + timedelta(days=30),
+            seen_tariff=user.tariff,
+            seen_expiry=user.tariff_expires_at,
+            subscription=broken,
+        )
+
+    pending = await storage.get_payment(order.id)
+    assert pending is not None and pending.status == PaymentStatus.PENDING.value
+    fresh = await storage.get_user_by_id(user.id)
+    assert fresh is not None and fresh.tariff is TariffId.FREE
+    assert await storage.get_subscription(user.id) is None

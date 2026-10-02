@@ -224,7 +224,6 @@ def test_the_menu_is_a_persistent_reply_keyboard() -> None:
     labels = [button.text for row in menu.keyboard for button in row]
     assert labels == [
         texts.MENU_IMAGES,
-        texts.MENU_PRESETS,
         texts.MENU_DOCUMENTS,
         texts.MENU_PROFILE,
         texts.MENU_TARIFFS,

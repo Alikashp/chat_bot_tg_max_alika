@@ -56,7 +56,7 @@ def _button(button: Button, premium_emoji: Mapping[str, str]) -> InlineKeyboardB
 
 
 def main_menu() -> ReplyKeyboardMarkup:
-    """Постоянное меню из четырёх кнопок (§2.1).
+    """Постоянное меню (§2.1).
 
     Нажатие возвращается обычным текстом — самой подписью кнопки. Обратно в
     действие его переводит core/scenarios/keyboards.py::action_for_label,

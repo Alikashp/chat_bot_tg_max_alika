@@ -399,7 +399,6 @@ async def test_start_greets_and_shows_the_menu(harness: Harness) -> None:
     labels = [button.text for row in sent[0].reply_markup.keyboard for button in row]
     assert labels == [
         texts.MENU_IMAGES,
-        texts.MENU_PRESETS,
         texts.MENU_DOCUMENTS,
         texts.MENU_PROFILE,
         texts.MENU_TARIFFS,

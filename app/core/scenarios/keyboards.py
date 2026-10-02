@@ -15,17 +15,17 @@ from app.core.actions import Action, buy_action, document_action, preset_action
 from app.core.models import Button, Keyboard
 from app.core.tariffs import PAID_TARIFFS
 
-#: Постоянное меню (§2.1).
+#: Постоянное меню (§2.1, фаза 10).
 #:
-#: Документы стоят третьими, отдельной строкой: это не развлечение, как первые
-#: две кнопки, и не служебное, как последние две. Своя строка отделяет работу
-#: от игры и от настроек, и порядок не приходится читать как случайный.
+#: Сверху то, что бот делает, снизу — служебное. Приколов здесь больше нет:
+#: это тоже картинки, и вход в них стоит под экраном «Картинки»
+#: (``image_ask``). Пятью разделами работы меню читается быстрее, чем шестью
+#: вперемешку с развлечениями.
 MENU_ACTIONS: tuple[tuple[tuple[str, Action], ...], ...] = (
     (
         (texts.MENU_IMAGES, Action.MENU_IMAGES),
-        (texts.MENU_PRESETS, Action.MENU_PRESETS),
+        (texts.MENU_DOCUMENTS, Action.MENU_DOCUMENTS),
     ),
-    ((texts.MENU_DOCUMENTS, Action.MENU_DOCUMENTS),),
     (
         (texts.MENU_PROFILE, Action.MENU_PROFILE),
         (texts.MENU_TARIFFS, Action.MENU_TARIFFS),
@@ -41,6 +41,16 @@ def main_menu() -> Keyboard:
             for row in MENU_ACTIONS
         )
     )
+
+
+def image_ask() -> Keyboard:
+    """Под вопросом «что нарисовать» — вход в приколы с фото.
+
+    Приколы ушли из меню, и без этой кнопки до них было бы не добраться.
+    Место выбрано не случайно: человек, пришедший за картинкой, — ровно тот,
+    кому интересно и переделать своё фото.
+    """
+    return Keyboard.row(Button(text=texts.MENU_PRESETS, action=Action.MENU_PRESETS))
 
 
 def retry(action: Action) -> Keyboard:
@@ -259,9 +269,15 @@ def payments_soon() -> Keyboard:
 #: Нужно там, где мессенджер возвращает нажатие текстом, а не данными кнопки:
 #: в Telegram постоянная клавиатура присылает ровно подпись. Собирается из
 #: MENU_ACTIONS, поэтому расходиться с самой клавиатурой не может.
-_MENU_BY_LABEL: dict[str, Action] = {
-    label: action for row in MENU_ACTIONS for label, action in row
-} | dict.fromkeys(texts.RETIRED_MENU_DOCUMENTS, Action.MENU_DOCUMENTS)
+#:
+#: Сверх меню здесь подписи кнопок, которые из него ушли. У человека на экране
+#: может лежать меню, пришедшее до выкладки, и нажатие по нему иначе уехало бы
+#: в чат обычным вопросом — или, хуже, описанием картинки.
+_MENU_BY_LABEL: dict[str, Action] = (
+    {label: action for row in MENU_ACTIONS for label, action in row}
+    | dict.fromkeys(texts.RETIRED_MENU_DOCUMENTS, Action.MENU_DOCUMENTS)
+    | dict.fromkeys(texts.RETIRED_MENU_PRESETS, Action.MENU_PRESETS)
+)
 
 
 def action_for_label(label: str | None) -> str | None:

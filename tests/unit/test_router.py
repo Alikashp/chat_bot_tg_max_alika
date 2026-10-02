@@ -18,6 +18,7 @@ from app.core.actions import Action, buy_action, email_action, preset_action
 from app.core.models import Chat, IncomingMessage, MessengerKind, TariffId, User
 from app.core.receipts import FiscalSettings
 from app.core.router import handle
+from app.core.scenarios import keyboards
 from app.core.scenarios.deps import Deps
 from app.infra.antiflood import FloodGuard
 from config.documents import DOCUMENT_ACTIONS
@@ -93,6 +94,60 @@ async def test_menu_label_arriving_as_text_is_recognised(
     await handle(deps, incoming(text=texts.MENU_IMAGES))
 
     assert messenger.texts_said() == [texts.IMAGE_ASK]
+    assert llm.calls == []
+
+
+def test_the_menu_is_images_documents_profile_tariffs() -> None:
+    """Приколы ушли из меню под «Картинки», меню — это пять разделов работы.
+
+    Презентаций здесь нет: без них этот набор и есть всё меню. Как кнопка
+    появляется вместе с ключом API, проверяет раздел о презентациях.
+    """
+    labels = [[button.text for button in row] for row in keyboards.main_menu().rows]
+
+    assert labels == [
+        [texts.MENU_IMAGES, texts.MENU_DOCUMENTS],
+        [texts.MENU_PROFILE, texts.MENU_TARIFFS],
+    ]
+
+
+async def test_the_images_screen_leads_to_the_photo_presets(
+    deps: Deps, user: User, messenger: FakeMessenger
+) -> None:
+    """Приколы не пропали вместе с кнопкой меню: вход в них — с экрана картинок."""
+    await handle(deps, incoming(action=Action.MENU_IMAGES))
+
+    keyboard = messenger.last_text.keyboard
+    assert keyboard is not None
+    assert [(b.text, b.action) for row in keyboard.rows for b in row] == [
+        (texts.MENU_PRESETS, Action.MENU_PRESETS)
+    ]
+
+    await handle(deps, incoming(action=Action.MENU_PRESETS))
+
+    assert messenger.texts_said()[-1] == texts.PRESETS_ASK
+
+
+async def test_the_old_presets_label_still_works(
+    deps: Deps,
+    user: User,
+    messenger: FakeMessenger,
+    storage: InMemoryStorage,
+    llm: FakeLLM,
+    images_: FakeImages,
+) -> None:
+    """Кнопка «Приколы с фото» из меню, пришедшего до выкладки, не умирает.
+
+    Постоянная клавиатура Telegram присылает подпись текстом. Не узнав её, бот
+    принял бы нажатие за описание картинки — человек ждал бы прикол, а
+    получил бы нарисованную надпись и минус картинку.
+    """
+    await storage.set_pending(user.id, pending.AWAIT_IMAGE_PROMPT)
+
+    await handle(deps, incoming(text=texts.MENU_PRESETS))
+
+    assert messenger.texts_said()[-1] == texts.PRESETS_ASK
+    assert images_.generated == []
     assert llm.calls == []
 
 

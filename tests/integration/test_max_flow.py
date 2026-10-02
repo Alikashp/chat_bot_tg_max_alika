@@ -423,6 +423,34 @@ async def test_a_menu_button_press_opens_its_screen(started: Harness) -> None:
     assert started.bot.callbacks == ["mid-in-1"], "нажатие не подтверждено"
 
 
+async def test_the_menu_in_max_matches_telegram(started: Harness) -> None:
+    """Фаза 10, К1: меню одно на оба мессенджера, приколы — под «Картинками»."""
+    await started.press(Action.MENU_SHOW)
+
+    labels = [button.text for row in started.bot.sent[-1].buttons for button in row]
+    assert labels == [
+        texts.MENU_IMAGES,
+        texts.MENU_DOCUMENTS,
+        texts.MENU_PROFILE,
+        texts.MENU_TARIFFS,
+    ]
+
+    await started.press(Action.MENU_IMAGES)
+
+    under_images = [b.text for row in started.bot.sent[-1].buttons for b in row]
+    assert texts.MENU_PRESETS in under_images
+
+
+async def test_an_old_presets_button_in_max_still_works(started: Harness) -> None:
+    """Под старыми сообщениями в MAX лежат кнопки с прежним меню.
+
+    Они присылают то же действие, что и раньше, и вести обязаны туда же.
+    """
+    await started.press(Action.MENU_PRESETS)
+
+    assert started.texts_said()[-1] == texts.PRESETS_ASK
+
+
 async def test_the_waiting_message_is_edited_into_the_picture(
     started: Harness,
 ) -> None:

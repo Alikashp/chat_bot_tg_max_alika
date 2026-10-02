@@ -120,6 +120,11 @@ MENU_DOCUMENTS = "📄 Доклад / Реферат"
 #: обычным вопросом и стоило бы ему сообщения.
 RETIRED_MENU_DOCUMENTS = ("📄 Документы",)
 
+#: Приколы были пунктом меню до фазы 10. Теперь вход в них — кнопкой под
+#: экраном «Картинки», а подпись осталась прежней: старое меню на экране у
+#: человека должно приводить туда же.
+RETIRED_MENU_PRESETS = (MENU_PRESETS,)
+
 #: Кнопка, открывающая само меню. Видна только там, где постоянного меню не
 #: бывает (MAX): вешать под каждым сообщением все пять пунктов — значит
 #: закрывать ими переписку, а человек смотрит на присланный файл, а не на меню.
@@ -127,12 +132,11 @@ BUTTON_SHOW_MENU = "☰ В меню"
 
 MENU_ASK = "Что делаем?"
 
-#: Четвёрка кнопок, доступная с любого экрана. В Telegram это постоянная
-#: клавиатура, в MAX постоянных клавиатур не бывает и та же четвёрка
-#: прикрепляется к каждому сообщению (docs/research.md §1.6). Ядро про
-#: разницу не знает.
+#: Кнопки, доступные с любого экрана. В Telegram это постоянная клавиатура, в
+#: MAX постоянных клавиатур не бывает, и меню открывается кнопкой «В меню»
+#: (docs/research.md §1.6). Ядро про разницу не знает.
 MENU: tuple[tuple[str, ...], ...] = (
-    (MENU_IMAGES, MENU_PRESETS),
+    (MENU_IMAGES, MENU_DOCUMENTS),
     (MENU_PROFILE, MENU_TARIFFS),
 )
 
@@ -302,7 +306,11 @@ IMAGE_ERROR = "Что-то пошло не так, попробуй ещё ра�
 
 
 def image_ask() -> Screen:
-    return Screen(text=IMAGE_ASK, next_step="ждём описание от пользователя")
+    return Screen(
+        text=IMAGE_ASK,
+        buttons=(MENU_PRESETS,),
+        next_step="ждём описание от пользователя",
+    )
 
 
 def image_drawing() -> Screen:
@@ -1334,7 +1342,7 @@ def _all_screens() -> tuple[Screen, ...]:
         still_working(),
         unsupported_input(),
         internal_error(),
-        menu((MENU_IMAGES, MENU_PRESETS, MENU_DOCUMENTS, MENU_PROFILE, MENU_TARIFFS)),
+        menu((MENU_IMAGES, MENU_DOCUMENTS, MENU_PROFILE, MENU_TARIFFS)),
         paywall_documents(renews_tomorrow=True),
         paywall_documents(renews_tomorrow=False),
         documents_menu(("📊 Доклад", "📝 Реферат", "📌 Конспект")),

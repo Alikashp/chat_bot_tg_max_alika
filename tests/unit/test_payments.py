@@ -313,6 +313,76 @@ async def test_a_renewal_of_a_live_subscription_is_approved(
     assert stars.approvals == [("req-2", True)]
 
 
+# --- Одна подписка — один способ оплаты ----------------------------------
+
+
+async def test_a_star_subscriber_is_not_charged_by_card_too(
+    deps: Deps,
+    session: Session,
+    stars: FakeStars,
+    cards: FakeCards,
+    messenger: FakeMessenger,
+) -> None:
+    """Звёздную подписку Telegram продлевает сам, и наша карта её не отменит.
+
+    Купи человек поверх неё тариф картой — платил бы дважды за один период:
+    звёздами в Telegram и картой у нас.
+    """
+    await payments.start_stars(deps, session, PRO)
+    await payments.confirm(deps, stars.invoices[0].order_id, charge_id="charge-1")
+
+    await payments.start_card(deps, session, PRO)
+
+    assert cards.created == []
+    screen = texts.subscription_other_method(by_stars=True)
+    assert messenger.last_text.text == screen.text
+    assert messenger.last_text.keyboard is not None
+
+
+async def test_a_card_subscriber_is_not_charged_in_stars_too(
+    deps: Deps, session: Session, stars: FakeStars, messenger: FakeMessenger
+) -> None:
+    cards = FakeCards(recurring=True)
+    recurring = replace(deps, cards=cards)
+    await payments.start_card(recurring, session, PRO)
+    await payments.confirm(recurring, cards.created[0][0])
+
+    await payments.start_stars(recurring, session, PRO)
+
+    assert stars.invoices == []
+    screen = texts.subscription_other_method(by_stars=False)
+    assert messenger.last_text.text == screen.text
+
+
+async def test_a_cancelled_subscription_does_not_block_the_other_method(
+    deps: Deps, session: Session, stars: FakeStars, storage: InMemoryStorage
+) -> None:
+    """Продление отключено — второго списания не будет, платить можно чем угодно."""
+    cards = FakeCards(recurring=True)
+    recurring = replace(deps, cards=cards)
+    await payments.start_card(recurring, session, PRO)
+    await payments.confirm(recurring, cards.created[0][0])
+    await storage.cancel_subscription(session.user.id, deps.now())
+
+    await payments.start_stars(recurring, session, PRO)
+
+    assert len(stars.invoices) == 1
+
+
+async def test_the_same_method_can_change_the_tariff(
+    deps: Deps, session: Session
+) -> None:
+    """Смена тарифа картой при карточной подписке — та же подписка, не вторая."""
+    cards = FakeCards(recurring=True)
+    recurring = replace(deps, cards=cards)
+    await payments.start_card(recurring, session, PRO)
+    await payments.confirm(recurring, cards.created[0][0])
+
+    await payments.start_card(recurring, session, TariffId.MAX)
+
+    assert len(cards.created) == 2
+
+
 # --- Подтверждение -------------------------------------------------------
 
 

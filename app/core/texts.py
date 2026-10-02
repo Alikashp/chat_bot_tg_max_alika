@@ -1287,6 +1287,25 @@ def subscription_cancel_failed() -> Screen:
     )
 
 
+def subscription_other_method(*, by_stars: bool) -> Screen:
+    """Подписка уже продлевается другим способом оплаты.
+
+    Второй способ — это вторая подписка: звёздную продлевает сам Telegram, и
+    наша оплата картой её не остановит, как и звёзды не остановят карту.
+    Человек платил бы дважды за один и тот же срок.
+    """
+    way = "звёздами" if by_stars else "картой"
+    return Screen(
+        text=(
+            f"Подписка уже продлевается {way} — второй способ означал бы "
+            "платить дважды за один срок 🙂\n"
+            "Чтобы сменить способ, отключи продление (оплаченное доработает) "
+            "и оформи подписку заново 👇"
+        ),
+        buttons=(BUTTON_SUBSCRIPTION_OFF, MENU_PROFILE),
+    )
+
+
 def subscription_reminder(
     tariff_id: TariffId, *, amount: int, currency: str, on: str
 ) -> Screen:
@@ -1545,6 +1564,8 @@ def _all_screens() -> tuple[Screen, ...]:
         subscription_stopped(TariffId.PRO, until="30 сентября"),
         subscription_cancelled(TariffId.PRO, until="30 сентября"),
         subscription_cancel_failed(),
+        subscription_other_method(by_stars=True),
+        subscription_other_method(by_stars=False),
         subscription_reminder(TariffId.PRO, amount=599, currency=RUB, on="30 сентября"),
         subscription_price_changed(
             TariffId.PRO, was=599, now=699, currency=RUB, on="30 сентября"

@@ -92,6 +92,9 @@ async def start_card(deps: Deps, session: Session, tariff_id: TariffId) -> None:
         await _payments_not_ready(deps, session)
         return
 
+    if await _renews_otherwise(deps, session, PaymentMethod.CARD):
+        return
+
     if deps.settings.receipts_ready and session.user.email is None:
         # Чек по 54-ФЗ доставляется на почту, и другого способа его вручить у
         # нас нет. Спрашиваем до заказа, а не после оплаты: человек, уже
@@ -259,6 +262,9 @@ async def start_stars(deps: Deps, session: Session, tariff_id: TariffId) -> None
         await _payments_not_ready(deps, session)
         return
 
+    if await _renews_otherwise(deps, session, PaymentMethod.STARS):
+        return
+
     stars = _stars_price(deps, tariff_id)
     order = await _open_order(
         deps,
@@ -347,6 +353,42 @@ async def approve(
 #: Сколько раз пересчитать срок, если его поменяли во время выдачи. Это
 #: два заказа одного человека в одну и ту же секунду — третьего не бывает.
 _GRANT_ATTEMPTS = 3
+
+
+async def _renews_otherwise(
+    deps: Deps, session: Session, method: PaymentMethod
+) -> bool:
+    """Продлевается ли подписка другим способом — и если да, сказать об этом.
+
+    Подписка у человека одна, но списания у двух способов независимы:
+    звёздную продлевает сам Telegram, карточную — мы. Оплата вторым способом
+    заменила бы нашу запись о подписке, но не остановила бы первую, и человек
+    платил бы дважды за один срок. Сменить способ можно — через отключение
+    продления: тогда второго списания не будет.
+
+    Проверка стоит в начале оплаты каждым способом, а не на экране выбора:
+    кнопки способов живут в переписке, и нажать старую можно когда угодно.
+    """
+    subscription = await deps.storage.get_subscription(session.user.id)
+    if (
+        subscription is None
+        or subscription.status == SubscriptionStatus.CANCELLED.value
+        or subscription.method == method.value
+    ):
+        return False
+
+    deps.logger.info(
+        "payment_other_method_renews",
+        user_id=int(session.user.id),
+        method=subscription.method,
+    )
+    screen = texts.subscription_other_method(
+        by_stars=subscription.method == PaymentMethod.STARS.value
+    )
+    await deps.messenger.send_text(
+        session.chat, screen.text, keyboard=keyboards.subscription_manage()
+    )
+    return True
 
 
 async def _renews(deps: Deps, user_id: UserId) -> bool:

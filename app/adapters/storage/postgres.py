@@ -15,7 +15,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
@@ -128,7 +128,9 @@ class PostgresStorage:
         bonus_documents: int,
         username: str = NO_USERNAME,
         source: str = sources.DIRECT,
+        bonus_presentations: int = 0,
     ) -> User:
+        now = self._now()
         query = (
             insert(users)
             .values(
@@ -137,9 +139,11 @@ class PostgresStorage:
                 tariff=TariffId.FREE.value,
                 referral_code=referral_code,
                 support_number=support_number,
-                created_at=self._now(),
+                created_at=now,
                 bonus_images=bonus_images,
                 bonus_documents=bonus_documents,
+                bonus_presentations=bonus_presentations,
+                presentations_granted_at=now,
                 username=username,
                 source=source,
             )
@@ -274,6 +278,7 @@ class PostgresStorage:
         messages: int = 0,
         images: int = 0,
         documents: int = 0,
+        presentations: int = 0,
     ) -> bool:
         """Списание всё-или-ничего.
 
@@ -289,11 +294,13 @@ class PostgresStorage:
                 users.c.bonus_messages >= messages,
                 users.c.bonus_images >= images,
                 users.c.bonus_documents >= documents,
+                users.c.bonus_presentations >= presentations,
             )
             .values(
                 bonus_messages=users.c.bonus_messages - messages,
                 bonus_images=users.c.bonus_images - images,
                 bonus_documents=users.c.bonus_documents - documents,
+                bonus_presentations=users.c.bonus_presentations - presentations,
             )
             .returning(users.c.id)
         )
@@ -308,6 +315,7 @@ class PostgresStorage:
         messages: int = 0,
         images: int = 0,
         documents: int = 0,
+        presentations: int = 0,
     ) -> None:
         query = (
             update(users)
@@ -316,7 +324,41 @@ class PostgresStorage:
                 bonus_messages=users.c.bonus_messages + messages,
                 bonus_images=users.c.bonus_images + images,
                 bonus_documents=users.c.bonus_documents + documents,
+                bonus_presentations=users.c.bonus_presentations + presentations,
             )
+        )
+        async with self._session() as session, session.begin():
+            await session.execute(query)
+
+    async def claim_presentation(
+        self, user_id: UserId, now: datetime, *, stale_after: timedelta
+    ) -> bool:
+        """Захват слота одним UPDATE с условием в WHERE.
+
+        Из двух одновременных нажатий выигрывает ровно одно: второе после
+        захвата строки перепроверяет условие (READ COMMITTED) и видит, что
+        слот уже занят.
+        """
+        query = (
+            update(users)
+            .where(
+                users.c.id == user_id,
+                or_(
+                    users.c.presentation_started_at.is_(None),
+                    users.c.presentation_started_at < now - stale_after,
+                ),
+            )
+            .values(presentation_started_at=now)
+            .returning(users.c.id)
+        )
+        async with self._session() as session, session.begin():
+            return (await session.execute(query)).one_or_none() is not None
+
+    async def release_presentation(self, user_id: UserId) -> None:
+        query = (
+            update(users)
+            .where(users.c.id == user_id)
+            .values(presentation_started_at=None)
         )
         async with self._session() as session, session.begin():
             await session.execute(query)
@@ -785,11 +827,13 @@ def _to_user(row: Any) -> User:
         bonus_messages=row["bonus_messages"],
         bonus_images=row["bonus_images"],
         bonus_documents=row["bonus_documents"],
+        bonus_presentations=row["bonus_presentations"],
         channel_bonus_at=row["channel_bonus_at"],
         tariff_expires_at=row["tariff_expires_at"],
         email=row["email"],
         pending=row["pending"],
         retry_context=row["retry_context"],
+        presentation_started_at=row["presentation_started_at"],
     )
 
 

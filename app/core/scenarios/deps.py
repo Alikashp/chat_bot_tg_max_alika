@@ -22,6 +22,7 @@ from app.ports.documents import DocumentReader, DocumentWriter
 from app.ports.messenger import Messenger
 from app.ports.observability import Logger
 from app.ports.payments import CardPayments, StarsPayments
+from app.ports.presentations import Presentations
 from app.ports.storage import Storage
 
 
@@ -57,6 +58,14 @@ class Deps:
     #: файлы не ходит. Прикола может здесь не быть: тогда меню покажет его
     #: без примера, как раньше.
     examples: Mapping[str, Photo] = field(default_factory=dict)
+    #: Сборка презентаций. None — ключа API нет, и раздела нет вовсе: ни
+    #: кнопки в меню, ни презентации в награде за друга (фаза 10, К2).
+    presentations: Presentations | None = None
+
+    @property
+    def presentations_on(self) -> bool:
+        """Включён ли раздел презентаций."""
+        return self.presentations is not None
 
     def today(self) -> date:
         """Какие сейчас сутки для пользователя."""

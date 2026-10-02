@@ -30,6 +30,14 @@ _AWAIT_PRESET_PREFIX = "await:preset:"
 #: обращения между выбором и разбором не бывает.
 _AWAIT_DOCUMENT_PREFIX = "await:doc:"
 
+#: Ждём тему презентации (фаза 10).
+AWAIT_PRESENTATION_TOPIC = "await:pres"
+
+#: Ждём выбор оформления. За префиксом — тема, которую человек уже написал:
+#: между темой и нажатием на оформление проходит отдельное обращение, и
+#: помнить её больше негде.
+_AWAIT_PRESENTATION_THEME_PREFIX = "await:pres:theme:"
+
 #: Ждём почту для фискального чека. За префиксом — тариф, за которым человек
 #: шёл: спросив адрес, надо вернуть его туда же, а не в начало витрины.
 _AWAIT_EMAIL_PREFIX = "await:email:"
@@ -156,3 +164,22 @@ def parse_await_document(pending: str | None) -> str | None:
     if pending is None or not pending.startswith(_AWAIT_DOCUMENT_PREFIX):
         return None
     return pending.removeprefix(_AWAIT_DOCUMENT_PREFIX) or None
+
+
+def is_awaiting_presentation_topic(pending: str | None) -> bool:
+    """Ждём ли тему презентации."""
+    return pending == AWAIT_PRESENTATION_TOPIC
+
+
+def await_presentation_theme(topic: str) -> str:
+    """Состояние «тема есть, ждём выбор оформления»."""
+    if not topic:
+        raise ValueError("нужна тема презентации")
+    return f"{_AWAIT_PRESENTATION_THEME_PREFIX}{topic}"
+
+
+def parse_await_presentation_theme(pending: str | None) -> str | None:
+    """Тема, под которую ждём оформление; None — ждём не его."""
+    if pending is None or not pending.startswith(_AWAIT_PRESENTATION_THEME_PREFIX):
+        return None
+    return pending.removeprefix(_AWAIT_PRESENTATION_THEME_PREFIX) or None

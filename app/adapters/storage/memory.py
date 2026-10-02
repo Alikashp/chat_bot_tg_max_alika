@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import replace
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from itertools import count
 from uuid import uuid4
 
@@ -58,6 +58,11 @@ class InMemoryStorage:
         #: нему проверяют, что попытка записана, — так же, как в бою по
         #: таблице generations.
         self.generations: list[Generation] = []
+        #: Когда человеку выдали разовую презентацию (фаза 10, К6). В базе это
+        #: колонка users.presentations_granted_at; здесь хватает словаря —
+        #: доменному пользователю отметка ни к чему, ею пользуется только
+        #: раздача.
+        self.presentations_granted_at: dict[UserId, datetime] = {}
         #: Приглашённый -> (пригласивший, когда). Ключ по приглашённому,
         #: потому что награда полагается только за нового пользователя и
         #: только одному пригласившему.
@@ -89,6 +94,7 @@ class InMemoryStorage:
         bonus_documents: int,
         username: str = NO_USERNAME,
         source: str = sources.DIRECT,
+        bonus_presentations: int = 0,
     ) -> User:
         existing = self._by_external.get((messenger, external_id))
         if existing is not None:
@@ -111,9 +117,11 @@ class InMemoryStorage:
             created_at=self._now(),
             bonus_images=bonus_images,
             bonus_documents=bonus_documents,
+            bonus_presentations=bonus_presentations,
             username=username,
             source=source,
         )
+        self.presentations_granted_at[user.id] = self._now()
         self._users[user.id] = user
         self._by_external[(messenger, external_id)] = user.id
         self._by_referral_code[referral_code] = user.id
@@ -179,12 +187,14 @@ class InMemoryStorage:
         messages: int = 0,
         images: int = 0,
         documents: int = 0,
+        presentations: int = 0,
     ) -> bool:
         user = self._require_user(user_id)
         if (
             user.bonus_messages < messages
             or user.bonus_images < images
             or user.bonus_documents < documents
+            or user.bonus_presentations < presentations
         ):
             return False
         self._users[user_id] = replace(
@@ -192,6 +202,7 @@ class InMemoryStorage:
             bonus_messages=user.bonus_messages - messages,
             bonus_images=user.bonus_images - images,
             bonus_documents=user.bonus_documents - documents,
+            bonus_presentations=user.bonus_presentations - presentations,
         )
         return True
 
@@ -202,6 +213,7 @@ class InMemoryStorage:
         messages: int = 0,
         images: int = 0,
         documents: int = 0,
+        presentations: int = 0,
     ) -> None:
         user = self._require_user(user_id)
         self._users[user_id] = replace(
@@ -209,7 +221,22 @@ class InMemoryStorage:
             bonus_messages=user.bonus_messages + messages,
             bonus_images=user.bonus_images + images,
             bonus_documents=user.bonus_documents + documents,
+            bonus_presentations=user.bonus_presentations + presentations,
         )
+
+    async def claim_presentation(
+        self, user_id: UserId, now: datetime, *, stale_after: timedelta
+    ) -> bool:
+        user = self._require_user(user_id)
+        started = user.presentation_started_at
+        if started is not None and started >= now - stale_after:
+            return False
+        self._users[user_id] = replace(user, presentation_started_at=now)
+        return True
+
+    async def release_presentation(self, user_id: UserId) -> None:
+        user = self._require_user(user_id)
+        self._users[user_id] = replace(user, presentation_started_at=None)
 
     async def record_generation(self, generation: Generation) -> None:
         self._require_user(generation.user_id)

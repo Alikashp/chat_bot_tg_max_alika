@@ -36,6 +36,7 @@ class GenerationKind(StrEnum):
     IMAGE = "image"
     PRESET = "preset"
     DOCUMENT = "document"
+    PRESENTATION = "presentation"
 
 
 class GenerationStatus(StrEnum):

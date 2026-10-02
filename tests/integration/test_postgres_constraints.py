@@ -11,9 +11,11 @@
 
 from __future__ import annotations
 
+import importlib.util
 import os
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 from sqlalchemy import text
@@ -176,3 +178,90 @@ async def test_database_errors_never_carry_the_conversation(
 
     assert secret not in str(failure.value)
     assert secret not in repr(failure.value)
+
+
+# --- Разовая презентация (фаза 10, К6) -----------------------------------
+
+
+def _migration() -> object:
+    """Модуль миграции презентаций: его запрос раздачи и проверяется."""
+    path = (
+        Path(__file__).resolve().parents[2]
+        / "migrations"
+        / "versions"
+        / "c7e4b2a9d150_presentations.py"
+    )
+    spec = importlib.util.spec_from_file_location("presentations_migration", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+async def test_the_presentation_grant_runs_once_even_if_repeated(
+    engine: AsyncEngine,
+) -> None:
+    """К6: тот же запрос раздачи, выполненный дважды, даёт одну презентацию.
+
+    Люди, заведённые до миграции, выглядят так: ноль на балансе и нет отметки.
+    Кто-то из них свою уже потратил — у него ноль и отметка; ему второй раз
+    не положено.
+    """
+    grant = _migration().GRANT_SQL  # type: ignore[attr-defined]
+    old, spent = await _make_users(engine, 2)
+    async with engine.begin() as connection:
+        await connection.execute(
+            text(
+                "UPDATE users SET bonus_presentations = 0, "
+                "presentations_granted_at = NULL WHERE id = :id"
+            ),
+            {"id": old},
+        )
+        await connection.execute(
+            text("UPDATE users SET bonus_presentations = 0 WHERE id = :id"),
+            {"id": spent},
+        )
+
+        await connection.execute(text(grant))
+        await connection.execute(text(grant))
+
+        result = await connection.execute(
+            text("SELECT id, bonus_presentations FROM users ORDER BY id")
+        )
+        rows = {int(row[0]): int(row[1]) for row in result.all()}
+
+    assert rows == {old: 1, spent: 0}
+
+
+async def test_a_row_from_the_old_code_still_gets_its_presentation(
+    engine: AsyncEngine,
+) -> None:
+    """Во время выкладки старый код вставляет людей без новых колонок.
+
+    Умолчания схемы выдают им презентацию и ставят отметку — иначе люди,
+    пришедшие в эти минуты, остались бы ни с чем, а раздача их бы пропустила.
+    """
+    (user_id,) = await _make_users(engine, 1)
+    async with engine.begin() as connection:
+        row = (
+            await connection.execute(
+                text(
+                    "SELECT bonus_presentations, presentations_granted_at "
+                    "FROM users WHERE id = :id"
+                ),
+                {"id": user_id},
+            )
+        ).one()
+
+    assert row[0] == 1
+    assert row[1] is not None
+
+
+async def test_presentations_cannot_go_negative(engine: AsyncEngine) -> None:
+    (user_id,) = await _make_users(engine, 1)
+    with pytest.raises(IntegrityError):
+        async with engine.begin() as connection:
+            await connection.execute(
+                text("UPDATE users SET bonus_presentations = -1 WHERE id = :id"),
+                {"id": user_id},
+            )

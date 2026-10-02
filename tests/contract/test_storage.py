@@ -431,6 +431,87 @@ async def test_bonus_cannot_be_overspent_concurrently(storage: Storage) -> None:
 # --- Бонус за подписку на канал ------------------------------------------
 
 
+async def test_presentations_are_given_at_signup(storage: Storage) -> None:
+    """К6: разовая презентация кладётся одной вставкой с пользователем."""
+    user = await storage.create_user(
+        messenger=MessengerKind.TELEGRAM,
+        external_id="p1",
+        referral_code="codep1",
+        support_number=support.generate_number(),
+        bonus_images=0,
+        bonus_documents=0,
+        bonus_presentations=1,
+    )
+
+    assert user.bonus_presentations == 1
+    fresh = await storage.get_user_by_id(user.id)
+    assert fresh is not None and fresh.bonus_presentations == 1
+
+
+async def test_presentations_are_added_and_spent_all_or_nothing(
+    storage: Storage,
+) -> None:
+    user = await _make_user(storage)
+    await storage.add_bonus(user.id, presentations=1)
+
+    assert await storage.spend_bonus(user.id, presentations=1)
+    assert not await storage.spend_bonus(user.id, presentations=1)
+    fresh = await storage.get_user_by_id(user.id)
+    assert fresh is not None and fresh.bonus_presentations == 0
+
+
+async def test_a_presentation_cannot_be_spent_twice_concurrently(
+    storage: Storage,
+) -> None:
+    """Одна презентация, два одновременных списания — успешно ровно одно."""
+    user = await _make_user(storage)
+    await storage.add_bonus(user.id, presentations=1)
+
+    results = await asyncio.gather(
+        *(storage.spend_bonus(user.id, presentations=1) for _ in range(5))
+    )
+
+    assert results.count(True) == 1
+
+
+async def test_one_presentation_build_at_a_time(storage: Storage) -> None:
+    """К5: слот сборки у человека один, и освобождается явно."""
+    user = await _make_user(storage)
+    window = timedelta(minutes=10)
+
+    assert await storage.claim_presentation(user.id, MOMENT, stale_after=window)
+    assert not await storage.claim_presentation(user.id, MOMENT, stale_after=window)
+
+    await storage.release_presentation(user.id)
+    assert await storage.claim_presentation(user.id, MOMENT, stale_after=window)
+
+
+async def test_two_presses_at_once_claim_one_slot(storage: Storage) -> None:
+    """К5 на настоящей базе: из одновременных захватов выигрывает один."""
+    user = await _make_user(storage)
+
+    results = await asyncio.gather(
+        *(
+            storage.claim_presentation(
+                user.id, MOMENT, stale_after=timedelta(minutes=10)
+            )
+            for _ in range(5)
+        )
+    )
+
+    assert results.count(True) == 1
+
+
+async def test_an_abandoned_build_can_be_claimed_again(storage: Storage) -> None:
+    """Сборку оборвала выкатка — слот не заперт навсегда."""
+    user = await _make_user(storage)
+    window = timedelta(minutes=10)
+    assert await storage.claim_presentation(user.id, MOMENT, stale_after=window)
+
+    later = MOMENT + timedelta(minutes=11)
+    assert await storage.claim_presentation(user.id, later, stale_after=window)
+
+
 async def test_channel_bonus_is_granted_once(storage: Storage) -> None:
     """Разовый — значит разовый.
 

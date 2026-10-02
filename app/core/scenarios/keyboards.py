@@ -11,7 +11,13 @@
 from __future__ import annotations
 
 from app.core import texts
-from app.core.actions import Action, buy_action, document_action, preset_action
+from app.core.actions import (
+    Action,
+    buy_action,
+    document_action,
+    preset_action,
+    theme_action,
+)
 from app.core.models import Button, Keyboard
 from app.core.tariffs import PAID_TARIFFS
 
@@ -33,12 +39,34 @@ MENU_ACTIONS: tuple[tuple[tuple[str, Action], ...], ...] = (
 )
 
 
-def main_menu() -> Keyboard:
-    """Кнопки, доступные с любого экрана."""
+#: Строка презентаций. Своя, а не рядом с «Доклад / Реферат»: вдвоём эти
+#: подписи шире телефона и обрезаются. Вставляется после строки с работой,
+#: и порядок меню читается как в поручении: Картинки · Доклад · Презентации ·
+#: Профиль · Тарифы.
+_PRESENTATIONS_ROW: tuple[tuple[str, Action], ...] = (
+    (texts.MENU_PRESENTATIONS, Action.MENU_PRESENTATIONS),
+)
+
+
+def _menu_rows(presentations: bool) -> tuple[tuple[tuple[str, Action], ...], ...]:
+    """Строки меню. Презентации — только там, где они включены (К2)."""
+    if not presentations:
+        return MENU_ACTIONS
+    work, *rest = MENU_ACTIONS
+    return (work, _PRESENTATIONS_ROW, *rest)
+
+
+def main_menu(*, presentations: bool = False) -> Keyboard:
+    """Кнопки, доступные с любого экрана.
+
+    ``presentations`` — подключён ли API презентаций. Без ключа кнопки нет
+    вовсе: вести человека в раздел, который ответит «недоступно», хуже, чем
+    не показывать его.
+    """
     return Keyboard(
         rows=tuple(
             tuple(Button(text=label, action=action) for label, action in row)
-            for row in MENU_ACTIONS
+            for row in _menu_rows(presentations)
         )
     )
 
@@ -274,7 +302,7 @@ def payments_soon() -> Keyboard:
 #: может лежать меню, пришедшее до выкладки, и нажатие по нему иначе уехало бы
 #: в чат обычным вопросом — или, хуже, описанием картинки.
 _MENU_BY_LABEL: dict[str, Action] = (
-    {label: action for row in MENU_ACTIONS for label, action in row}
+    {label: action for row in _menu_rows(True) for label, action in row}
     | dict.fromkeys(texts.RETIRED_MENU_DOCUMENTS, Action.MENU_DOCUMENTS)
     | dict.fromkeys(texts.RETIRED_MENU_PRESETS, Action.MENU_PRESETS)
 )
@@ -307,6 +335,41 @@ def document_result(actions: tuple[tuple[str, str], ...]) -> Keyboard:
     return documents_menu(actions)
 
 
-def menu_labels() -> tuple[str, ...]:
+def menu_labels(*, presentations: bool = False) -> tuple[str, ...]:
     """Подписи пунктов меню — для экрана, который перечисляет их текстом."""
-    return tuple(label for row in MENU_ACTIONS for label, _ in row)
+    return tuple(label for row in _menu_rows(presentations) for label, _ in row)
+
+
+def presentation_cancel() -> Keyboard:
+    """«Отмена» на шагах темы и оформления: снимает ожидание и ведёт в меню."""
+    return Keyboard.row(Button(text=texts.BUTTON_CANCEL, action=Action.MENU_SHOW))
+
+
+def presentation_themes(themes: tuple[tuple[str, str], ...]) -> Keyboard:
+    """Оформления из API, каждое своей строкой, и «Отмена» под ними.
+
+    Пары «подпись, идентификатор». Своей строкой — потому что названия
+    приходят от провайдера и их длину задаём не мы.
+    """
+    rows = [
+        (Button(text=name, action=theme_action(theme_id)),) for name, theme_id in themes
+    ]
+    rows.append((Button(text=texts.BUTTON_CANCEL, action=Action.MENU_SHOW),))
+    return Keyboard(rows=tuple(rows))
+
+
+def presentation_ready() -> Keyboard:
+    """Под готовой презентацией — «Ещё одну»."""
+    return Keyboard.row(
+        Button(text=texts.BUTTON_PRESENTATION_AGAIN, action=Action.PRESENTATION_AGAIN)
+    )
+
+
+def presentation_retry() -> Keyboard:
+    """«Повторить» под сбоем: та же тема, то же оформление."""
+    return retry(Action.PRESENTATION_RETRY)
+
+
+def paywall_presentations(invite_label: str) -> Keyboard:
+    """Презентации кончились — позвать друга. Тарифов нет: в них их нет."""
+    return Keyboard.row(Button(text=invite_label, action=Action.INVITE_FRIEND))

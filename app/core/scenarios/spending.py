@@ -55,11 +55,23 @@ async def charge(deps: Deps, session: Session, kind: LimitKind) -> None:
         return
 
     if source is Source.BONUS:
-        spent = await deps.storage.spend_bonus(user.id, **one)
-        if not spent:
-            # Бонус успели потратить параллельно. Результат пользователь уже
-            # получил, отбирать его поздно — записываем в дневной расход.
-            await deps.storage.add_usage(user.id, session.day, **one)
+        spent = await deps.storage.spend_bonus(
+            user.id,
+            presentations=1 if kind is LimitKind.PRESENTATIONS else 0,
+            **one,
+        )
+        if spent:
+            return
+        if kind is LimitKind.PRESENTATIONS:
+            # Дневного расхода у презентаций нет — записать перерасход некуда.
+            # Сборка у человека одна за раз, так что сюда в норме не попасть.
+            deps.logger.warning(
+                "charged_over_limit", user_id=int(user.id), kind=kind.value
+            )
+            return
+        # Бонус успели потратить параллельно. Результат пользователь уже
+        # получил, отбирать его поздно — записываем в дневной расход.
+        await deps.storage.add_usage(user.id, session.day, **one)
         return
 
     # Списывать неоткуда: результат отдан сверх лимита. Одновременные задачи
@@ -69,11 +81,12 @@ async def charge(deps: Deps, session: Session, kind: LimitKind) -> None:
 
 
 def _one_of(kind: LimitKind) -> dict[str, int]:
-    """Единица расхода нужного вида — в терминах хранилища.
+    """Единица дневного расхода нужного вида — в терминах хранилища.
 
-    Одним местом, а не тройкой условий на каждый вызов: видов ресурса стало
-    три, и забытая ветка означала бы, что человек получил работу бесплатно,
-    а мы этого даже не заметили.
+    Одним местом, а не тройкой условий на каждый вызов: забытая ветка
+    означала бы, что человек получил работу бесплатно, а мы этого даже не
+    заметили. Презентаций здесь нет: дневного расхода у них не бывает, и
+    списываются они только из бонуса (см. ``charge``).
     """
     return {
         "messages": 1 if kind is LimitKind.MESSAGES else 0,

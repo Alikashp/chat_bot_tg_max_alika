@@ -67,6 +67,18 @@ def _messages(count: int) -> str:
     return f"{count} {plural(count, 'сообщение', 'сообщения', 'сообщений')}"
 
 
+def _presentations(count: int) -> str:
+    return f"{count} {plural(count, 'презентация', 'презентации', 'презентаций')}"
+
+
+def _gifts(*parts: str) -> str:
+    """«+20 сообщений, +2 картинки и +1 презентация» — через запятую и «и»."""
+    marked = [f"+{part}" for part in parts]
+    if len(marked) == 1:
+        return marked[0]
+    return f"{', '.join(marked[:-1])} и {marked[-1]}"
+
+
 def _friends(count: int) -> str:
     return f"{count} {plural(count, 'друга', 'друзей', 'друзей')}"
 
@@ -111,6 +123,8 @@ MENU_TARIFFS = "⭐ Тарифы"
 #: «Документы» человеку ничего не говорили: слово описывает, что бот берёт на
 #: вход, а не что он отдаёт. Кнопка называется тем, за чем в неё приходят.
 MENU_DOCUMENTS = "📄 Доклад / Реферат"
+#: Есть в меню только тогда, когда задан ключ API презентаций (фаза 10, К2).
+MENU_PRESENTATIONS = "📑 Презентации"
 
 #: Подписи, которые эта кнопка носила раньше.
 #:
@@ -169,6 +183,11 @@ def button_invite_for_images(bonus: int) -> str:
 def button_invite_for_messages(bonus: int) -> str:
     """То же, когда кончились сообщения."""
     return f"🎁 Позвать друга → +{_messages(bonus)} сразу"
+
+
+def button_invite_for_presentations(bonus: int) -> str:
+    """То же, когда кончились презентации."""
+    return f"🎁 Позвать друга → +{_presentations(bonus)}"
 
 
 def button_channel_bonus(bonus: int) -> str:
@@ -429,6 +448,106 @@ def document_rejected(reason: str, action_buttons: tuple[str, ...]) -> Screen:
     return Screen(text=reason, buttons=action_buttons)
 
 
+# --- Презентации (фаза 10) -----------------------------------------------
+
+PRESENTATION_ASK = "О чём презентация? Напиши тему, например: Как работает фотосинтез"
+
+#: Границы — те же, что у провайдера (docs/API.md §3.1). Отсекаем до
+#: обращения: ответ провайдера на неверную тему человеку мы всё равно не
+#: показываем, а свой отказ быстрее и понятнее.
+PRESENTATION_TOPIC_BAD = "Тема нужна от 3 до 200 знаков. Напиши её ещё раз 🙏"
+
+PRESENTATION_PICK_THEME = "Выбери оформление 👇"
+
+#: Дословно из поручения заказчика. Многоточия нет намеренно: обещание
+#: «около минуты» и так говорит, что ждать.
+PRESENTATION_WORKING = "Готовлю презентацию, около минуты"
+
+#: Сообщение с этим текстом стоит над файлами — сначала «готовлю», потом
+#: файлы, — поэтому стрелка смотрит вниз.
+PRESENTATION_READY = "Готово! Презентация ниже — PDF и PPTX 👇"
+
+#: PDF у провайдера не собрался, PPTX полноценный. Сказать об этом надо:
+#: иначе человек будет искать второй файл.
+PRESENTATION_READY_WITHOUT_PDF = (
+    "Готово! PDF не собрался, держи PPTX — его можно открыть и править 👇"
+)
+
+#: Вторая половина фразы — обещание, которое обязано быть правдой: презентация
+#: списывается только после доставки файла.
+PRESENTATION_ERROR = (
+    "Не получилось собрать презентацию 🤷 Попробуй ещё раз — она не потратилась."
+)
+
+PRESENTATION_BUSY = (
+    "Сейчас много запросов, попробуй позже 🙏 Презентация не потратилась."
+)
+
+#: Второе нажатие, пока первая сборка идёт. Вторую колоду мы не начинаем.
+PRESENTATION_IN_PROGRESS = "Презентация уже готовится — дождись её 🙏"
+
+BUTTON_PRESENTATION_AGAIN = "📑 Ещё одну"
+
+#: Имя файла, если из темы ничего пригодного для имени не осталось.
+PRESENTATION_FILENAME = "Презентация"
+
+
+def presentation_ask() -> Screen:
+    return Screen(text=PRESENTATION_ASK, buttons=(BUTTON_CANCEL,))
+
+
+def presentation_topic_bad() -> Screen:
+    return Screen(text=PRESENTATION_TOPIC_BAD, next_step="ждём тему ещё раз")
+
+
+def presentation_pick_theme(theme_buttons: tuple[str, ...]) -> Screen:
+    return Screen(text=PRESENTATION_PICK_THEME, buttons=(*theme_buttons, BUTTON_CANCEL))
+
+
+def presentation_working() -> Screen:
+    return Screen(
+        text=PRESENTATION_WORKING,
+        next_step="живёт до пяти минут и заменяется готовыми файлами",
+    )
+
+
+def presentation_ready(*, with_pdf: bool = True) -> Screen:
+    return Screen(
+        text=PRESENTATION_READY if with_pdf else PRESENTATION_READY_WITHOUT_PDF,
+        buttons=(BUTTON_PRESENTATION_AGAIN,),
+    )
+
+
+def presentation_error() -> Screen:
+    return Screen(text=PRESENTATION_ERROR, buttons=(BUTTON_RETRY,))
+
+
+def presentation_busy() -> Screen:
+    return Screen(text=PRESENTATION_BUSY, buttons=(BUTTON_RETRY,))
+
+
+def presentation_in_progress() -> Screen:
+    return Screen(
+        text=PRESENTATION_IN_PROGRESS, next_step="файлы придут сообщением ниже"
+    )
+
+
+def paywall_presentations(invite_presentations: int) -> Screen:
+    """Презентации кончились.
+
+    Кнопки тарифов здесь нет, и это не забывчивость: презентаций нет ни в
+    одном тарифе, они приходят только разово. Звать платить за то, чего
+    тариф не даст, — обещание, которое экран не выполнит.
+    """
+    return Screen(
+        text=(
+            "Презентации закончились 😔\n"
+            "За каждого друга, который запустит бота, — ещё одна:"
+        ),
+        buttons=(button_invite_for_presentations(invite_presentations),),
+    )
+
+
 # --- Пресеты (§2.4) ------------------------------------------------------
 
 PRESETS_ASK = "Выбери, что сделаем с фото:"
@@ -640,7 +759,9 @@ def profile(
 # --- Рефералка (§2.7) ----------------------------------------------------
 
 
-def referral_offer(*, bonus_messages: int, bonus_images: int) -> Screen:
+def referral_offer(
+    *, bonus_messages: int, bonus_images: int, bonus_presentations: int = 0
+) -> Screen:
     """Что человек получит за друга — до того, как он что-то отправит.
 
     Голая ссылка сама по себе не объясняет, зачем её пересылать. Сначала
@@ -649,12 +770,18 @@ def referral_offer(*, bonus_messages: int, bonus_images: int) -> Screen:
     Другу здесь ничего не обещано, и это не забывчивость (фаза 10): награду
     получает только пригласивший. Вторая строка говорит, когда она придёт, —
     иначе человек ждал бы её сразу после пересылки.
+
+    Презентация называется, только когда её правда дают: без ключа API
+    ``bonus_presentations`` — ноль, и обещания нет (К2).
     """
+    gifts = _gifts(
+        _messages(bonus_messages),
+        _images(bonus_images),
+        *((_presentations(bonus_presentations),) if bonus_presentations else ()),
+    )
     return Screen(
         text=(
-            f"Позови друга — тебе +{_messages(bonus_messages)} "
-            f"и +{_images(bonus_images)} 🎁\n"
-            "Начислю, как только друг запустит бота"
+            f"Позови друга — тебе {gifts} 🎁\nНачислю, как только друг запустит бота"
         ),
         buttons=(BUTTON_SEND_TO_FRIEND,),
     )
@@ -673,10 +800,15 @@ def referral_invite(referral_url: str) -> Screen:
     )
 
 
-def referral_reward(*, messages: int, images: int) -> Screen:
+def referral_reward(*, messages: int, images: int, presentations: int = 0) -> Screen:
     """Пригласившему — сразу, как только друг нажал /start (§2.7)."""
+    gifts = _gifts(
+        _messages(messages),
+        _images(images),
+        *((_presentations(presentations),) if presentations else ()),
+    )
     return Screen(
-        text=(f"🎁 Твой друг зашёл! Тебе +{_messages(messages)} и +{_images(images)}."),
+        text=f"🎁 Твой друг зашёл! Тебе {gifts}.",
         buttons=_menu_buttons(),
     )
 
@@ -1260,8 +1392,10 @@ def _all_screens() -> tuple[Screen, ...]:
             user_number=1234,
         ),
         referral_offer(bonus_messages=20, bonus_images=2),
+        referral_offer(bonus_messages=20, bonus_images=2, bonus_presentations=1),
         referral_invite("https://t.me/mybot?start=ref_abc123"),
         referral_reward(messages=20, images=2),
+        referral_reward(messages=20, images=2, presentations=1),
         tariffs_screen(),
         payment_methods(TariffId.PRO, price_rub=599, stars=524),
         email_ask(),
@@ -1339,6 +1473,25 @@ def _all_screens() -> tuple[Screen, ...]:
         unsupported_input(),
         internal_error(),
         menu((MENU_IMAGES, MENU_DOCUMENTS, MENU_PROFILE, MENU_TARIFFS)),
+        menu(
+            (
+                MENU_IMAGES,
+                MENU_DOCUMENTS,
+                MENU_PRESENTATIONS,
+                MENU_PROFILE,
+                MENU_TARIFFS,
+            )
+        ),
+        presentation_ask(),
+        presentation_topic_bad(),
+        presentation_pick_theme(("Графит светлая", "Лазурь", "Свежая зелёная")),
+        presentation_working(),
+        presentation_ready(),
+        presentation_ready(with_pdf=False),
+        presentation_error(),
+        presentation_busy(),
+        presentation_in_progress(),
+        paywall_presentations(1),
         paywall_documents(renews_tomorrow=True),
         paywall_documents(renews_tomorrow=False),
         documents_menu(("📊 Доклад", "📝 Реферат", "📌 Конспект")),

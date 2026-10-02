@@ -55,7 +55,7 @@ def _button(button: Button, premium_emoji: Mapping[str, str]) -> InlineKeyboardB
     )
 
 
-def main_menu() -> ReplyKeyboardMarkup:
+def main_menu(menu: Keyboard | None = None) -> ReplyKeyboardMarkup:
     """Постоянное меню (§2.1).
 
     Нажатие возвращается обычным текстом — самой подписью кнопки. Обратно в
@@ -70,7 +70,7 @@ def main_menu() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text=button.text) for button in row]
-            for row in core_keyboards.main_menu().rows
+            for row in (menu or core_keyboards.main_menu()).rows
         ],
         resize_keyboard=True,
         is_persistent=True,

@@ -217,6 +217,10 @@ class Settings(BaseSettings):
     #: каждые сутки.
     signup_documents: Annotated[int, Field(ge=0, le=100)] = 3
 
+    #: Сколько презентаций человек получает при регистрации (фаза 10). Уже
+    #: заведённым одну выдала миграция c7e4b2a9d150.
+    signup_presentations: Annotated[int, Field(ge=0, le=100)] = 1
+
     #: Потолок длины готового документа в токенах. Свой, а не общий с чатом:
     #: LLM_MAX_TOKENS рассчитан на реплику в разговоре, и доклад в него не
     #: помещается — обрывается на полуслове посреди раздела.
@@ -228,6 +232,8 @@ class Settings(BaseSettings):
     #: Награда за приглашённого друга — только пригласившему.
     referral_bonus_images: Annotated[int, Field(ge=0, le=100)] = 2
     referral_bonus_messages: Annotated[int, Field(ge=0, le=1000)] = 20
+    #: Презентация за друга. Начисляется, только если раздел включён.
+    referral_bonus_presentations: Annotated[int, Field(ge=0, le=100)] = 1
 
     #: Потолок наград в сутки на одного пригласившего. Ноль — без потолка.
     referral_daily_reward_limit: Annotated[int, Field(ge=0, le=1000)] = 20
@@ -257,6 +263,27 @@ class Settings(BaseSettings):
     #: списанием — двум параллельным запросам одного пользователя в него не
     #: пролезть.
     flood_limit_per_user: Annotated[int, Field(ge=1, le=10)] = 1
+
+    # --- Презентации (фаза 10, docs/API.md) -----------------------------
+
+    #: Адрес Fibonacci AI REST API и ключ. Оба пусты — раздела нет вовсе: ни
+    #: кнопки в меню, ни презентации в награде за друга.
+    presentations_api_url: str = ""
+    presentations_api_key: str = ""
+
+    #: Сколько колод собирается одновременно на весь сервис.
+    #:
+    #: Потолок пять — не вкус, а арифметика лимитов ключа (docs/API.md §7):
+    #: каждая сборка опрашивает статус раз в 4 секунды, это 15 запросов в
+    #: минуту; пять сборок — 75, плюс до десяти созданий колод и двадцати
+    #: скачиваний файлов в минуту — 105 из 120 разрешённых. Шестая сборка
+    #: уже упирается в лимит запросов. Сверх предела человек слышит «много
+    #: запросов, попробуй позже», и презентация не списывается.
+    #:
+    #: Заодно это защищает чат: сборка занимает воркер очереди на минуту и
+    #: больше, и при шестнадцати воркерах пять сборок оставляют чату
+    #: одиннадцать.
+    presentations_max_concurrent: Annotated[int, Field(ge=1, le=5)] = 5
 
     # --- MAX -----------------------------------------------------------
 
@@ -542,6 +569,11 @@ class Settings(BaseSettings):
     def documents_ready(self) -> bool:
         """Опубликованы ли оферта и политика. Без них оплата не показывается."""
         return bool(self.offer_url and self.privacy_url and self.docs_version)
+
+    @property
+    def presentations_enabled(self) -> bool:
+        """Включён ли раздел презентаций: заданы и адрес API, и ключ."""
+        return bool(self.presentations_api_url and self.presentations_api_key)
 
     @property
     def cards_enabled(self) -> bool:

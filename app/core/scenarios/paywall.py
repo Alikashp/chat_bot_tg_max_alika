@@ -32,6 +32,18 @@ async def show(deps: Deps, session: Session, kind: LimitKind) -> None:
         )
         return
 
+    if kind is LimitKind.PRESENTATIONS:
+        bonus = deps.settings.referral_bonus_presentations
+        screen = texts.paywall_presentations(bonus)
+        await deps.messenger.send_text(
+            session.chat,
+            screen.text,
+            keyboard=keyboards.paywall_presentations(
+                texts.button_invite_for_presentations(bonus)
+            ),
+        )
+        return
+
     if kind is LimitKind.DOCUMENTS:
         screen = texts.paywall_documents(
             # На бесплатном тарифе дневной нормы разборов нет, и «завтра

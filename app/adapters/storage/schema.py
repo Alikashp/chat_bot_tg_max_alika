@@ -26,6 +26,7 @@ from sqlalchemy import (
     Table,
     Text,
     UniqueConstraint,
+    func,
 )
 from sqlalchemy.dialects.postgresql import JSONB
 
@@ -54,6 +55,23 @@ users = Table(
     Column("bonus_messages", Integer, nullable=False, server_default="0"),
     Column("bonus_images", Integer, nullable=False, server_default="0"),
     Column("bonus_documents", Integer, nullable=False, server_default="0"),
+    # Презентации (фаза 10). По умолчанию одна: строка, вставленная кем угодно
+    # без явного значения, — это новый человек, и разовая презентация ему
+    # положена. Вместе с ней по умолчанию ставится и отметка о выдаче.
+    Column("bonus_presentations", Integer, nullable=False, server_default="1"),
+    # Когда выдали разовую презентацию. NULL — ещё не выдавали. По отметке
+    # миграция отличает тех, кто её уже получил: без неё повторный прогон
+    # раздал бы вторую (у разборов документов отметки не было, и это стоило
+    # лишней раздачи — см. миграцию f8c3d0a91b62).
+    Column(
+        "presentations_granted_at",
+        DateTime(timezone=True),
+        nullable=True,
+        server_default=func.now(),
+    ),
+    # Когда началась текущая сборка презентации. NULL — сборки нет. Захват
+    # слота — условный UPDATE по этой колонке (см. claim_presentation).
+    Column("presentation_started_at", DateTime(timezone=True), nullable=True),
     # Когда выдали разовый бонус за подписку на канал. NULL — не выдавали.
     # Отметка и есть защита от повторной выдачи: начисление ставит её тем же
     # UPDATE, который добавляет картинки, и условие NULL стоит в его WHERE.
@@ -76,6 +94,7 @@ users = Table(
     CheckConstraint("bonus_messages >= 0", name="ck_users_bonus_messages"),
     CheckConstraint("bonus_images >= 0", name="ck_users_bonus_images"),
     CheckConstraint("bonus_documents >= 0", name="ck_users_bonus_documents"),
+    CheckConstraint("bonus_presentations >= 0", name="ck_users_bonus_presentations"),
 )
 
 usage = Table(

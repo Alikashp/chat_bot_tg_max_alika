@@ -46,8 +46,13 @@ class TelegramMessenger:
         bot: Bot,
         premium_emoji: Mapping[str, str] | None = None,
         premium_button_emoji: Mapping[str, str] | None = None,
+        menu: Keyboard | None = None,
     ) -> None:
         self._bot = bot
+        #: Постоянное меню. Собирается ядром — из него же нажатия переводятся
+        #: обратно в действия; здесь только рисуется. None — меню по
+        #: умолчанию, без разделов, которые включаются ключами.
+        self._menu = tg_keyboards.main_menu(menu)
         #: Что из отправленных альбомом картинок Telegram уже держит у себя:
         #: имя файла → file_id. См. send_album.
         self._albums: dict[str, str] = {}
@@ -157,7 +162,7 @@ class TelegramMessenger:
         if keyboard is not None:
             return self._inline(keyboard)
         if show_menu:
-            return tg_keyboards.main_menu()
+            return self._menu
         return None
 
     def _inline(self, keyboard: Keyboard | None) -> InlineKeyboardMarkup | None:

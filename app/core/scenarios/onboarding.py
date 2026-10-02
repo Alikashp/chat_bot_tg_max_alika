@@ -89,6 +89,7 @@ async def _create_user(
                 support_number=support.generate_number(),
                 bonus_images=granted,
                 bonus_documents=deps.settings.signup_documents,
+                bonus_presentations=deps.settings.signup_presentations,
                 username=username_or_none(username),
                 source=source,
             )
@@ -129,8 +130,18 @@ async def _apply_referral(deps: Deps, session: Session, payload: str) -> None:
         referrer.id,
         messages=deps.settings.referral_bonus_messages,
         images=deps.settings.referral_bonus_images,
+        presentations=_presentations_for_friend(deps),
     )
     await _notify_referrer(deps, referrer)
+
+
+def _presentations_for_friend(deps: Deps) -> int:
+    """Презентация за друга — только там, где раздел включён (фаза 10, К2).
+
+    Без ключа API ни кнопки, ни обещания нет, и выдавать то, о чём человеку
+    не сказали и чем он не может воспользоваться, незачем.
+    """
+    return deps.settings.referral_bonus_presentations if deps.presentations_on else 0
 
 
 async def _within_daily_limit(deps: Deps, referrer_id: UserId) -> bool:
@@ -167,6 +178,7 @@ async def _notify_referrer(deps: Deps, referrer: User) -> None:
     screen = texts.referral_reward(
         messages=deps.settings.referral_bonus_messages,
         images=deps.settings.referral_bonus_images,
+        presentations=_presentations_for_friend(deps),
     )
     try:
         await deps.messenger.send_text(

@@ -44,7 +44,7 @@ from app.adapters.storage.migrations import upgrade_to_head_async
 from app.adapters.storage.postgres import PostgresStorage, create_engine
 from app.adapters.telegram import router as telegram_router
 from app.adapters.telegram.channel import TelegramChannel
-from app.adapters.telegram.intake import dedup_key
+from app.adapters.telegram.intake import dedup_key, is_pre_checkout
 from app.adapters.telegram.messenger import TelegramMessenger
 from app.adapters.telegram.stars import TelegramStars
 from app.config import Settings, get_settings
@@ -167,6 +167,8 @@ def build_intake(
     *,
     messenger: str,
     key_of: Callable[[dict[str, Any]], str | None],
+    urgent: tuple[Callable[[dict[str, Any]], bool], JobQueue[dict[str, Any]]]
+    | None = None,
 ) -> Callable[[dict[str, Any]], Outcome]:
     """Собирает функцию приёма обновления для HTTP-обработчика.
 
@@ -181,6 +183,9 @@ def build_intake(
 
     Ключ вычисляет адаптер: у Telegram есть сквозной update_id, у MAX его нет
     и ключ составной (docs/research.md §1.4).
+
+    ``urgent`` — обновления, которые ждать в общей очереди не могут, и
+    отдельная очередь для них: признак и очередь.
     """
 
     def submit(raw_update: dict[str, Any]) -> Outcome:
@@ -193,17 +198,61 @@ def build_intake(
             logger.info("update_duplicate", messenger=messenger)
             return Outcome.DUPLICATE
 
-        if not queue.accepting:
+        target = queue
+        if urgent is not None and urgent[0](raw_update):
+            target = urgent[1]
+
+        if not target.accepting:
             dedup.forget(key)
             return Outcome.STOPPING
 
-        if not queue.submit(raw_update):
+        if not target.submit(raw_update):
             dedup.forget(key)
             return Outcome.OVERLOADED
 
         return Outcome.ACCEPTED
 
     return submit
+
+
+#: Сколько обработчиков у очереди вопросов об оплате. Вопросы редкие и
+#: быстрые — одно чтение заказа, — но два обработчика не дают одному
+#: зависшему запросу к базе остановить все оплаты.
+_PAYMENT_QUESTION_WORKERS = 2
+
+
+def build_telegram_intake(
+    handle: Callable[[dict[str, Any]], Awaitable[None]],
+    dedup: Deduplicator,
+    *,
+    capacity: int,
+    workers: int,
+) -> tuple[Callable[[dict[str, Any]], Outcome], list[JobQueue[dict[str, Any]]]]:
+    """Приём обновлений Telegram: общая очередь и отдельная — для оплаты.
+
+    Вопрос «можно ли принять оплату» (pre_checkout_query) Telegram ждёт
+    десять секунд и потом отменяет платёж. В общей очереди он стоял бы за
+    генерациями картинок, и когда все обработчики заняты, человек с
+    открытой формой оплаты не смог бы заплатить. Поэтому у него своя очередь
+    со своими обработчиками — её не занимает никто, кроме таких же вопросов.
+    """
+    updates: JobQueue[dict[str, Any]] = JobQueue(
+        "telegram-updates", handle, capacity=capacity, workers=workers
+    )
+    questions: JobQueue[dict[str, Any]] = JobQueue(
+        "telegram-payments",
+        handle,
+        capacity=capacity,
+        workers=_PAYMENT_QUESTION_WORKERS,
+    )
+    submit = build_intake(
+        updates,
+        dedup,
+        messenger="telegram",
+        key_of=dedup_key,
+        urgent=(is_pre_checkout, questions),
+    )
+    return submit, [updates, questions]
 
 
 def build_providers(
@@ -779,24 +828,23 @@ async def run() -> None:
         """Обрабатывает одно обновление вне HTTP-запроса."""
         await wiring.dispatcher.feed_raw_update(wiring.bot, raw_update)
 
-    queue: JobQueue[dict[str, Any]] = JobQueue(
-        "telegram-updates",
-        handle_update,
-        capacity=settings.queue_capacity,
-        workers=settings.queue_workers,
-    )
     dedup = Deduplicator(
         ttl_seconds=settings.dedup_ttl_seconds,
         max_keys=settings.dedup_max_keys,
     )
-    queues = [queue]
+    telegram_submit, queues = build_telegram_intake(
+        handle_update,
+        dedup,
+        capacity=settings.queue_capacity,
+        workers=settings.queue_workers,
+    )
     webhooks = [
         Webhook(
             messenger="telegram",
             path=settings.telegram_webhook_path,
             secret_header=TELEGRAM_SECRET_HEADER,
             secret=settings.telegram_webhook_secret,
-            submit=build_intake(queue, dedup, messenger="telegram", key_of=dedup_key),
+            submit=telegram_submit,
         )
     ]
 

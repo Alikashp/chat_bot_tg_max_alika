@@ -24,3 +24,14 @@ def dedup_key(raw_update: dict[str, Any]) -> str | None:
     if not isinstance(update_id, int) or isinstance(update_id, bool):
         return None
     return f"tg:{update_id}"
+
+
+def is_pre_checkout(raw_update: dict[str, Any]) -> bool:
+    """Спрашивает ли Telegram разрешения на оплату.
+
+    На такой вопрос Telegram ждёт ответа десять секунд, а потом отменяет
+    платёж. Поэтому его нельзя ставить в общую очередь за чужими
+    генерациями: когда все обработчики заняты минутной картинкой, человек
+    с открытой формой оплаты получил бы отказ банка вместо тарифа.
+    """
+    return isinstance(raw_update.get("pre_checkout_query"), dict)

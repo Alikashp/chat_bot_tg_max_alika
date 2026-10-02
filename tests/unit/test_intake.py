@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from app.adapters.telegram.intake import dedup_key
+from app.adapters.telegram.intake import dedup_key, is_pre_checkout
 from app.infra.dedup import Deduplicator
 from app.infra.queue import JobQueue
 from app.infra.server import Outcome
@@ -159,3 +159,59 @@ async def test_an_update_refused_while_stopping_is_not_remembered() -> None:
     assert dedup.is_new("tg:1") is True
 
     await queue.drain(timeout=1.0)
+
+
+def _payment_question(update_id: int) -> dict[str, Any]:
+    return {"update_id": update_id, "pre_checkout_query": {"id": f"q{update_id}"}}
+
+
+async def test_a_payment_question_skips_a_full_queue() -> None:
+    """Вопрос об оплате не стоит за генерациями: у него своя очередь."""
+    updates, _, release = await _queue(capacity=1, workers=1)
+    questions, answered, _ = await _queue(capacity=10, workers=1)
+    release.clear()
+    submit = build_intake(
+        updates,
+        Deduplicator(ttl_seconds=60, max_keys=100),
+        messenger="telegram",
+        key_of=dedup_key,
+        urgent=(is_pre_checkout, questions),
+    )
+    for index in range(5):
+        submit({"update_id": index})
+    assert submit({"update_id": 99}) is Outcome.OVERLOADED
+
+    assert submit(_payment_question(100)) is Outcome.ACCEPTED
+    assert await questions.join(timeout=1.0)
+    assert answered == [_payment_question(100)]
+
+    release.set()
+    await updates.drain(timeout=1.0)
+    await questions.drain(timeout=1.0)
+
+
+async def test_a_stopped_question_queue_refuses_the_question() -> None:
+    """Отказ считается по той очереди, куда задача и шла бы."""
+    updates, _, _ = await _queue()
+    questions, _, _ = await _queue()
+    dedup = Deduplicator(ttl_seconds=60, max_keys=100)
+    submit = build_intake(
+        updates,
+        dedup,
+        messenger="telegram",
+        key_of=dedup_key,
+        urgent=(is_pre_checkout, questions),
+    )
+    questions.stop_accepting()
+
+    assert submit(_payment_question(1)) is Outcome.STOPPING
+    assert dedup.is_new("tg:1") is True
+
+    await updates.drain(timeout=1.0)
+    await questions.drain(timeout=1.0)
+
+
+def test_only_a_payment_question_is_urgent() -> None:
+    assert is_pre_checkout(_payment_question(1)) is True
+    assert is_pre_checkout({"update_id": 1, "message": {}}) is False
+    assert is_pre_checkout({"update_id": 1, "pre_checkout_query": None}) is False

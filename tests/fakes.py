@@ -245,12 +245,20 @@ class FakeLLM:
         #: измеренная длительность: с замороженным временем она всегда ноль.
         self.clock: FrozenClock | None = None
         self.takes_seconds = 0.0
+        #: Ворота, у которых вызов ждёт, пока тест их не откроет. Нужны, чтобы
+        #: занять обработчик надолго — как его занимает настоящий провайдер.
+        self.gate: asyncio.Event | None = None
+        #: Вызовы, дошедшие до закрытых ворот: тест ждёт их, а не опрашивает.
+        self.entered: asyncio.Queue[None] = asyncio.Queue()
 
     async def complete(
         self, turns: Sequence[ChatTurn], *, model: str, max_tokens: int = 0
     ) -> Answer:
         self.calls.append((tuple(turns), model))
         self.token_caps.append(max_tokens)
+        if self.gate is not None:
+            self.entered.put_nowait(None)
+            await self.gate.wait()
         if self.clock is not None and self.takes_seconds:
             self.clock.advance(seconds=self.takes_seconds)
         if self.error is not None:

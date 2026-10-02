@@ -67,3 +67,15 @@ def test_memory_is_bounded() -> None:
 
     assert handoff.peek(tokens[0]) is None
     assert handoff.peek(tokens[-1]) is not None
+
+
+def test_the_default_store_is_bounded_too() -> None:
+    """Ф11-0г: без настроек хранилище тоже ограничено — тысячей жетонов."""
+    from app.infra.handoff import MAX_ITEMS
+
+    handoff = MemoryHandoff()
+    tokens = [handoff.put(Carried(topic=f"тема {n}")) for n in range(MAX_ITEMS + 5)]
+
+    assert handoff.peek(tokens[0]) is None
+    assert handoff.peek(tokens[-1]) is not None
+    assert len(handoff._entries) == MAX_ITEMS

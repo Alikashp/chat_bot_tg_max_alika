@@ -86,3 +86,25 @@ async def test_switching_presentations_on_is_a_new_menu(
     assert keyboards.menu_version(presentations=True) != keyboards.menu_version(
         presentations=False
     )
+
+
+def test_the_version_follows_the_buttons_not_a_hand_counter(
+    monkeypatch: object,
+) -> None:
+    """Ф11-0в: версия меню — отпечаток фактического состава кнопок.
+
+    Поменялась подпись — поменялась версия, без единой правки «номера».
+    Включение презентаций ключом — тоже другой состав и другая версия.
+    """
+    import pytest
+
+    assert isinstance(monkeypatch, pytest.MonkeyPatch)
+    before = keyboards.menu_version()
+    renamed = (
+        (("🎨 Рисунки", Action.MENU_IMAGES), *keyboards.MENU_ACTIONS[0][1:]),
+        *keyboards.MENU_ACTIONS[1:],
+    )
+    monkeypatch.setattr(keyboards, "MENU_ACTIONS", renamed)
+
+    assert keyboards.menu_version() != before
+    assert keyboards.menu_version(presentations=True) != keyboards.menu_version()

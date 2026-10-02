@@ -8,7 +8,7 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import fields, replace
 from datetime import timedelta
 from zoneinfo import ZoneInfo
 
@@ -237,7 +237,7 @@ async def test_the_calendar_of_a_refused_card(
     cards = FakeCards(recurring=True)
     cards.charge_succeeds = False
     recurring = replace(deps, cards=cards)
-    assert recurring.settings == CoreSettings(**_defaults_of(recurring.settings))
+    _assert_default_timing(recurring.settings)
     # Срок списания — послезавтра, напоминания ещё не было.
     await _subscribe(recurring, user, charge_at=timedelta(days=2), reminded=False)
     billing = _billing(recurring)
@@ -275,20 +275,17 @@ async def test_the_calendar_of_a_refused_card(
     ]
 
 
-def _defaults_of(settings: CoreSettings) -> dict[str, object]:
-    """Настройки теста, где всё, что касается денег по времени, — по умолчанию."""
-    fields = {
-        name: getattr(settings, name)
-        for name in CoreSettings.__dataclass_fields__
-        if name
-        not in {
-            "reminder_hours",
-            "charge_retry_days",
-            "charge_retry_hours",
-            "charge_unknown_retry_minutes",
-            "price_notice_days",
-            "subscription_days",
-            "timezone",
-        }
+def _assert_default_timing(settings: CoreSettings) -> None:
+    """Всё, что задаёт время денег, — как в бою по умолчанию."""
+    timing = {
+        "reminder_hours",
+        "charge_retry_days",
+        "charge_retry_hours",
+        "charge_unknown_retry_minutes",
+        "price_notice_days",
+        "subscription_days",
+        "timezone",
     }
-    return fields
+    for field in fields(CoreSettings):
+        if field.name in timing:
+            assert getattr(settings, field.name) == field.default, field.name

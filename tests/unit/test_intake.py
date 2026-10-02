@@ -128,3 +128,34 @@ async def test_stopping_service_refuses_updates() -> None:
     assert submit({"update_id": 1}) is Outcome.STOPPING
 
     await queue.drain(timeout=1.0)
+
+
+async def test_a_refused_update_is_not_remembered() -> None:
+    """503 просит прислать ещё раз — и повтор не должен отсечься как дубликат."""
+    queue, _, release = await _queue(capacity=1, workers=1)
+    release.clear()
+    dedup = Deduplicator(ttl_seconds=60, max_keys=100)
+    submit = _intake(queue, dedup)
+
+    outcomes = {index: submit({"update_id": index}) for index in range(5)}
+    refused = [
+        key for key, outcome in outcomes.items() if outcome is Outcome.OVERLOADED
+    ]
+
+    assert refused
+    assert all(dedup.is_new(dedup_key({"update_id": key}) or "") for key in refused)
+    release.set()
+    await queue.drain(timeout=1.0)
+
+
+async def test_an_update_refused_while_stopping_is_not_remembered() -> None:
+    """При выкладке старый процесс отвечает 503 — повтор достанется новому."""
+    queue, _, _ = await _queue()
+    dedup = Deduplicator(ttl_seconds=60, max_keys=100)
+    submit = _intake(queue, dedup)
+    queue.stop_accepting()
+
+    assert submit({"update_id": 1}) is Outcome.STOPPING
+    assert dedup.is_new("tg:1") is True
+
+    await queue.drain(timeout=1.0)

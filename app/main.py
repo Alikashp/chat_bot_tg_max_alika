@@ -174,6 +174,11 @@ def build_intake(
     должен занимать место в очереди, иначе при ретраях мессенджера ёмкость
     выедается копиями одного и того же обновления.
 
+    Но ключ остаётся запомненным, только если очередь задачу приняла. На
+    отказ мессенджер получает 503 и доставит обновление снова; запомненный
+    ключ отсёк бы этот повтор как дубликат с ответом 200, и обновление
+    пропало бы молча — у Telegram, MAX и ЮKassa одинаково.
+
     Ключ вычисляет адаптер: у Telegram есть сквозной update_id, у MAX его нет
     и ключ составной (docs/research.md §1.4).
     """
@@ -189,9 +194,11 @@ def build_intake(
             return Outcome.DUPLICATE
 
         if not queue.accepting:
+            dedup.forget(key)
             return Outcome.STOPPING
 
         if not queue.submit(raw_update):
+            dedup.forget(key)
             return Outcome.OVERLOADED
 
         return Outcome.ACCEPTED

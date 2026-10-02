@@ -86,6 +86,11 @@ class FakeMessenger:
         #: Готовые файлы, отданные человеку. По ним видно, что отдали оба
         #: формата, а не один.
         self.documents_sent: list[Document] = []
+        #: Тексты и файлы в том порядке, в каком ушли. Нужен там, где порядок
+        #: и есть требование: «сначала файлы, потом сообщение».
+        self.timeline: list[tuple[str, str]] = []
+        #: Куда просили обновить постоянное меню (после выкладки с новым меню).
+        self.menu_refreshes: list[Chat] = []
         #: Что вернуть на скачивание присланного файла.
         self.incoming_document: Document | None = None
         self.fail_download_document: Exception | None = None
@@ -122,6 +127,7 @@ class FakeMessenger:
         if self.fail_send is not None:
             raise self.fail_send
         self.texts.append(SentText(chat, text, keyboard, show_menu))
+        self.timeline.append(("text", text))
         return self._new_ref(chat)
 
     async def send_photo(
@@ -182,6 +188,7 @@ class FakeMessenger:
         if self.fail_send_document is not None:
             raise self.fail_send_document
         self.documents_sent.append(document)
+        self.timeline.append(("document", document.filename))
 
     async def download_document(self, document_ref: str, *, max_bytes: int) -> Document:
         if self.fail_download_document is not None:
@@ -204,6 +211,9 @@ class FakeMessenger:
         self, callback_id: str, *, notification: str | None = None
     ) -> None:
         self.answered_callbacks.append(callback_id)
+
+    async def refresh_menu(self, chat: Chat) -> None:
+        self.menu_refreshes.append(chat)
 
     # --- Удобства для утверждений ------------------------------------
 
@@ -547,6 +557,8 @@ class FakePresentations:
         self.themes_error: Exception | None = None
         self.themes_calls = 0
         self.built: list[tuple[str, str]] = []
+        #: Текст-материал каждой сборки. Пусто — колода по одной теме.
+        self.materials: list[str] = []
         #: Сколько сборок идёт прямо сейчас и сколько шло одновременно максимум.
         self.running = 0
         self.max_running = 0
@@ -557,8 +569,11 @@ class FakePresentations:
             raise self.themes_error
         return self.available
 
-    async def build(self, topic: str, *, theme_id: str) -> BuiltPresentation:
+    async def build(
+        self, topic: str, *, theme_id: str, material: str = ""
+    ) -> BuiltPresentation:
         self.built.append((topic, theme_id))
+        self.materials.append(material)
         self.running += 1
         self.max_running = max(self.max_running, self.running)
         try:

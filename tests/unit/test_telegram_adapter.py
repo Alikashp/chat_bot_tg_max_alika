@@ -414,6 +414,35 @@ async def test_the_persistent_menu_shows_presentations_when_on(
     ]
 
 
+async def test_a_menu_refresh_sends_the_keyboard_once(
+    messenger: TelegramMessenger, session: StubSession
+) -> None:
+    """Д6: первый ответ был с кнопками под сообщением — меню приходит следом."""
+    await messenger.send_text(
+        CORE_CHAT, "ответ", keyboard=Keyboard.row(Button(text="Жми", action="m:me"))
+    )
+
+    await messenger.refresh_menu(CORE_CHAT)
+
+    assert len(session.calls) == 2
+    sent = session.calls[1]
+    assert isinstance(sent, SendMessage)
+    assert sent.text == texts.MENU_UPDATED
+    assert isinstance(sent.reply_markup, ReplyKeyboardMarkup)
+
+
+async def test_no_refresh_message_when_the_answer_carried_the_menu(
+    messenger: TelegramMessenger, session: StubSession
+) -> None:
+    """Ответ уже принёс постоянное меню — лишнего сообщения нет."""
+    await messenger.send_text(CORE_CHAT, "ответ")
+
+    await messenger.refresh_menu(CORE_CHAT)
+
+    assert len(session.calls) == 1
+    assert isinstance(_markup_of(session), ReplyKeyboardMarkup)
+
+
 async def test_the_main_menu_never_gets_icons(session: StubSession) -> None:
     """Подпись меню — единственное, по чему опознаётся нажатие.
 

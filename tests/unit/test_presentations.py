@@ -14,21 +14,25 @@ from datetime import timedelta
 import pytest
 
 from app.adapters.storage.memory import InMemoryStorage
-from app.core import pending, texts
+from app.core import pending, retry_context, texts
 from app.core.actions import Action, theme_action
 from app.core.generations import GenerationKind, GenerationStatus
 from app.core.models import Chat, IncomingMessage, MessengerKind, User
 from app.core.router import handle
 from app.core.scenarios import keyboards, onboarding
 from app.core.scenarios.deps import Deps
+from app.core.scenarios.presentations import normalise_topic
 from app.ports.presentations import (
     PresentationBusyError,
     PresentationError,
     PresentationTimeoutError,
 )
+from config.presentation_topics import SUGGESTED_TOPICS
 from tests.fakes import (
     PDF_BYTES,
     PPTX_BYTES,
+    FakeImages,
+    FakeLLM,
     FakeLogger,
     FakeMessenger,
     FakePresentations,
@@ -163,11 +167,32 @@ async def test_the_whole_path_from_button_to_files(
         f"{TOPIC}.pdf",
         f"{TOPIC}.pptx",
     ]
-    assert messenger.text_edits[-1].text == texts.PRESENTATION_READY
-    assert last_edit_buttons(messenger) == [
-        (texts.BUTTON_PRESENTATION_AGAIN, Action.PRESENTATION_AGAIN)
-    ]
     assert await left(storage, owner) == 0
+
+
+async def test_the_result_message_comes_after_the_files(
+    enabled: Deps, owner: User, messenger: FakeMessenger
+) -> None:
+    """Д1: сначала оба файла, потом сообщение — дословно и с кнопками."""
+    await up_to_themes(enabled)
+    await handle(enabled, incoming(action=theme_action("azure_coral")))
+
+    assert messenger.timeline[-3:] == [
+        ("document", f"{TOPIC}.pdf"),
+        ("document", f"{TOPIC}.pptx"),
+        ("text", texts.PRESENTATION_RESULT),
+    ]
+    assert texts.PRESENTATION_RESULT == (
+        "С заботой о тебе отправляем 2 файла:\n"
+        "1. PDF - можно сразу использовать🤝🏻\n"
+        "2. PowerPoint - если нужно отредактировать✍🏻"
+    )
+    keyboard = messenger.last_text.keyboard
+    assert keyboard is not None
+    buttons = [(b.text, b.action) for row in keyboard.rows for b in row]
+    assert buttons[-1] == ("Ещё одну презентацию", Action.PRESENTATION_AGAIN)
+    # «Готовлю презентацию» не остаётся висеть над готовыми файлами.
+    assert messenger.text_edits[-1].text == texts.PRESENTATION_DONE
 
 
 async def test_one_more_starts_over(
@@ -295,7 +320,10 @@ async def test_a_missing_pdf_still_delivers_the_pptx(
     await handle(enabled, incoming(action=theme_action("azure_coral")))
 
     assert [d.data for d in messenger.documents_sent] == [PPTX_BYTES]
-    assert messenger.text_edits[-1].text == texts.PRESENTATION_READY_WITHOUT_PDF
+    assert messenger.timeline[-1] == ("text", texts.PRESENTATION_RESULT_PPTX_ONLY)
+    # Ушёл один PowerPoint — текст не обещает ни PDF, ни двух файлов.
+    assert "2 файла" not in texts.PRESENTATION_RESULT_PPTX_ONLY
+    assert "PDF -" not in texts.PRESENTATION_RESULT_PPTX_ONLY
     assert await left(storage, owner) == 0
 
 
@@ -523,3 +551,409 @@ async def test_without_the_api_a_friend_brings_no_presentation(
 
     assert await left(storage, user) == 0
     assert texts.referral_reward(messages=20, images=2).text in messenger.texts_said()
+
+
+# --- Связка с докладом (Д2, Д3) ------------------------------------------
+
+REPORT = "Фотосинтез\nРастения превращают свет в энергию. Хлорофилл ловит фотоны."
+
+
+def result_buttons(messenger: FakeMessenger) -> list[tuple[str, str | None]]:
+    """Кнопки последнего отправленного сообщения."""
+    keyboard = messenger.last_text.keyboard
+    assert keyboard is not None
+    return [(b.text, b.action) for row in keyboard.rows for b in row]
+
+
+async def deck_ready(enabled: Deps) -> None:
+    """Готовая презентация по TOPIC: итог с кнопками — последнее сообщение."""
+    await up_to_themes(enabled)
+    await handle(enabled, incoming(action=theme_action("azure_coral")))
+
+
+def report_button(messenger: FakeMessenger) -> str:
+    """Действие кнопки «Сделать доклад по презентации» под итогом."""
+    for text, action in result_buttons(messenger):
+        if text == texts.BUTTON_REPORT_FROM_PRESENTATION:
+            assert action is not None
+            return action
+    raise AssertionError("под итогом нет кнопки доклада")
+
+
+def presentation_button(messenger: FakeMessenger) -> str:
+    """Действие кнопки «Сделать презентацию по докладу» под готовым докладом."""
+    for text, action in result_buttons(messenger):
+        if text == texts.BUTTON_PRESENTATION_FROM_REPORT:
+            assert action is not None
+            return action
+    raise AssertionError("под докладом нет кнопки презентации")
+
+
+async def documents_left(storage: InMemoryStorage, user: User) -> int:
+    fresh = await storage.get_user_by_id(user.id)
+    assert fresh is not None
+    return fresh.bonus_documents
+
+
+async def test_the_result_offers_a_report_first(
+    enabled: Deps, owner: User, messenger: FakeMessenger
+) -> None:
+    """Д1: под итогом — «Сделать доклад по презентации», под ней «Ещё одну»."""
+    await deck_ready(enabled)
+
+    texts_of = [text for text, _ in result_buttons(messenger)]
+    assert texts_of == ["📑 Сделать доклад по презентации", "Ещё одну презентацию"]
+
+
+async def test_a_report_from_the_presentation_in_one_press(
+    enabled: Deps,
+    owner: User,
+    storage: InMemoryStorage,
+    messenger: FakeMessenger,
+    llm: FakeLLM,
+) -> None:
+    """Д2: одно нажатие — доклад на тему презентации; списан доклад, не презентация."""
+    await storage.add_bonus(owner.id, documents=1)
+    await deck_ready(enabled)
+    sent_before = len(messenger.documents_sent)
+
+    await handle(enabled, incoming(action=report_button(messenger)))
+
+    assert len(llm.calls) == 1
+    asked = llm.calls[0][0][-1].content
+    assert TOPIC in asked
+    names = [d.filename for d in messenger.documents_sent[sent_before:]]
+    assert [name.rsplit(".", 1)[1] for name in names] == ["docx", "pdf"]
+    assert await documents_left(storage, owner) == 0
+    assert await left(storage, owner) == 0  # презентация списана раньше, одна
+
+
+async def test_a_report_from_the_presentation_without_reports_left(
+    enabled: Deps,
+    owner: User,
+    storage: InMemoryStorage,
+    messenger: FakeMessenger,
+    llm: FakeLLM,
+) -> None:
+    """Д2: докладов не осталось — пейволл; кнопка при этом не сгорает."""
+    await deck_ready(enabled)
+    button = report_button(messenger)
+
+    await handle(enabled, incoming(action=button))
+    assert (
+        messenger.last_text.text == texts.paywall_documents(renews_tomorrow=False).text
+    )
+    assert llm.calls == []
+
+    await storage.add_bonus(owner.id, documents=1)
+    await handle(enabled, incoming(action=button))
+    assert len(llm.calls) == 1
+
+
+async def test_a_second_press_makes_no_second_report(
+    enabled: Deps,
+    owner: User,
+    storage: InMemoryStorage,
+    messenger: FakeMessenger,
+    llm: FakeLLM,
+) -> None:
+    """Д3: второе нажатие — честный ответ и выход, второго доклада нет."""
+    await storage.add_bonus(owner.id, documents=2)
+    await deck_ready(enabled)
+    press = incoming(action=report_button(messenger))
+
+    await asyncio.gather(handle(enabled, press), handle(enabled, press))
+    await handle(enabled, press)
+
+    assert len(llm.calls) == 1
+    assert await documents_left(storage, owner) == 1
+    assert messenger.last_text.text == texts.LINK_ALREADY_USED
+    assert result_buttons(messenger) == [(texts.MENU_DOCUMENTS, Action.MENU_DOCUMENTS)]
+
+
+async def test_an_old_report_button_answers_honestly(
+    enabled: Deps,
+    owner: User,
+    storage: InMemoryStorage,
+    messenger: FakeMessenger,
+    llm: FakeLLM,
+    clock: FrozenClock,
+) -> None:
+    """Д3: данных под кнопкой уже нет — честно говорим и даём выход."""
+    await storage.add_bonus(owner.id, documents=1)
+    await deck_ready(enabled)
+    button = report_button(messenger)
+
+    clock.advance(hours=7)
+    await handle(enabled, incoming(action=button))
+
+    assert llm.calls == []
+    assert messenger.last_text.text == texts.LINK_EXPIRED_REPORT
+    assert result_buttons(messenger) == [(texts.MENU_DOCUMENTS, Action.MENU_DOCUMENTS)]
+
+
+async def test_a_failed_report_keeps_the_button_alive(
+    enabled: Deps,
+    owner: User,
+    storage: InMemoryStorage,
+    messenger: FakeMessenger,
+    llm: FakeLLM,
+) -> None:
+    """Доклад не получился — та же кнопка работает снова, доклад не списан."""
+    await storage.add_bonus(owner.id, documents=1)
+    await deck_ready(enabled)
+    button = report_button(messenger)
+
+    llm.error = RuntimeError("провайдер упал")
+    await handle(enabled, incoming(action=button))
+    assert await documents_left(storage, owner) == 1
+
+    llm.error = None
+    await handle(enabled, incoming(action=button))
+    assert await documents_left(storage, owner) == 0
+
+
+async def report_ready(deps: Deps, storage: InMemoryStorage, user: User) -> None:
+    """Готовый доклад по теме — через обычный раздел документов."""
+    await storage.add_bonus(user.id, documents=1)
+    await handle(deps, incoming(action="d:pick:topic_report"))
+    await handle(deps, incoming(text="Фотосинтез у растений"))
+
+
+async def test_every_report_offers_a_presentation_when_they_are_on(
+    deps: Deps,
+    enabled: Deps,
+    user: User,
+    storage: InMemoryStorage,
+    messenger: FakeMessenger,
+) -> None:
+    """Под готовым докладом — «Сделать презентацию по докладу», только при ключе."""
+    await report_ready(deps, storage, user)
+    labels = [text for text, _ in edit_buttons(messenger)]
+    assert texts.BUTTON_PRESENTATION_FROM_REPORT not in labels
+
+    await report_ready(enabled, storage, user)
+    labels = [text for text, _ in edit_buttons(messenger)]
+    assert labels[-1] == texts.BUTTON_PRESENTATION_FROM_REPORT
+
+
+def edit_buttons(messenger: FakeMessenger) -> list[tuple[str, str | None]]:
+    """Кнопки под последним правленым сообщением — под готовым докладом."""
+    keyboard = messenger.text_edits[-1].keyboard
+    assert keyboard is not None
+    return [(b.text, b.action) for row in keyboard.rows for b in row]
+
+
+def presentation_action(messenger: FakeMessenger) -> str:
+    for text, action in edit_buttons(messenger):
+        if text == texts.BUTTON_PRESENTATION_FROM_REPORT:
+            assert action is not None
+            return action
+    raise AssertionError("под докладом нет кнопки презентации")
+
+
+async def test_a_presentation_from_the_report(
+    enabled: Deps,
+    owner: User,
+    storage: InMemoryStorage,
+    messenger: FakeMessenger,
+    llm: FakeLLM,
+    presentations: FakePresentations,
+) -> None:
+    """Д2: презентация по докладу — по его тексту; списана презентация."""
+    llm.answer = REPORT
+    await report_ready(enabled, storage, owner)
+    button = presentation_action(messenger)
+
+    await handle(enabled, incoming(action=button))
+    assert messenger.last_text.text == texts.PRESENTATION_PICK_THEME
+
+    await handle(enabled, incoming(action=theme_action("azure_coral")))
+
+    assert presentations.built == [("Фотосинтез у растений", "azure_coral")]
+    assert presentations.materials == [REPORT]
+    assert await left(storage, owner) == 0
+    assert messenger.timeline[-1] == ("text", texts.PRESENTATION_RESULT)
+
+
+async def test_the_report_text_never_reaches_the_database(
+    enabled: Deps,
+    owner: User,
+    storage: InMemoryStorage,
+    messenger: FakeMessenger,
+    llm: FakeLLM,
+    presentations: FakePresentations,
+) -> None:
+    """Содержимое доклада в базу не кладётся — ни в ожидание, ни в «Повторить»."""
+    llm.answer = REPORT
+    await report_ready(enabled, storage, owner)
+    await handle(enabled, incoming(action=presentation_action(messenger)))
+    presentations.errors = [PresentationError("INTERNAL")]
+    await handle(enabled, incoming(action=theme_action("azure_coral")))
+
+    fresh = await storage.get_user_by_id(owner.id)
+    assert fresh is not None
+    stored = f"{fresh.pending} {fresh.retry_context}"
+    assert "Хлорофилл" not in stored
+    # У доклада по файлу тема — его заголовок, то есть тоже содержимое
+    # доклада. Поэтому в «Повторить» по докладу темы нет вовсе — один жетон.
+    context = retry_context.decode(fresh.retry_context)
+    assert context is not None
+    assert (context.prompt, context.source is not None) == ("", True)
+
+
+async def test_a_failed_presentation_from_the_report_can_be_retried(
+    enabled: Deps,
+    owner: User,
+    storage: InMemoryStorage,
+    messenger: FakeMessenger,
+    llm: FakeLLM,
+    presentations: FakePresentations,
+) -> None:
+    """«Повторить» после сбоя собирает по тому же докладу."""
+    llm.answer = REPORT
+    await report_ready(enabled, storage, owner)
+    await handle(enabled, incoming(action=presentation_action(messenger)))
+    presentations.errors = [PresentationError("INTERNAL")]
+    await handle(enabled, incoming(action=theme_action("azure_coral")))
+    assert await left(storage, owner) == 1
+
+    await handle(enabled, incoming(action=Action.PRESENTATION_RETRY))
+
+    assert presentations.materials == [REPORT, REPORT]
+    assert await left(storage, owner) == 0
+
+
+async def test_a_presentation_from_the_report_without_presentations_left(
+    enabled: Deps,
+    user: User,
+    storage: InMemoryStorage,
+    messenger: FakeMessenger,
+    presentations: FakePresentations,
+) -> None:
+    """Д2: презентаций не осталось — пейволл, до оформлений дело не доходит."""
+    await report_ready(enabled, storage, user)
+
+    await handle(enabled, incoming(action=presentation_action(messenger)))
+
+    assert messenger.last_text.text == texts.paywall_presentations(1).text
+    assert presentations.themes_calls == 0
+
+
+async def test_an_old_presentation_button_answers_honestly(
+    enabled: Deps,
+    owner: User,
+    storage: InMemoryStorage,
+    messenger: FakeMessenger,
+    presentations: FakePresentations,
+    clock: FrozenClock,
+) -> None:
+    """Д3: доклада под кнопкой уже нет — честный ответ и выход в презентации."""
+    await report_ready(enabled, storage, owner)
+    button = presentation_action(messenger)
+
+    clock.advance(hours=7)
+    await handle(enabled, incoming(action=button))
+
+    assert presentations.themes_calls == 0
+    assert messenger.last_text.text == texts.LINK_EXPIRED_PRESENTATION
+    assert result_buttons(messenger) == [
+        (texts.MENU_PRESENTATIONS, Action.MENU_PRESENTATIONS)
+    ]
+
+
+async def test_a_second_press_makes_no_second_deck_from_the_report(
+    enabled: Deps,
+    owner: User,
+    storage: InMemoryStorage,
+    messenger: FakeMessenger,
+    presentations: FakePresentations,
+) -> None:
+    """Д3: оформление по докладу нажали дважды — колода одна."""
+    await storage.add_bonus(owner.id, presentations=1)
+    await report_ready(enabled, storage, owner)
+    await handle(enabled, incoming(action=presentation_action(messenger)))
+    press = incoming(action=theme_action("azure_coral"))
+
+    await asyncio.gather(handle(enabled, press), handle(enabled, press))
+    await handle(enabled, press)
+
+    assert len(presentations.built) == 1
+    assert await left(storage, owner) == 1
+
+
+# --- «Придумай сам» (Д4) -------------------------------------------------
+
+
+async def test_the_topic_question_offers_to_invent_one(
+    enabled: Deps, owner: User, messenger: FakeMessenger
+) -> None:
+    """Под «О чём презентация?» — «Придумай сам» и «Отмена»."""
+    await handle(enabled, incoming(action=Action.MENU_PRESENTATIONS))
+
+    assert result_buttons(messenger) == [
+        (texts.BUTTON_SUGGEST_TOPIC, Action.PRESENTATION_SUGGEST),
+        (texts.BUTTON_CANCEL, Action.MENU_SHOW),
+    ]
+    assert texts.BUTTON_SUGGEST_TOPIC == "Придумай сам"
+
+
+async def test_an_invented_topic_comes_from_the_list_without_any_provider(
+    enabled: Deps,
+    owner: User,
+    storage: InMemoryStorage,
+    messenger: FakeMessenger,
+    llm: FakeLLM,
+    images_: FakeImages,
+    presentations: FakePresentations,
+) -> None:
+    """Д4: тема — из config/, ни к ИИ, ни к картинкам, ни к сборке не ходим.
+
+    Человек видит тему и сразу выбирает оформление; список оформлений — тот
+    же шаг, что и после темы, написанной руками.
+    """
+    await handle(enabled, incoming(action=Action.MENU_PRESENTATIONS))
+    await handle(enabled, incoming(action=Action.PRESENTATION_SUGGEST))
+
+    assert llm.calls == []
+    assert images_.generated == [] and images_.edited == []
+    assert presentations.built == []
+    shown = messenger.last_text.text
+    topic = next(t for t in SUGGESTED_TOPICS if t in shown)
+    assert (
+        shown == texts.presentation_suggested(topic, ("Графит светлая", "Лазурь")).text
+    )
+    assert labels_of(messenger)[:2] == ["Графит светлая", "Лазурь"]
+
+    await handle(enabled, incoming(action=theme_action("azure_coral")))
+    assert presentations.built == [(topic, "azure_coral")]
+
+
+def test_the_topic_list_is_ready_to_use() -> None:
+    """Каждая тема из списка проходит границы 3–200 знаков."""
+    assert "Искусственный интеллект: польза и риски" in SUGGESTED_TOPICS
+    assert all(normalise_topic(topic) == topic for topic in SUGGESTED_TOPICS)
+    assert len(set(SUGGESTED_TOPICS)) == len(SUGGESTED_TOPICS)
+
+
+async def test_inventing_with_nothing_left_shows_the_paywall(
+    enabled: Deps, user: User, messenger: FakeMessenger
+) -> None:
+    """Кнопка из старого сообщения при пустом остатке — пейволл, не тема."""
+    await handle(enabled, incoming(action=Action.PRESENTATION_SUGGEST))
+
+    assert messenger.last_text.text == texts.paywall_presentations(1).text
+
+
+# --- Профиль (Д5) --------------------------------------------------------
+
+
+async def test_the_profile_shows_presentations_left(
+    enabled: Deps, owner: User, messenger: FakeMessenger
+) -> None:
+    """Профиль показывает остаток презентаций — подписью кнопки меню."""
+    await handle(enabled, incoming(action=Action.MENU_PROFILE))
+
+    assert "Презентации: 1" in messenger.last_text.text
+    assert "разбор" not in messenger.last_text.text.lower()
+    assert len(messenger.last_text.text.splitlines()) <= 5

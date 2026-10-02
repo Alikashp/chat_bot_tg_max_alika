@@ -19,6 +19,7 @@ from app.ports.ai import ImageProvider, LLMProvider
 from app.ports.channel import Channel
 from app.ports.concurrency import Concurrency
 from app.ports.documents import DocumentReader, DocumentWriter
+from app.ports.handoff import Handoff
 from app.ports.messenger import Messenger
 from app.ports.observability import Logger
 from app.ports.payments import CardPayments, StarsPayments
@@ -61,6 +62,9 @@ class Deps:
     #: Сборка презентаций. None — ключа API нет, и раздела нет вовсе: ни
     #: кнопки в меню, ни презентации в награде за друга (фаза 10, К2).
     presentations: Presentations | None = None
+    #: Жетоны кнопок-связок «доклад по презентации» и «презентация по
+    #: докладу». None — связок нет: кнопки не показываются.
+    handoff: Handoff | None = None
 
     @property
     def presentations_on(self) -> bool:

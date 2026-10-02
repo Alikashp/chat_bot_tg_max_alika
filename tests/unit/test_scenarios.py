@@ -468,7 +468,7 @@ async def test_profile_shows_real_numbers(
     assert messenger.last_text.text == (
         "Твой тариф: Бесплатный\n"
         "Сообщений сегодня: 12 из 20\n"
-        "Картинок: 2 · Разборов: 3\n"
+        "Картинки: 2 · Доклад / Реферат: 3\n"
         "Друзей позвал: 0"
     )
 
@@ -481,7 +481,7 @@ async def test_profile_counts_the_bonus_in_the_pictures_left(
 
     await profile.show(deps, session)
 
-    assert "Картинок: 8" in messenger.last_text.text
+    assert "Картинки: 8" in messenger.last_text.text
 
 
 async def test_profile_always_offers_two_ways_out(

@@ -22,7 +22,9 @@ from app.core.actions import (
     parse_document_action,
     parse_email_action,
     parse_method_action,
+    parse_presentation_from_action,
     parse_preset_action,
+    parse_report_from_action,
     parse_theme_action,
 )
 from app.core.documents import DocumentTooLargeError
@@ -140,6 +142,12 @@ async def handle(deps: Deps, incoming: IncomingMessage) -> None:
 
     session = Session(user=user, chat=incoming.chat, day=deps.today(), now=deps.now())
 
+    await _dispatch(deps, session, incoming)
+    await _refresh_menu(deps, session)
+
+
+async def _dispatch(deps: Deps, session: Session, incoming: IncomingMessage) -> None:
+    """Зовёт сценарий по тому, что пришло: оплата, нажатие, фото, файл, текст."""
     if incoming.paid_order_id is not None:
         # Мессенджер подтвердил оплату. Выдаём тариф — ровно один раз.
         order = await payments.confirm(
@@ -193,6 +201,25 @@ async def _route_action(deps: Deps, session: Session, action: str) -> None:
     theme_id = parse_theme_action(action)
     if theme_id is not None:
         await presentations.choose_theme(deps, session, theme_id)
+        return
+
+    report_token = parse_report_from_action(action)
+    if report_token is not None:
+        # Доклад по презентации — та же работа, что доклад по теме, и
+        # ограничитель у неё тот же: двум сразу от одного человека незачем.
+        await _clear_pending(deps, session)
+        await _guarded(
+            deps,
+            session,
+            _image_key(session),
+            lambda d, s: documents.report_from_presentation(d, s, report_token),
+        )
+        return
+
+    deck_token = parse_presentation_from_action(action)
+    if deck_token is not None:
+        await _clear_pending(deps, session)
+        await presentations.from_report(deps, session, deck_token)
         return
 
     repeat_kind = _REPEAT_KINDS.get(action)
@@ -254,6 +281,9 @@ async def _route_action(deps: Deps, session: Session, action: str) -> None:
         case Action.MENU_PRESENTATIONS | Action.PRESENTATION_AGAIN:
             await _clear_pending(deps, session)
             await presentations.start(deps, session)
+        case Action.PRESENTATION_SUGGEST:
+            await _clear_pending(deps, session)
+            await presentations.suggest(deps, session)
         case Action.PRESENTATION_RETRY:
             # Ограничитель не нужен: одна сборка на человека держится слотом
             # в базе (presentations.claim_presentation), а не в памяти.
@@ -496,9 +526,11 @@ async def _handle_text(deps: Deps, session: Session, text: str) -> None:
             await _say(deps, session, action.invitation)
             return
 
-    if pending.is_awaiting_presentation_topic(
-        session.user.pending
-    ) or pending.parse_await_presentation_theme(session.user.pending):
+    if (
+        pending.is_awaiting_presentation_topic(session.user.pending)
+        or pending.parse_await_presentation_theme(session.user.pending)
+        or pending.parse_await_presentation_source(session.user.pending)
+    ):
         # Тема презентации — и тогда, когда ждём оформление: написанное
         # вместо нажатия на оформление значит «хочу другую тему», а не
         # вопрос в чат.
@@ -527,6 +559,21 @@ async def _handle_text(deps: Deps, session: Session, text: str) -> None:
 
 
 # --- Вспомогательное -----------------------------------------------------
+
+
+async def _refresh_menu(deps: Deps, session: Session) -> None:
+    """После выкладки с новым меню — обновить его, один раз на версию (§4.2).
+
+    Зовётся после ответа: человек получает новое меню вместе с первым ответом,
+    а не сообщением вместо него. Версия запоминается — второй раз за ту же
+    версию ничего не придёт.
+    """
+    current = keyboards.menu_version(presentations=deps.presentations_on)
+    if session.user.menu_version == current:
+        return
+    await deps.messenger.refresh_menu(session.chat)
+    await deps.storage.set_menu_version(session.user.id, current)
+
 
 #: Сценарий, готовый к запуску под ограничителем.
 Scenario = Callable[[Deps, Session], Awaitable[None]]

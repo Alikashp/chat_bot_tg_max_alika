@@ -441,6 +441,19 @@ async def test_the_menu_in_max_matches_telegram(started: Harness) -> None:
     assert texts.MENU_PRESETS in under_images
 
 
+async def test_a_menu_refresh_in_max_sends_nothing_extra(started: Harness) -> None:
+    """Д6 в MAX: постоянного меню нет — обновлять нечего, лишних сообщений нет."""
+    user = await started.user()
+    await started.storage.set_menu_version(user.id, "old-menu")
+    before = len(started.bot.sent)
+
+    await started.press(Action.MENU_PROFILE)
+
+    assert len(started.bot.sent) == before + 1
+    fresh = await started.user()
+    assert fresh.menu_version != "old-menu"
+
+
 async def test_an_old_presets_button_in_max_still_works(started: Harness) -> None:
     """Под старыми сообщениями в MAX лежат кнопки с прежним меню.
 

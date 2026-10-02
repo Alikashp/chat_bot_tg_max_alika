@@ -15,7 +15,7 @@ from datetime import timedelta
 
 from app.core import referral, sources, support, texts
 from app.core.models import Chat, MessengerKind, User, UserId, username_or_none
-from app.core.scenarios import identity
+from app.core.scenarios import identity, keyboards
 from app.core.scenarios.deps import Deps, Session, session_for
 
 #: Сколько попыток подобрать незанятые код и номер. Коллизия маловероятна,
@@ -202,3 +202,8 @@ async def _greet(deps: Deps, session: Session, *, from_presentations: bool) -> N
     """Первый экран — и второй, и сотый: /start здоровается всегда."""
     screen = texts.onboarding(from_presentations=from_presentations)
     await deps.messenger.send_text(session.chat, screen.text, show_menu=True)
+    # Первый экран несёт постоянное меню — значит, человек видит текущее, и
+    # обновлять его следом незачем (§4.2).
+    await deps.storage.set_menu_version(
+        session.user.id, keyboards.menu_version(presentations=deps.presentations_on)
+    )

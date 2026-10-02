@@ -146,6 +146,10 @@ BUTTON_SHOW_MENU = "☰ В меню"
 
 MENU_ASK = "Что делаем?"
 
+#: Сопровождает новое постоянное меню, когда первый ответ после выкладки нёс
+#: свои кнопки и меню с ним не поместилось. Раз на версию меню.
+MENU_UPDATED = "Обновил меню — новые кнопки внизу 👇"
+
 #: Кнопки, доступные с любого экрана. В Telegram это постоянная клавиатура, в
 #: MAX постоянных клавиатур не бывает, и меню открывается кнопкой «В меню»
 #: (docs/research.md §1.6). Ядро про разницу не знает.
@@ -404,6 +408,10 @@ DOCUMENT_TOPIC_TOO_SHORT = "Напиши тему подробнее — одн�
 DOCUMENT_TOO_BIG = "Файл слишком большой, пришли до 20 МБ 🙏"
 
 
+def menu_updated() -> Screen:
+    return Screen(text=MENU_UPDATED, buttons=_menu_buttons())
+
+
 def menu(menu_buttons: tuple[str, ...]) -> Screen:
     """Само меню отдельным экраном — для мессенджера без постоянных кнопок."""
     return Screen(text=MENU_ASK, buttons=menu_buttons)
@@ -459,18 +467,31 @@ PRESENTATION_TOPIC_BAD = "Тема нужна от 3 до 200 знаков. На
 
 PRESENTATION_PICK_THEME = "Выбери оформление 👇"
 
+#: Под вопросом о теме. Дословно из поручения.
+BUTTON_SUGGEST_TOPIC = "Придумай сам"
+
 #: Дословно из поручения заказчика. Многоточия нет намеренно: обещание
 #: «около минуты» и так говорит, что ждать.
 PRESENTATION_WORKING = "Готовлю презентацию, около минуты"
 
-#: Сообщение с этим текстом стоит над файлами — сначала «готовлю», потом
-#: файлы, — поэтому стрелка смотрит вниз.
-PRESENTATION_READY = "Готово! Презентация ниже — PDF и PPTX 👇"
+#: Во что превращается «Готовлю презентацию…», когда файлы ушли. Сообщение
+#: стоит над файлами, и висеть там с «готовлю» ему нельзя — это неправда.
+PRESENTATION_DONE = "Готово 👇"
 
-#: PDF у провайдера не собрался, PPTX полноценный. Сказать об этом надо:
-#: иначе человек будет искать второй файл.
-PRESENTATION_READY_WITHOUT_PDF = (
-    "Готово! PDF не собрался, держи PPTX — его можно открыть и править 👇"
+#: Итог после файлов. Дословно от заказчика, вместе с пробелами вокруг
+#: дефисов и без пробела перед эмодзи.
+PRESENTATION_RESULT = (
+    "С заботой о тебе отправляем 2 файла:\n"
+    "1. PDF - можно сразу использовать🤝🏻\n"
+    "2. PowerPoint - если нужно отредактировать✍🏻"
+)
+
+#: То же, когда PDF не собрался и ушёл один PowerPoint. Текст не обещает ни
+#: двух файлов, ни PDF: человек искал бы второй файл, которого нет.
+PRESENTATION_RESULT_PPTX_ONLY = (
+    "С заботой о тебе отправляем файл:\n"
+    "PowerPoint - можно сразу открыть и отредактировать✍🏻\n"
+    "PDF в этот раз не собрался 🤷"
 )
 
 #: Вторая половина фразы — обещание, которое обязано быть правдой: презентация
@@ -486,18 +507,49 @@ PRESENTATION_BUSY = (
 #: Второе нажатие, пока первая сборка идёт. Вторую колоду мы не начинаем.
 PRESENTATION_IN_PROGRESS = "Презентация уже готовится — дождись её 🙏"
 
-BUTTON_PRESENTATION_AGAIN = "📑 Ещё одну"
+BUTTON_PRESENTATION_AGAIN = "Ещё одну презентацию"
+BUTTON_REPORT_FROM_PRESENTATION = "📑 Сделать доклад по презентации"
+BUTTON_PRESENTATION_FROM_REPORT = "📑 Сделать презентацию по докладу"
+
+#: Кнопку-связку уже нажимали: доклад или презентация по ней уже сделаны или
+#: делаются. Второго результата не будет, а выход — кнопкой раздела.
+LINK_ALREADY_USED = (
+    "По этой кнопке уже сделано — результат в чате выше 👆\n"
+    "Нужен ещё один — начни заново 👇"
+)
+
+#: Данных под кнопкой больше нет: прошло шесть часов или бот перезапускался.
+#: Говорим как есть и ведём туда, где то же самое делается с начала.
+LINK_EXPIRED_REPORT = (
+    "Эта кнопка устарела — тему презентации я уже не помню 🤷\n"
+    "Сделай доклад по теме заново 👇"
+)
+LINK_EXPIRED_PRESENTATION = (
+    "Эта кнопка устарела — текст доклада я не храню 🤷\nСделай презентацию по теме 👇"
+)
 
 #: Имя файла, если из темы ничего пригодного для имени не осталось.
 PRESENTATION_FILENAME = "Презентация"
 
 
 def presentation_ask() -> Screen:
-    return Screen(text=PRESENTATION_ASK, buttons=(BUTTON_CANCEL,))
+    return Screen(text=PRESENTATION_ASK, buttons=(BUTTON_SUGGEST_TOPIC, BUTTON_CANCEL))
 
 
 def presentation_topic_bad() -> Screen:
     return Screen(text=PRESENTATION_TOPIC_BAD, next_step="ждём тему ещё раз")
+
+
+def presentation_suggested(topic: str, theme_buttons: tuple[str, ...]) -> Screen:
+    """Тема из «Придумай сам» — и сразу выбор оформления, одним сообщением.
+
+    Тему показываем обязательно: человек должен видеть, о чём будет его
+    презентация, до того как она соберётся и спишется.
+    """
+    return Screen(
+        text=f"Тема: {topic}\n{PRESENTATION_PICK_THEME}",
+        buttons=(*theme_buttons, BUTTON_CANCEL),
+    )
 
 
 def presentation_pick_theme(theme_buttons: tuple[str, ...]) -> Screen:
@@ -511,11 +563,27 @@ def presentation_working() -> Screen:
     )
 
 
-def presentation_ready(*, with_pdf: bool = True) -> Screen:
+def presentation_done() -> Screen:
+    return Screen(text=PRESENTATION_DONE, next_step="файлы и итог — ниже")
+
+
+def presentation_result(*, with_pdf: bool = True) -> Screen:
     return Screen(
-        text=PRESENTATION_READY if with_pdf else PRESENTATION_READY_WITHOUT_PDF,
-        buttons=(BUTTON_PRESENTATION_AGAIN,),
+        text=PRESENTATION_RESULT if with_pdf else PRESENTATION_RESULT_PPTX_ONLY,
+        buttons=(BUTTON_REPORT_FROM_PRESENTATION, BUTTON_PRESENTATION_AGAIN),
     )
+
+
+def link_already_used(exit_button: str) -> Screen:
+    return Screen(text=LINK_ALREADY_USED, buttons=(exit_button,))
+
+
+def link_expired_report() -> Screen:
+    return Screen(text=LINK_EXPIRED_REPORT, buttons=(MENU_DOCUMENTS,))
+
+
+def link_expired_presentation() -> Screen:
+    return Screen(text=LINK_EXPIRED_PRESENTATION, buttons=(MENU_PRESENTATIONS,))
 
 
 def presentation_error() -> Screen:
@@ -734,26 +802,43 @@ def profile(
     images_left: int,
     documents_left: int,
     friends: int,
+    presentations_left: int | None = None,
     user_number: int | None = None,
 ) -> Screen:
     """Реальные числа и два выхода.
+
+    ``presentations_left`` — None, когда раздела презентаций нет (нет ключа
+    API): тогда и в профиле о них ни слова.
 
     ``user_number`` — номер для поддержки. Появляется не везде: в Telegram
     человека видно по @username, а в MAX username есть не у всех, и без
     номера опознать написавшего нечем.
     """
+    left = [
+        f"{_button_name(MENU_IMAGES)}: {images_left}",
+        f"{_button_name(MENU_DOCUMENTS)}: {documents_left}",
+    ]
+    if presentations_left is not None:
+        left.append(f"{_button_name(MENU_PRESENTATIONS)}: {presentations_left}")
     lines = [
         f"Твой тариф: {TARIFF_TITLES[tariff_id]}",
         f"Сообщений сегодня: {messages_used} из {messages_limit}",
-        # Одной строкой, а не двумя: экран и так на пределе в пять строк
-        # (§2.9), а номер для поддержки добавляет шестую. Точка посередине
-        # читается лучше запятой — это два отдельных счёта, а не перечень.
-        f"Картинок: {images_left} · Разборов: {documents_left}",
+        # Остатки — одной строкой: экран ограничен пятью (§2.9), а номер для
+        # поддержки в MAX берёт пятую. Подписи — названия кнопок меню без
+        # значка: человек ищет в профиле то же слово, что нажимал. Раньше
+        # здесь стояли «разборы» — внутреннее имя раздела документов, и
+        # заказчик его не узнал.
+        " · ".join(left),
         f"Друзей позвал: {friends}",
     ]
     if user_number is not None:
         lines.append(f"Твой номер: {user_number}")
     return Screen(text="\n".join(lines), buttons=(MENU_TARIFFS, BUTTON_MY_LINK))
+
+
+def _button_name(menu_label: str) -> str:
+    """Название кнопки меню без ведущего значка: «🎨 Картинки» → «Картинки»."""
+    return menu_label.split(" ", 1)[1]
 
 
 # --- Рефералка (§2.7) ----------------------------------------------------
@@ -1388,6 +1473,7 @@ def _all_screens() -> tuple[Screen, ...]:
             messages_limit=20,
             images_left=2,
             documents_left=2,
+            presentations_left=1,
             friends=3,
             user_number=1234,
         ),
@@ -1473,6 +1559,7 @@ def _all_screens() -> tuple[Screen, ...]:
         unsupported_input(),
         internal_error(),
         menu((MENU_IMAGES, MENU_DOCUMENTS, MENU_PROFILE, MENU_TARIFFS)),
+        menu_updated(),
         menu(
             (
                 MENU_IMAGES,
@@ -1485,9 +1572,17 @@ def _all_screens() -> tuple[Screen, ...]:
         presentation_ask(),
         presentation_topic_bad(),
         presentation_pick_theme(("Графит светлая", "Лазурь", "Свежая зелёная")),
+        presentation_suggested(
+            "Искусственный интеллект: польза и риски", ("Графит светлая", "Лазурь")
+        ),
         presentation_working(),
-        presentation_ready(),
-        presentation_ready(with_pdf=False),
+        presentation_done(),
+        presentation_result(),
+        presentation_result(with_pdf=False),
+        link_already_used(MENU_DOCUMENTS),
+        link_already_used(MENU_PRESENTATIONS),
+        link_expired_report(),
+        link_expired_presentation(),
         presentation_error(),
         presentation_busy(),
         presentation_in_progress(),

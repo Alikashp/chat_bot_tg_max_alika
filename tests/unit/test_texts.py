@@ -131,23 +131,57 @@ def test_the_channel_button_appears_only_when_the_bonus_is_still_owed() -> None:
 
 
 def test_profile_shows_every_number() -> None:
-    """§2.6: все числа настоящие. Разборы стоят рядом с картинками одной
-    строкой: экран ограничен пятью, а номер для поддержки берёт шестую."""
+    """§4.7: остатки по тому, что есть в меню, одной строкой: экран
+    ограничен пятью, а номер для поддержки в MAX берёт пятую."""
     screen = texts.profile(
         tariff_id=TariffId.FREE,
         messages_used=12,
         messages_limit=20,
         images_left=2,
         documents_left=2,
+        presentations_left=1,
         friends=3,
+        user_number=123456,
     )
 
     assert screen.lines == [
         "Твой тариф: Бесплатный",
         "Сообщений сегодня: 12 из 20",
-        "Картинок: 2 · Разборов: 2",
+        "Картинки: 2 · Доклад / Реферат: 2 · Презентации: 1",
         "Друзей позвал: 3",
+        "Твой номер: 123456",
     ]
+
+
+def test_profile_labels_are_the_menu_buttons() -> None:
+    """Д5: подписи остатков — названия кнопок меню, а не «разборы»."""
+    line = texts.profile(
+        tariff_id=TariffId.FREE,
+        messages_used=0,
+        messages_limit=20,
+        images_left=0,
+        documents_left=0,
+        presentations_left=0,
+        friends=0,
+    ).lines[2]
+
+    for button in (texts.MENU_IMAGES, texts.MENU_DOCUMENTS, texts.MENU_PRESENTATIONS):
+        assert button.split(" ", 1)[1] in line
+    assert "разбор" not in line.lower()
+
+
+def test_profile_without_presentations_does_not_mention_them() -> None:
+    """Без ключа API презентаций нет и в профиле (§4.10)."""
+    line = texts.profile(
+        tariff_id=TariffId.FREE,
+        messages_used=0,
+        messages_limit=20,
+        images_left=3,
+        documents_left=3,
+        friends=0,
+    ).lines[2]
+
+    assert line == "Картинки: 3 · Доклад / Реферат: 3"
 
 
 def test_referral_invite_is_a_ready_message_not_a_bare_link() -> None:

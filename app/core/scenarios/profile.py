@@ -1,7 +1,8 @@
-"""Профиль (§2.6).
+"""Профиль (§2.6, §4.7).
 
-Четыре числа, и все настоящие: тариф, израсходованные сообщения, остаток
-картинок, приглашённые друзья. Два выхода — тарифы и своя ссылка.
+Все числа настоящие: тариф, израсходованные сообщения, остатки по тому, что
+есть в меню — картинки, доклады, презентации, — и приглашённые друзья. Два
+выхода — тарифы и своя ссылка.
 """
 
 from __future__ import annotations
@@ -17,6 +18,11 @@ async def show(deps: Deps, session: Session) -> None:
     usage = await deps.storage.get_usage(session.user.id, session.day)
     images = await spending.current_allowance(deps, session, LimitKind.IMAGES)
     docs = await spending.current_allowance(deps, session, LimitKind.DOCUMENTS)
+    decks = (
+        await spending.current_allowance(deps, session, LimitKind.PRESENTATIONS)
+        if deps.presentations_on
+        else None
+    )
     friends = await deps.storage.count_referrals(session.user.id)
     # Кнопка подписки нужна тому, у кого подписка есть: §4.14 оферты обещает
     # отмену «в разделе Профиль», и вести туда надо отсюда. Остальным она
@@ -29,6 +35,7 @@ async def show(deps: Deps, session: Session) -> None:
         messages_limit=daily_messages(session.tariff),
         images_left=images.total_left,
         documents_left=docs.total_left,
+        presentations_left=decks.total_left if decks is not None else None,
         friends=friends,
         user_number=(
             session.user.support_number if deps.settings.show_user_number else None

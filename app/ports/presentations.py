@@ -81,8 +81,13 @@ class Presentations(Protocol):
         """
         ...
 
-    async def build(self, topic: str, *, theme_id: str) -> BuiltPresentation:
+    async def build(
+        self, topic: str, *, theme_id: str, material: str = ""
+    ) -> BuiltPresentation:
         """Собирает колоду и возвращает её файлы.
+
+        ``material`` — текст, по которому собирать (доклад для презентации
+        по нему). Пусто — колода по одной теме.
 
         Возвращается только готовая колода с уже скачанными файлами: файлы у
         провайдера живут недолго, и держать ссылку на них вместо байтов

@@ -38,6 +38,10 @@ AWAIT_PRESENTATION_TOPIC = "await:pres"
 #: помнить её больше негде.
 _AWAIT_PRESENTATION_THEME_PREFIX = "await:pres:theme:"
 
+#: Ждём оформление для презентации по докладу. За префиксом — жетон доклада,
+#: а не тема: тема взята из текста доклада, и ей, как и ему, в базе не место.
+_AWAIT_PRESENTATION_SOURCE_PREFIX = "await:pres:from:"
+
 #: Ждём почту для фискального чека. За префиксом — тариф, за которым человек
 #: шёл: спросив адрес, надо вернуть его туда же, а не в начало витрины.
 _AWAIT_EMAIL_PREFIX = "await:email:"
@@ -183,3 +187,17 @@ def parse_await_presentation_theme(pending: str | None) -> str | None:
     if pending is None or not pending.startswith(_AWAIT_PRESENTATION_THEME_PREFIX):
         return None
     return pending.removeprefix(_AWAIT_PRESENTATION_THEME_PREFIX) or None
+
+
+def await_presentation_source(token: str) -> str:
+    """Состояние «доклад есть, ждём оформление для презентации по нему»."""
+    if not token:
+        raise ValueError("нужен жетон доклада")
+    return f"{_AWAIT_PRESENTATION_SOURCE_PREFIX}{token}"
+
+
+def parse_await_presentation_source(pending: str | None) -> str | None:
+    """Жетон доклада, под который ждём оформление; None — ждём не его."""
+    if pending is None or not pending.startswith(_AWAIT_PRESENTATION_SOURCE_PREFIX):
+        return None
+    return pending.removeprefix(_AWAIT_PRESENTATION_SOURCE_PREFIX) or None

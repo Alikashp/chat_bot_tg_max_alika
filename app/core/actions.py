@@ -50,6 +50,7 @@ class Action(StrEnum):
     # Презентации (фаза 10)
     PRESENTATION_AGAIN = "v:again"
     PRESENTATION_RETRY = "v:retry"
+    PRESENTATION_SUGGEST = "v:idea"
 
     # Подписка (§4.14 оферты: отмена — в профиле)
     SUBSCRIPTION = "s:show"
@@ -74,6 +75,11 @@ DOCUMENT_PREFIX = "d:pick:"
 
 #: Префикс выбора оформления презентации. За ним идентификатор темы из API.
 THEME_PREFIX = "v:theme:"
+
+#: Кнопки-связки. За префиксом — жетон из порта Handoff: сами данные (тема,
+#: текст доклада) в кнопку не помещаются, а текст доклада и в базу не кладётся.
+REPORT_FROM_PREFIX = "x:rep:"
+PRESENTATION_FROM_PREFIX = "x:pres:"
 
 #: Префикс покупки тарифа. За ним идёт идентификатор тарифа.
 BUY_PREFIX = "t:buy:"
@@ -120,6 +126,28 @@ def parse_theme_action(action: str) -> str | None:
     if not action.startswith(THEME_PREFIX):
         return None
     return action.removeprefix(THEME_PREFIX) or None
+
+
+def report_from_action(token: str) -> str:
+    """«Сделать доклад по презентации» с жетоном её темы."""
+    return f"{REPORT_FROM_PREFIX}{token}"
+
+
+def parse_report_from_action(action: str) -> str | None:
+    if not action.startswith(REPORT_FROM_PREFIX):
+        return None
+    return action.removeprefix(REPORT_FROM_PREFIX) or None
+
+
+def presentation_from_action(token: str) -> str:
+    """«Сделать презентацию по докладу» с жетоном доклада."""
+    return f"{PRESENTATION_FROM_PREFIX}{token}"
+
+
+def parse_presentation_from_action(action: str) -> str | None:
+    if not action.startswith(PRESENTATION_FROM_PREFIX):
+        return None
+    return action.removeprefix(PRESENTATION_FROM_PREFIX) or None
 
 
 def method_action(method: str, tariff_id: str) -> str:

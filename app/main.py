@@ -60,6 +60,7 @@ from app.core.settings import CoreSettings
 from app.infra.antiflood import FloodGuard
 from app.infra.dedup import Deduplicator
 from app.infra.examples import load_examples
+from app.infra.handoff import MemoryHandoff
 from app.infra.logging import configure_logging, get_logger
 from app.infra.queue import JobQueue
 from app.infra.retry import RetryPolicy
@@ -428,6 +429,9 @@ async def build_wiring(settings: Settings) -> Wiring:
         http_clients = (*http_clients, cards_client)
 
     presentations, presentations_client = build_presentations(settings)
+    # Жетоны кнопок-связок «доклад ↔ презентация». Общие на оба мессенджера:
+    # жетон выдаётся в одном процессе, и забрать его надо там же.
+    handoff = MemoryHandoff()
     if presentations_client is not None:
         http_clients = (*http_clients, presentations_client)
 
@@ -466,6 +470,7 @@ async def build_wiring(settings: Settings) -> Wiring:
             now=_utc_now,
             examples=examples,
             presentations=presentations,
+            handoff=handoff,
         )
 
     deps = build_deps(

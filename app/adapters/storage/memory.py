@@ -234,6 +234,10 @@ class InMemoryStorage:
         self._users[user_id] = replace(user, presentation_started_at=now)
         return True
 
+    async def set_menu_version(self, user_id: UserId, version: str) -> None:
+        user = self._require_user(user_id)
+        self._users[user_id] = replace(user, menu_version=version)
+
     async def release_presentation(self, user_id: UserId) -> None:
         user = self._require_user(user_id)
         self._users[user_id] = replace(user, presentation_started_at=None)

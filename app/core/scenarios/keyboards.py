@@ -10,12 +10,16 @@
 
 from __future__ import annotations
 
+import hashlib
+
 from app.core import texts
 from app.core.actions import (
     Action,
     buy_action,
     document_action,
+    presentation_from_action,
     preset_action,
+    report_from_action,
     theme_action,
 )
 from app.core.models import Button, Keyboard
@@ -54,6 +58,19 @@ def _menu_rows(presentations: bool) -> tuple[tuple[tuple[str, Action], ...], ...
         return MENU_ACTIONS
     work, *rest = MENU_ACTIONS
     return (work, _PRESENTATIONS_ROW, *rest)
+
+
+def menu_version(*, presentations: bool = False) -> str:
+    """Отпечаток меню: меняется вместе с любой подписью или кнопкой.
+
+    По нему видно, что человек держит на экране устаревшее меню и его пора
+    обновить (§4.2). Считается из самих подписей, а не номером версии руками:
+    номер забыли бы поднять, а подписи забыть нельзя.
+    """
+    labels = "\n".join(
+        "|".join(label for label, _ in row) for row in _menu_rows(presentations)
+    )
+    return hashlib.sha256(labels.encode()).hexdigest()[:12]
 
 
 def main_menu(*, presentations: bool = False) -> Keyboard:
@@ -325,19 +342,46 @@ def documents_menu(actions: tuple[tuple[str, str], ...]) -> Keyboard:
     )
 
 
-def document_result(actions: tuple[tuple[str, str], ...]) -> Keyboard:
+def document_result(
+    actions: tuple[tuple[str, str], ...], presentation_token: str | None = None
+) -> Keyboard:
     """Кнопки под готовыми файлами — те же действия.
 
     Отдельной кнопки «ещё раз» здесь нет намеренно: файл уже обработан, и
     повторять ровно то же незачем, а вот сделать по нему же конспект после
     доклада — обычное желание. Для этого нужно то же меню.
+
+    ``presentation_token`` — жетон доклада для «Сделать презентацию по
+    докладу». Есть только при включённых презентациях.
     """
-    return documents_menu(actions)
+    menu = documents_menu(actions)
+    if presentation_token is None:
+        return menu
+    link = Button(
+        text=texts.BUTTON_PRESENTATION_FROM_REPORT,
+        action=presentation_from_action(presentation_token),
+    )
+    return Keyboard(rows=(*menu.rows, (link,)))
 
 
 def menu_labels(*, presentations: bool = False) -> tuple[str, ...]:
     """Подписи пунктов меню — для экрана, который перечисляет их текстом."""
     return tuple(label for row in _menu_rows(presentations) for label, _ in row)
+
+
+def presentation_ask() -> Keyboard:
+    """Под «О чём презентация?»: «Придумай сам» и «Отмена»."""
+    return Keyboard(
+        rows=(
+            (
+                Button(
+                    text=texts.BUTTON_SUGGEST_TOPIC,
+                    action=Action.PRESENTATION_SUGGEST,
+                ),
+            ),
+            (Button(text=texts.BUTTON_CANCEL, action=Action.MENU_SHOW),),
+        )
+    )
 
 
 def presentation_cancel() -> Keyboard:
@@ -358,11 +402,35 @@ def presentation_themes(themes: tuple[tuple[str, str], ...]) -> Keyboard:
     return Keyboard(rows=tuple(rows))
 
 
-def presentation_ready() -> Keyboard:
-    """Под готовой презентацией — «Ещё одну»."""
-    return Keyboard.row(
-        Button(text=texts.BUTTON_PRESENTATION_AGAIN, action=Action.PRESENTATION_AGAIN)
+def presentation_result(report_token: str | None = None) -> Keyboard:
+    """Под итогом после файлов: доклад по ней и «Ещё одну презентацию».
+
+    Доклад — первым: это следующий шаг для того, кто готовится к выступлению.
+    Без жетона (связки выключены) остаётся одна «Ещё одну презентацию».
+    """
+    rows: list[tuple[Button, ...]] = []
+    if report_token is not None:
+        rows.append(
+            (
+                Button(
+                    text=texts.BUTTON_REPORT_FROM_PRESENTATION,
+                    action=report_from_action(report_token),
+                ),
+            )
+        )
+    rows.append(
+        (
+            Button(
+                text=texts.BUTTON_PRESENTATION_AGAIN, action=Action.PRESENTATION_AGAIN
+            ),
+        )
     )
+    return Keyboard(rows=tuple(rows))
+
+
+def link_exit(label: str, action: Action) -> Keyboard:
+    """Выход с ответа устаревшей или уже нажатой кнопки-связки."""
+    return Keyboard.row(Button(text=label, action=action))
 
 
 def presentation_retry() -> Keyboard:

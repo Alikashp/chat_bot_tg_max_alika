@@ -194,6 +194,13 @@ class MaxMessenger:
             callback_id=callback_id, notification=notification
         )
 
+    async def refresh_menu(self, chat: Chat) -> None:
+        """Ничего не делает: постоянных клавиатур в MAX нет.
+
+        Меню здесь открывается кнопкой «☰ В меню» и каждый раз собирается
+        заново — устареть ему негде (§4.2).
+        """
+
     async def download_photo(self, photo_ref: str, *, max_bytes: int) -> Photo:
         """Скачивает присланное фото по его адресу.
 

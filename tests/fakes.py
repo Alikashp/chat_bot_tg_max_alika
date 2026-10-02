@@ -86,6 +86,9 @@ class FakeMessenger:
         #: Готовые файлы, отданные человеку. По ним видно, что отдали оба
         #: формата, а не один.
         self.documents_sent: list[Document] = []
+        #: Тексты и файлы в том порядке, в каком ушли. Нужен там, где порядок
+        #: и есть требование: «сначала файлы, потом сообщение».
+        self.timeline: list[tuple[str, str]] = []
         #: Что вернуть на скачивание присланного файла.
         self.incoming_document: Document | None = None
         self.fail_download_document: Exception | None = None
@@ -122,6 +125,7 @@ class FakeMessenger:
         if self.fail_send is not None:
             raise self.fail_send
         self.texts.append(SentText(chat, text, keyboard, show_menu))
+        self.timeline.append(("text", text))
         return self._new_ref(chat)
 
     async def send_photo(
@@ -182,6 +186,7 @@ class FakeMessenger:
         if self.fail_send_document is not None:
             raise self.fail_send_document
         self.documents_sent.append(document)
+        self.timeline.append(("document", document.filename))
 
     async def download_document(self, document_ref: str, *, max_bytes: int) -> Document:
         if self.fail_download_document is not None:

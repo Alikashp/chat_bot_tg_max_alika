@@ -1,7 +1,7 @@
 """Раздел «Презентации» (фаза 10).
 
 Путь человека: кнопка → тема словами → оформление из списка провайдера →
-«Готовлю презентацию, около минуты» → PDF и PPTX → «Ещё одну».
+«Готовлю презентацию, около минуты» → PDF и PPTX → итог с кнопками.
 
 Три правила, ради которых файл написан так, а не короче.
 
@@ -307,18 +307,21 @@ async def _build_claimed(
         )
         return
 
-    # Файлы у человека — это и есть доставка. Списываем до правки сообщения
-    # «готовлю»: её сбой не отменяет того, что презентацию уже получили.
+    # Файлы у человека — это и есть доставка. Списываем до сообщений после
+    # них: их сбой не отменяет того, что презентацию уже получили.
     await spending.charge(deps, session, LimitKind.PRESENTATIONS)
     deps.logger.info(
         "presentation_delivered",
         user_id=int(session.user.id),
         with_pdf=built.pdf is not None,
     )
-    await deps.messenger.edit_text(
-        waiting,
-        texts.presentation_ready(with_pdf=built.pdf is not None).text,
-        keyboard=keyboards.presentation_ready(),
+    await deps.messenger.edit_text(waiting, texts.presentation_done().text)
+    # Итог — отдельным сообщением после файлов, а не правкой «готовлю»: то
+    # стоит над файлами, а кнопки «что дальше» нужны под ними.
+    await deps.messenger.send_text(
+        session.chat,
+        texts.presentation_result(with_pdf=built.pdf is not None).text,
+        keyboard=keyboards.presentation_result(),
     )
 
 

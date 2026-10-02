@@ -163,11 +163,32 @@ async def test_the_whole_path_from_button_to_files(
         f"{TOPIC}.pdf",
         f"{TOPIC}.pptx",
     ]
-    assert messenger.text_edits[-1].text == texts.PRESENTATION_READY
-    assert last_edit_buttons(messenger) == [
-        (texts.BUTTON_PRESENTATION_AGAIN, Action.PRESENTATION_AGAIN)
-    ]
     assert await left(storage, owner) == 0
+
+
+async def test_the_result_message_comes_after_the_files(
+    enabled: Deps, owner: User, messenger: FakeMessenger
+) -> None:
+    """Д1: сначала оба файла, потом сообщение — дословно и с кнопками."""
+    await up_to_themes(enabled)
+    await handle(enabled, incoming(action=theme_action("azure_coral")))
+
+    assert messenger.timeline[-3:] == [
+        ("document", f"{TOPIC}.pdf"),
+        ("document", f"{TOPIC}.pptx"),
+        ("text", texts.PRESENTATION_RESULT),
+    ]
+    assert texts.PRESENTATION_RESULT == (
+        "С заботой о тебе отправляем 2 файла:\n"
+        "1. PDF - можно сразу использовать🤝🏻\n"
+        "2. PowerPoint - если нужно отредактировать✍🏻"
+    )
+    keyboard = messenger.last_text.keyboard
+    assert keyboard is not None
+    buttons = [(b.text, b.action) for row in keyboard.rows for b in row]
+    assert buttons[-1] == ("Ещё одну презентацию", Action.PRESENTATION_AGAIN)
+    # «Готовлю презентацию» не остаётся висеть над готовыми файлами.
+    assert messenger.text_edits[-1].text == texts.PRESENTATION_DONE
 
 
 async def test_one_more_starts_over(
@@ -295,7 +316,10 @@ async def test_a_missing_pdf_still_delivers_the_pptx(
     await handle(enabled, incoming(action=theme_action("azure_coral")))
 
     assert [d.data for d in messenger.documents_sent] == [PPTX_BYTES]
-    assert messenger.text_edits[-1].text == texts.PRESENTATION_READY_WITHOUT_PDF
+    assert messenger.timeline[-1] == ("text", texts.PRESENTATION_RESULT_PPTX_ONLY)
+    # Ушёл один PowerPoint — текст не обещает ни PDF, ни двух файлов.
+    assert "2 файла" not in texts.PRESENTATION_RESULT_PPTX_ONLY
+    assert "PDF -" not in texts.PRESENTATION_RESULT_PPTX_ONLY
     assert await left(storage, owner) == 0
 
 

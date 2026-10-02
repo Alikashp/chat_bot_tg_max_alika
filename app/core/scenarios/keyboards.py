@@ -358,8 +358,8 @@ def presentation_themes(themes: tuple[tuple[str, str], ...]) -> Keyboard:
     return Keyboard(rows=tuple(rows))
 
 
-def presentation_ready() -> Keyboard:
-    """Под готовой презентацией — «Ещё одну»."""
+def presentation_result() -> Keyboard:
+    """Под итогом после файлов — «Ещё одну презентацию»."""
     return Keyboard.row(
         Button(text=texts.BUTTON_PRESENTATION_AGAIN, action=Action.PRESENTATION_AGAIN)
     )

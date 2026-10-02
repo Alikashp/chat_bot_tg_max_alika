@@ -463,14 +463,24 @@ PRESENTATION_PICK_THEME = "Выбери оформление 👇"
 #: «около минуты» и так говорит, что ждать.
 PRESENTATION_WORKING = "Готовлю презентацию, около минуты"
 
-#: Сообщение с этим текстом стоит над файлами — сначала «готовлю», потом
-#: файлы, — поэтому стрелка смотрит вниз.
-PRESENTATION_READY = "Готово! Презентация ниже — PDF и PPTX 👇"
+#: Во что превращается «Готовлю презентацию…», когда файлы ушли. Сообщение
+#: стоит над файлами, и висеть там с «готовлю» ему нельзя — это неправда.
+PRESENTATION_DONE = "Готово 👇"
 
-#: PDF у провайдера не собрался, PPTX полноценный. Сказать об этом надо:
-#: иначе человек будет искать второй файл.
-PRESENTATION_READY_WITHOUT_PDF = (
-    "Готово! PDF не собрался, держи PPTX — его можно открыть и править 👇"
+#: Итог после файлов. Дословно от заказчика, вместе с пробелами вокруг
+#: дефисов и без пробела перед эмодзи.
+PRESENTATION_RESULT = (
+    "С заботой о тебе отправляем 2 файла:\n"
+    "1. PDF - можно сразу использовать🤝🏻\n"
+    "2. PowerPoint - если нужно отредактировать✍🏻"
+)
+
+#: То же, когда PDF не собрался и ушёл один PowerPoint. Текст не обещает ни
+#: двух файлов, ни PDF: человек искал бы второй файл, которого нет.
+PRESENTATION_RESULT_PPTX_ONLY = (
+    "С заботой о тебе отправляем файл:\n"
+    "PowerPoint - можно сразу открыть и отредактировать✍🏻\n"
+    "PDF в этот раз не собрался 🤷"
 )
 
 #: Вторая половина фразы — обещание, которое обязано быть правдой: презентация
@@ -486,7 +496,7 @@ PRESENTATION_BUSY = (
 #: Второе нажатие, пока первая сборка идёт. Вторую колоду мы не начинаем.
 PRESENTATION_IN_PROGRESS = "Презентация уже готовится — дождись её 🙏"
 
-BUTTON_PRESENTATION_AGAIN = "📑 Ещё одну"
+BUTTON_PRESENTATION_AGAIN = "Ещё одну презентацию"
 
 #: Имя файла, если из темы ничего пригодного для имени не осталось.
 PRESENTATION_FILENAME = "Презентация"
@@ -511,9 +521,13 @@ def presentation_working() -> Screen:
     )
 
 
-def presentation_ready(*, with_pdf: bool = True) -> Screen:
+def presentation_done() -> Screen:
+    return Screen(text=PRESENTATION_DONE, next_step="файлы и итог — ниже")
+
+
+def presentation_result(*, with_pdf: bool = True) -> Screen:
     return Screen(
-        text=PRESENTATION_READY if with_pdf else PRESENTATION_READY_WITHOUT_PDF,
+        text=PRESENTATION_RESULT if with_pdf else PRESENTATION_RESULT_PPTX_ONLY,
         buttons=(BUTTON_PRESENTATION_AGAIN,),
     )
 
@@ -1486,8 +1500,9 @@ def _all_screens() -> tuple[Screen, ...]:
         presentation_topic_bad(),
         presentation_pick_theme(("Графит светлая", "Лазурь", "Свежая зелёная")),
         presentation_working(),
-        presentation_ready(),
-        presentation_ready(with_pdf=False),
+        presentation_done(),
+        presentation_result(),
+        presentation_result(with_pdf=False),
         presentation_error(),
         presentation_busy(),
         presentation_in_progress(),

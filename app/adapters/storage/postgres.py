@@ -354,6 +354,11 @@ class PostgresStorage:
         async with self._session() as session, session.begin():
             return (await session.execute(query)).one_or_none() is not None
 
+    async def set_menu_version(self, user_id: UserId, version: str) -> None:
+        query = update(users).where(users.c.id == user_id).values(menu_version=version)
+        async with self._session() as session, session.begin():
+            await session.execute(query)
+
     async def release_presentation(self, user_id: UserId) -> None:
         query = (
             update(users)
@@ -834,6 +839,7 @@ def _to_user(row: Any) -> User:
         pending=row["pending"],
         retry_context=row["retry_context"],
         presentation_started_at=row["presentation_started_at"],
+        menu_version=row["menu_version"],
     )
 
 

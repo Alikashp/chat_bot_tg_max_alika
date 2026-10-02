@@ -10,6 +10,8 @@
 
 from __future__ import annotations
 
+import hashlib
+
 from app.core import texts
 from app.core.actions import (
     Action,
@@ -56,6 +58,19 @@ def _menu_rows(presentations: bool) -> tuple[tuple[tuple[str, Action], ...], ...
         return MENU_ACTIONS
     work, *rest = MENU_ACTIONS
     return (work, _PRESENTATIONS_ROW, *rest)
+
+
+def menu_version(*, presentations: bool = False) -> str:
+    """Отпечаток меню: меняется вместе с любой подписью или кнопкой.
+
+    По нему видно, что человек держит на экране устаревшее меню и его пора
+    обновить (§4.2). Считается из самих подписей, а не номером версии руками:
+    номер забыли бы поднять, а подписи забыть нельзя.
+    """
+    labels = "\n".join(
+        "|".join(label for label, _ in row) for row in _menu_rows(presentations)
+    )
+    return hashlib.sha256(labels.encode()).hexdigest()[:12]
 
 
 def main_menu(*, presentations: bool = False) -> Keyboard:

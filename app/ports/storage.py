@@ -193,6 +193,10 @@ class Storage(Protocol):
         """
         ...
 
+    async def set_menu_version(self, user_id: UserId, version: str) -> None:
+        """Запоминает, какую версию постоянного меню человек получил."""
+        ...
+
     async def release_presentation(self, user_id: UserId) -> None:
         """Освобождает слот сборки. Вызывается в finally."""
         ...

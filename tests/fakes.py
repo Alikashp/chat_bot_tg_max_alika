@@ -89,6 +89,8 @@ class FakeMessenger:
         #: Тексты и файлы в том порядке, в каком ушли. Нужен там, где порядок
         #: и есть требование: «сначала файлы, потом сообщение».
         self.timeline: list[tuple[str, str]] = []
+        #: Куда просили обновить постоянное меню (после выкладки с новым меню).
+        self.menu_refreshes: list[Chat] = []
         #: Что вернуть на скачивание присланного файла.
         self.incoming_document: Document | None = None
         self.fail_download_document: Exception | None = None
@@ -209,6 +211,9 @@ class FakeMessenger:
         self, callback_id: str, *, notification: str | None = None
     ) -> None:
         self.answered_callbacks.append(callback_id)
+
+    async def refresh_menu(self, chat: Chat) -> None:
+        self.menu_refreshes.append(chat)
 
     # --- Удобства для утверждений ------------------------------------
 

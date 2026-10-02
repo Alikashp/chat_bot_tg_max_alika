@@ -26,6 +26,7 @@ from aiogram.types import (
 
 from app.adapters.telegram import emoji as tg_emoji
 from app.adapters.telegram import keyboards as tg_keyboards
+from app.core import texts
 from app.core.documents import DocumentTooLargeError
 from app.core.models import Chat, Document, Keyboard, MessageRef, Photo
 from app.core.photos import PhotoTooLargeError
@@ -53,6 +54,9 @@ class TelegramMessenger:
         #: обратно в действия; здесь только рисуется. None — меню по
         #: умолчанию, без разделов, которые включаются ключами.
         self._menu = tg_keyboards.main_menu(menu)
+        #: Кому этот процесс уже отправил постоянное меню. Меню у процесса
+        #: одно — текущее, — и тому, кто его получил, обновлять нечего.
+        self._menu_shown: set[str] = set()
         #: Что из отправленных альбомом картинок Telegram уже держит у себя:
         #: имя файла → file_id. См. send_album.
         self._albums: dict[str, str] = {}
@@ -77,7 +81,7 @@ class TelegramMessenger:
             chat_id=chat.chat_id,
             text=text,
             entities=tg_emoji.entities(text, self._premium_emoji),
-            reply_markup=self._markup(keyboard, show_menu),
+            reply_markup=self._markup(chat, keyboard, show_menu),
         )
         return _ref(chat, message)
 
@@ -94,7 +98,7 @@ class TelegramMessenger:
             chat_id=chat.chat_id,
             photo=BufferedInputFile(photo.data, filename=photo.filename),
             caption=caption,
-            reply_markup=self._markup(keyboard, show_menu),
+            reply_markup=self._markup(chat, keyboard, show_menu),
         )
         return _ref(chat, message)
 
@@ -116,7 +120,7 @@ class TelegramMessenger:
             chat_id=chat.chat_id,
             photo=photo_ref,
             caption=caption,
-            reply_markup=self._markup(keyboard, show_menu),
+            reply_markup=self._markup(chat, keyboard, show_menu),
         )
         return _ref(chat, message)
 
@@ -152,7 +156,7 @@ class TelegramMessenger:
 
     # --- Клавиатуры ----------------------------------------------------
 
-    def _markup(self, keyboard: Keyboard | None, show_menu: bool) -> Any:
+    def _markup(self, chat: Chat, keyboard: Keyboard | None, show_menu: bool) -> Any:
         """Выбирает единственную клавиатуру, которую разрешает Telegram.
 
         Inline-кнопки под сообщением важнее: без них экран становится тупиком.
@@ -162,6 +166,7 @@ class TelegramMessenger:
         if keyboard is not None:
             return self._inline(keyboard)
         if show_menu:
+            self._menu_shown.add(chat.chat_id)
             return self._menu
         return None
 
@@ -234,6 +239,21 @@ class TelegramMessenger:
         await self._bot.answer_callback_query(
             callback_query_id=callback_id, text=notification
         )
+
+    async def refresh_menu(self, chat: Chat) -> None:
+        """Отправляет постоянное меню, если ответ не принёс его сам.
+
+        Постоянная клавиатура в Telegram меняется только сообщением, которое
+        её несёт, а у сообщения клавиатура одна: ответ с кнопками под собой
+        меню не принесёт. Тогда — одно короткое сообщение с меню. Если ответ
+        уже принёс меню, не шлём ничего.
+        """
+        if chat.chat_id in self._menu_shown:
+            return
+        await self._bot.send_message(
+            chat_id=chat.chat_id, text=texts.MENU_UPDATED, reply_markup=self._menu
+        )
+        self._menu_shown.add(chat.chat_id)
 
     async def download_photo(self, photo_ref: str, *, max_bytes: int) -> Photo:
         """Скачивает присланное фото, не давая ему переполнить память.

@@ -142,6 +142,12 @@ async def handle(deps: Deps, incoming: IncomingMessage) -> None:
 
     session = Session(user=user, chat=incoming.chat, day=deps.today(), now=deps.now())
 
+    await _dispatch(deps, session, incoming)
+    await _refresh_menu(deps, session)
+
+
+async def _dispatch(deps: Deps, session: Session, incoming: IncomingMessage) -> None:
+    """Зовёт сценарий по тому, что пришло: оплата, нажатие, фото, файл, текст."""
     if incoming.paid_order_id is not None:
         # Мессенджер подтвердил оплату. Выдаём тариф — ровно один раз.
         order = await payments.confirm(
@@ -553,6 +559,21 @@ async def _handle_text(deps: Deps, session: Session, text: str) -> None:
 
 
 # --- Вспомогательное -----------------------------------------------------
+
+
+async def _refresh_menu(deps: Deps, session: Session) -> None:
+    """После выкладки с новым меню — обновить его, один раз на версию (§4.2).
+
+    Зовётся после ответа: человек получает новое меню вместе с первым ответом,
+    а не сообщением вместо него. Версия запоминается — второй раз за ту же
+    версию ничего не придёт.
+    """
+    current = keyboards.menu_version(presentations=deps.presentations_on)
+    if session.user.menu_version == current:
+        return
+    await deps.messenger.refresh_menu(session.chat)
+    await deps.storage.set_menu_version(session.user.id, current)
+
 
 #: Сценарий, готовый к запуску под ограничителем.
 Scenario = Callable[[Deps, Session], Awaitable[None]]

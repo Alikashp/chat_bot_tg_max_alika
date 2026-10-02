@@ -146,6 +146,10 @@ BUTTON_SHOW_MENU = "☰ В меню"
 
 MENU_ASK = "Что делаем?"
 
+#: Сопровождает новое постоянное меню, когда первый ответ после выкладки нёс
+#: свои кнопки и меню с ним не поместилось. Раз на версию меню.
+MENU_UPDATED = "Обновил меню — новые кнопки внизу 👇"
+
 #: Кнопки, доступные с любого экрана. В Telegram это постоянная клавиатура, в
 #: MAX постоянных клавиатур не бывает, и меню открывается кнопкой «В меню»
 #: (docs/research.md §1.6). Ядро про разницу не знает.
@@ -402,6 +406,10 @@ DOCUMENT_UNSUPPORTED = "Такой файл я не прочитаю. Пришл
 #: полным разбором. Просим написать подробнее до всякого обращения.
 DOCUMENT_TOPIC_TOO_SHORT = "Напиши тему подробнее — одного слова мало 🙏"
 DOCUMENT_TOO_BIG = "Файл слишком большой, пришли до 20 МБ 🙏"
+
+
+def menu_updated() -> Screen:
+    return Screen(text=MENU_UPDATED, buttons=_menu_buttons())
 
 
 def menu(menu_buttons: tuple[str, ...]) -> Screen:
@@ -1551,6 +1559,7 @@ def _all_screens() -> tuple[Screen, ...]:
         unsupported_input(),
         internal_error(),
         menu((MENU_IMAGES, MENU_DOCUMENTS, MENU_PROFILE, MENU_TARIFFS)),
+        menu_updated(),
         menu(
             (
                 MENU_IMAGES,

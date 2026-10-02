@@ -48,7 +48,7 @@ from app.adapters.storage.memory import InMemoryStorage
 from app.adapters.telegram import router as telegram_router
 from app.adapters.telegram.messenger import TelegramMessenger
 from app.adapters.telegram.stars import TelegramStars
-from app.core import texts
+from app.core import support, texts
 from app.core.actions import Action, buy_action, method_action, preset_action
 from app.core.models import MessengerKind, TariffId
 from app.core.scenarios.deps import Deps
@@ -731,3 +731,54 @@ async def test_a_repeated_payment_notice_does_not_extend_the_subscription(
     second = (await started.user()).tariff_expires_at
 
     assert first == second
+
+
+# --- Обновление меню без /start (Д6) -------------------------------------
+
+
+async def test_after_a_release_the_menu_arrives_with_the_first_answer(
+    harness: Harness,
+) -> None:
+    """Человек со старым меню нажимает кнопку — следом приходит новое меню.
+
+    Ответ на нажатие несёт свои кнопки, а у сообщения в Telegram клавиатура
+    одна, поэтому меню — одним коротким сообщением следом. Второй раз за ту
+    же версию его нет.
+    """
+    await harness.storage.create_user(
+        messenger=MessengerKind.TELEGRAM,
+        external_id=str(CHAT_ID),
+        referral_code="oldmenu1",
+        support_number=support.generate_number(),
+        bonus_images=3,
+        bonus_documents=0,
+    )
+
+    await harness.press(Action.MENU_PROFILE)
+
+    sent = harness.messages()
+    assert [message.text for message in sent][-1] == texts.MENU_UPDATED
+    assert isinstance(sent[-1].reply_markup, ReplyKeyboardMarkup)
+
+    harness.forget()
+    await harness.press(Action.MENU_PROFILE)
+    assert texts.MENU_UPDATED not in harness.texts_said()
+
+
+async def test_an_answer_that_carries_the_menu_needs_no_extra_message(
+    harness: Harness,
+) -> None:
+    """Ответ без кнопок под собой сам несёт новое меню — второго сообщения нет."""
+    await harness.storage.create_user(
+        messenger=MessengerKind.TELEGRAM,
+        external_id=str(CHAT_ID),
+        referral_code="oldmenu2",
+        support_number=support.generate_number(),
+        bonus_images=3,
+        bonus_documents=0,
+    )
+
+    await harness.send_text("привет")
+
+    assert texts.MENU_UPDATED not in harness.texts_said()
+    assert isinstance(harness.messages()[-1].reply_markup, ReplyKeyboardMarkup)

@@ -482,16 +482,24 @@ async def _charged(deps: Deps, order_id: str, user: User) -> None:
 
 
 async def _charge_failed(deps: Deps, subscription: Subscription, user: User) -> None:
-    """Банк отказал. Пробуем три дня, потом прекращаем (§4.16 оферты)."""
+    """Банк отказал. Три попытки с суточным шагом, потом конец (§4.16 оферты).
+
+    Считаем не попытки, а окно: все попытки должны уложиться в
+    ``charge_retry_days`` дней от первого отказа. Попытка, следующая за
+    которой вышла бы за окно, — последняя. С настройками по умолчанию это
+    ровно три: в день отказа, через сутки и через двое. Сбой провайдера сюда
+    не попадает вовсе — он не отказ.
+    """
     now = deps.now()
     failed_since = subscription.failed_since or now
-    if now - failed_since >= timedelta(days=deps.settings.charge_retry_days):
+    next_try = _retry_at(deps)
+    if next_try >= failed_since + timedelta(days=deps.settings.charge_retry_days):
         await _end(deps, subscription, user)
         return
 
     if not await deps.storage.advance_subscription(
         subscription.user_id,
-        next_charge_at=_retry_at(deps),
+        next_charge_at=next_try,
         status=SubscriptionStatus.PAST_DUE.value,
         failed_since=failed_since,
     ):
@@ -504,13 +512,18 @@ async def _charge_failed(deps: Deps, subscription: Subscription, user: User) -> 
         subscription.tariff,
         amount=subscription.amount,
         currency=subscription.currency,
-        until=_until(deps, user, subscription),
+        next_try=texts.format_date(current_day(next_try, deps.settings.timezone)),
     )
     await deps.messenger.send_text(
         session_for(deps, user).chat,
         screen.text,
-        keyboard=keyboards.tariffs_or_profile(),
+        keyboard=keyboards.subscription_manage(),
     )
+    # Сообщение называет сумму и дату следующей попытки — это и есть
+    # предупреждение о ней (§4.13). Отметка ставится после отправки, как и у
+    # обычного напоминания: не дошло сообщение — повтор не пройдёт молча, а
+    # перенесётся с новым предупреждением.
+    await deps.storage.mark_reminded(subscription.user_id, next_try)
 
 
 async def _await_stars(deps: Deps, subscription: Subscription, user: User) -> None:

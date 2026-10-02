@@ -1353,16 +1353,23 @@ def subscription_renewed(
 
 
 def subscription_charge_failed(
-    tariff_id: TariffId, *, amount: int, currency: str, until: str
+    tariff_id: TariffId, *, amount: int, currency: str, next_try: str
 ) -> Screen:
-    """Списание не прошло, но оплаченный срок ещё идёт (§4.16 оферты)."""
+    """Списание не прошло; следующая попытка — тогда-то (§4.16 оферты).
+
+    Это же сообщение — предупреждение о следующей попытке (§4.13): в нём
+    сумма, дата и выход. Иначе перед каждым повтором уходило бы ещё и «завтра
+    спишем», а сам повтор переносился бы на сутки, чтобы это «завтра»
+    наступило, — и три попытки растягивались бы на пять дней.
+    """
     return Screen(
         text=(
             f"Не вышло списать {_price(amount, currency)} "
             f"за тариф «{TARIFF_TITLES[tariff_id]}» 🤷\n"
-            f"Проверь карту — попробуем ещё раз. Тариф работает до {until}."
+            f"Проверь карту — попробуем ещё раз {next_try}. "
+            "Не нужно? Отключи продление 👇"
         ),
-        buttons=(MENU_TARIFFS, MENU_PROFILE),
+        buttons=(BUTTON_SUBSCRIPTION_OFF, MENU_PROFILE),
     )
 
 
@@ -1574,7 +1581,7 @@ def _all_screens() -> tuple[Screen, ...]:
             TariffId.PRO, amount=599, currency=RUB, until="30 октября"
         ),
         subscription_charge_failed(
-            TariffId.PRO, amount=599, currency=RUB, until="30 сентября"
+            TariffId.PRO, amount=599, currency=RUB, next_try="1 октября"
         ),
         subscription_ended(TariffId.PRO),
         too_busy(),

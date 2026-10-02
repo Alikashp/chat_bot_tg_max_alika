@@ -754,12 +754,7 @@ async def test_only_an_explicit_refusal_opens_a_new_order(
     clock.advance(days=1)
     retry = await storage.get_subscription(user.id)
     assert retry is not None
-    # О повторе человек предупреждён сообщением об отказе; здесь важен
-    # только заказ, с которым идёт повтор.
-    await storage.mark_reminded(user.id, retry.next_charge_at)
-    await subscriptions.charge(
-        recurring, replace(retry, reminded_for=retry.next_charge_at)
-    )
+    await subscriptions.charge(recurring, retry)
 
     assert len(cards.charged) == 2
     assert cards.charged[0][0] != cards.charged[1][0]

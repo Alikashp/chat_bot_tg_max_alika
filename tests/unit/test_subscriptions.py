@@ -616,7 +616,7 @@ async def test_a_subscription_without_a_saved_card_ends(
     assert "вернули бесплатные лимиты" in messenger.last_text.text
 
 
-# --- Один период — один заказ (П7) ---------------------------------------
+# --- Один период — один заказ (П8) ---------------------------------------
 
 
 async def test_a_lost_answer_is_repeated_with_the_same_order(

@@ -132,6 +132,20 @@ async def test_create_poll_and_download(
 
 
 @respx.mock
+async def test_the_report_goes_as_material(api: FibonacciPresentations) -> None:
+    """Презентация по докладу: его текст — полем input.text (§3.1)."""
+    create = respx.post(f"{API}/v1/decks").mock(
+        return_value=httpx.Response(202, json=deck("done"))
+    )
+    mock_files()
+
+    await api.build("Фотосинтез", theme_id="azure_coral", material="Текст доклада")
+
+    sent = json.loads(create.calls.last.request.content)
+    assert sent["input"] == {"topic": "Фотосинтез", "text": "Текст доклада"}
+
+
+@respx.mock
 async def test_timeouts_follow_section_8(api: FibonacciPresentations) -> None:
     """Подключение 10 с; создание и файлы — 60 с; статус — 10 с."""
     create = respx.post(f"{API}/v1/decks").mock(

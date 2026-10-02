@@ -19,20 +19,28 @@
 **Темы нет в логах и в учёте.** Она лежит только там, где без неё нельзя:
 в ожидании выбора оформления и в контексте «Повторить» — в базе, рядом с
 описаниями картинок, которые там хранятся по той же причине.
+
+Презентация по докладу собирается по тексту доклада, а он в базу не
+кладётся вовсе: ни в ожидание, ни в «Повторить». Там лежит только жетон, а
+сам текст — в памяти процесса несколько часов (порт Handoff). Устарел
+жетон — кнопка честно говорит, что данных уже нет, и даёт выход.
 """
 
 from __future__ import annotations
 
 import re
+from dataclasses import replace
 from datetime import datetime, timedelta
 
 from app.core import pending, retry_context, texts
+from app.core.actions import Action
 from app.core.generations import GenerationKind, error_code
 from app.core.limits import LimitKind
 from app.core.models import Document
 from app.core.retry_context import RetryContext, RetryKind
 from app.core.scenarios import keyboards, paywall, spending, telemetry
 from app.core.scenarios.deps import Deps, Session
+from app.ports.handoff import Carried
 from app.ports.presentations import BuiltPresentation, PresentationBusyError
 
 #: Границы темы — те же, что у провайдера (docs/API.md §3.1).
@@ -43,6 +51,10 @@ MAX_TOPIC = 200
 #: по минуте на каждый из двух файлов и запас на отправку: живая сборка
 #: столько не длится, а умершая с процессом не должна запирать человека.
 STALE_AFTER = timedelta(minutes=10)
+
+#: Сколько текста доклада уходит провайдеру материалом. Он берёт в работу
+#: первые 40 000 знаков (docs/API.md §3.1), остальное отбросил бы сам.
+MATERIAL_LIMIT = 40_000
 
 #: Что пишется в учёт как «модель». Провайдер собирает один вид колоды —
 #: доклад, — и в учёте это и стоит назвать.
@@ -104,14 +116,47 @@ async def receive_topic(deps: Deps, session: Session, written: str) -> None:
         )
         return
 
-    await _offer_themes(deps, session, topic)
+    await _offer_themes(
+        deps,
+        session,
+        awaiting=pending.await_presentation_theme(topic),
+        remember=RetryContext(kind=RetryKind.PRESENTATION, prompt=topic),
+    )
+
+
+async def from_report(deps: Deps, session: Session, token: str) -> None:
+    """«Сделать презентацию по докладу»: сразу к выбору оформления.
+
+    Жетон здесь только проверяется, а забирается при нажатии на оформление:
+    до сборки дело может и не дойти, и сжигать кнопку раньше времени
+    незачем. Остаток — до жетона: при пустом пейволл, кнопка не сгорает.
+    """
+    if deps.presentations is None:
+        await _unavailable(deps, session)
+        return
+
+    allowance = await spending.current_allowance(deps, session, LimitKind.PRESENTATIONS)
+    if allowance.exhausted:
+        await paywall.show(deps, session, LimitKind.PRESENTATIONS)
+        return
+
+    if deps.handoff is None or deps.handoff.peek(token) is None:
+        await _link_gone(deps, session, token)
+        return
+
+    await _offer_themes(
+        deps,
+        session,
+        awaiting=pending.await_presentation_source(token),
+        remember=RetryContext(kind=RetryKind.PRESENTATION, source=token),
+    )
 
 
 async def choose_theme(deps: Deps, session: Session, theme_id: str) -> None:
     """Нажато оформление — собираем.
 
-    Тема берётся из базы заново, а не из снимка сессии. Второе нажатие той
-    же кнопки после готовой колоды найдёт ожидание уже снятым — и колоду не
+    Ожидание берётся из базы заново, а не из снимка сессии. Второе нажатие
+    той же кнопки после готовой колоды найдёт его уже снятым — и колоду не
     соберёт, а спросит новую тему.
     """
     if deps.presentations is None:
@@ -119,14 +164,17 @@ async def choose_theme(deps: Deps, session: Session, theme_id: str) -> None:
         return
 
     fresh = await deps.storage.get_user_by_id(session.user.id) or session.user
+    source = pending.parse_await_presentation_source(fresh.pending)
+    if source is not None:
+        await _build_from(deps, session, source, theme_id)
+        return
+
     topic = pending.parse_await_presentation_theme(fresh.pending)
     if topic is None:
         if _building(deps, fresh.presentation_started_at):
             # Второе нажатие, пока первая колода собирается: ожидание она уже
             # сняла. Спросить тему заново значило бы сбить человека с толку.
-            await deps.messenger.send_text(
-                session.chat, texts.presentation_in_progress().text, show_menu=False
-            )
+            await _say_in_progress(deps, session)
             return
         await start(deps, session)
         return
@@ -135,7 +183,7 @@ async def choose_theme(deps: Deps, session: Session, theme_id: str) -> None:
 
 
 async def retry(deps: Deps, session: Session) -> None:
-    """«Повторить» под сбоем: та же тема и то же оформление."""
+    """«Повторить» под сбоем: та же тема (или тот же доклад) и оформление."""
     if deps.presentations is None:
         await _unavailable(deps, session)
         return
@@ -147,9 +195,21 @@ async def retry(deps: Deps, session: Session) -> None:
         )
         return
 
+    if context.source is not None:
+        if context.theme_id is None:
+            await from_report(deps, session, context.source)
+        else:
+            await _build_from(deps, session, context.source, context.theme_id)
+        return
+
     if context.theme_id is None:
         # Упал список оформлений, а не сборка: показываем его снова.
-        await _offer_themes(deps, session, context.prompt)
+        await _offer_themes(
+            deps,
+            session,
+            awaiting=pending.await_presentation_theme(context.prompt),
+            remember=context,
+        )
         return
 
     await _build(deps, session, context.prompt, context.theme_id)
@@ -182,8 +242,37 @@ def _building(deps: Deps, started_at: datetime | None) -> bool:
     return started_at is not None and started_at >= deps.now() - STALE_AFTER
 
 
-async def _offer_themes(deps: Deps, session: Session, topic: str) -> None:
-    """Список оформлений — из API, не зашитый у нас."""
+async def _say_in_progress(deps: Deps, session: Session) -> None:
+    await deps.messenger.send_text(
+        session.chat, texts.presentation_in_progress().text, show_menu=False
+    )
+
+
+async def _link_gone(deps: Deps, session: Session, token: str) -> None:
+    """Под кнопкой-связкой данных нет: уже сделано или устарело. Выход есть."""
+    used = deps.handoff is not None and deps.handoff.was_taken(token)
+    screen = (
+        texts.link_already_used(texts.MENU_PRESENTATIONS)
+        if used
+        else texts.link_expired_presentation()
+    )
+    await deps.messenger.send_text(
+        session.chat,
+        screen.text,
+        keyboard=keyboards.link_exit(
+            texts.MENU_PRESENTATIONS, Action.MENU_PRESENTATIONS
+        ),
+    )
+
+
+async def _offer_themes(
+    deps: Deps, session: Session, *, awaiting: str, remember: RetryContext
+) -> None:
+    """Список оформлений — из API, не зашитый у нас.
+
+    ``awaiting`` — ожидание, которое встанет на время выбора; ``remember`` —
+    что повторить, если сам список не загрузился.
+    """
     assert deps.presentations is not None
     try:
         themes = await deps.presentations.themes()
@@ -196,7 +285,9 @@ async def _offer_themes(deps: Deps, session: Session, topic: str) -> None:
         themes = ()
 
     if not themes:
-        await _remember(deps, session, topic, theme_id=None)
+        await deps.storage.set_retry_context(
+            session.user.id, replace(remember, theme_id=None).encode()
+        )
         await deps.storage.set_pending(session.user.id, None)
         await deps.messenger.send_text(
             session.chat,
@@ -205,9 +296,7 @@ async def _offer_themes(deps: Deps, session: Session, topic: str) -> None:
         )
         return
 
-    await deps.storage.set_pending(
-        session.user.id, pending.await_presentation_theme(topic)
-    )
+    await deps.storage.set_pending(session.user.id, awaiting)
     choices = tuple((theme.name, theme.id) for theme in themes)
     await deps.messenger.send_text(
         session.chat,
@@ -216,48 +305,105 @@ async def _offer_themes(deps: Deps, session: Session, topic: str) -> None:
     )
 
 
-async def _build(deps: Deps, session: Session, topic: str, theme_id: str) -> None:
-    """Проверка остатка, захват слота — и сборка под ним."""
+async def _build_from(deps: Deps, session: Session, token: str, theme_id: str) -> None:
+    """Презентация по докладу: жетон забирается, не вышло — возвращается."""
+    handoff = deps.handoff
+    carried = handoff.take(token) if handoff is not None else None
+    if carried is None:
+        fresh = await deps.storage.get_user_by_id(session.user.id) or session.user
+        if _building(deps, fresh.presentation_started_at):
+            await _say_in_progress(deps, session)
+            return
+        await _link_gone(deps, session, token)
+        return
+
+    assert handoff is not None
+    delivered = False
+    try:
+        delivered = await _build(
+            deps,
+            session,
+            carried.topic,
+            theme_id,
+            material=carried.material,
+            source=token,
+        )
+    finally:
+        if not delivered:
+            handoff.give_back(token, carried)
+
+
+async def _build(
+    deps: Deps,
+    session: Session,
+    topic: str,
+    theme_id: str,
+    *,
+    material: str = "",
+    source: str | None = None,
+) -> bool:
+    """Проверка остатка, захват слота — и сборка под ним. True — доставлено."""
     allowance = await spending.current_allowance(deps, session, LimitKind.PRESENTATIONS)
     if allowance.exhausted:
         await paywall.show(deps, session, LimitKind.PRESENTATIONS)
-        return
+        return False
 
     if not await deps.storage.claim_presentation(
         session.user.id, deps.now(), stale_after=STALE_AFTER
     ):
-        await deps.messenger.send_text(
-            session.chat, texts.presentation_in_progress().text, show_menu=False
-        )
-        return
+        await _say_in_progress(deps, session)
+        return False
 
     try:
-        await _build_claimed(deps, session, topic, theme_id)
+        return await _build_claimed(
+            deps, session, topic, theme_id, material=material, source=source
+        )
     finally:
         await deps.storage.release_presentation(session.user.id)
 
 
 async def _build_claimed(
-    deps: Deps, session: Session, topic: str, theme_id: str
-) -> None:
+    deps: Deps,
+    session: Session,
+    topic: str,
+    theme_id: str,
+    *,
+    material: str,
+    source: str | None,
+) -> bool:
     """Собрать, доставить, списать — в этом порядке и только в нём."""
     assert deps.presentations is not None
     # Ожидание снимаем до обращения к провайдеру: сборка может упасть, а
     # следующее сообщение не должно приклеиться к прошлой теме. Повтор от
-    # этого не страдает — тема и оформление уже в контексте «Повторить».
+    # этого не страдает — что повторить, уже в контексте «Повторить».
     await deps.storage.set_pending(session.user.id, None)
-    await _remember(deps, session, topic, theme_id=theme_id)
+    # Тему по докладу в базу не кладём: она из его текста. Повтор найдёт её
+    # по жетону.
+    await deps.storage.set_retry_context(
+        session.user.id,
+        RetryContext(
+            kind=RetryKind.PRESENTATION,
+            prompt=topic if source is None else "",
+            theme_id=theme_id,
+            source=source,
+        ).encode(),
+    )
 
     waiting = await deps.messenger.send_text(
         session.chat, texts.presentation_working().text, show_menu=False
     )
     deps.logger.info(
-        "presentation_started", user_id=int(session.user.id), theme=theme_id
+        "presentation_started",
+        user_id=int(session.user.id),
+        theme=theme_id,
+        from_report=source is not None,
     )
 
     started = deps.now()
     try:
-        built = await deps.presentations.build(topic, theme_id=theme_id)
+        built = await deps.presentations.build(
+            topic, theme_id=theme_id, material=material
+        )
     except PresentationBusyError as busy:
         if busy.reached_api:
             await _record(deps, session, theme_id, started=started, error=busy)
@@ -271,7 +417,7 @@ async def _build_claimed(
             texts.presentation_busy().text,
             keyboard=keyboards.presentation_retry(),
         )
-        return
+        return False
     except Exception as error:
         await _record(deps, session, theme_id, started=started, error=error)
         deps.logger.warning(
@@ -285,7 +431,7 @@ async def _build_claimed(
             texts.presentation_error().text,
             keyboard=keyboards.presentation_retry(),
         )
-        return
+        return False
 
     await _record(deps, session, theme_id, started=started)
 
@@ -305,7 +451,7 @@ async def _build_claimed(
             texts.presentation_error().text,
             keyboard=keyboards.presentation_retry(),
         )
-        return
+        return False
 
     # Файлы у человека — это и есть доставка. Списываем до сообщений после
     # них: их сбой не отменяет того, что презентацию уже получили.
@@ -318,11 +464,15 @@ async def _build_claimed(
     await deps.messenger.edit_text(waiting, texts.presentation_done().text)
     # Итог — отдельным сообщением после файлов, а не правкой «готовлю»: то
     # стоит над файлами, а кнопки «что дальше» нужны под ними.
+    report_token = (
+        deps.handoff.put(Carried(topic=topic)) if deps.handoff is not None else None
+    )
     await deps.messenger.send_text(
         session.chat,
         texts.presentation_result(with_pdf=built.pdf is not None).text,
-        keyboard=keyboards.presentation_result(),
+        keyboard=keyboards.presentation_result(report_token),
     )
+    return True
 
 
 def _documents(topic: str, built: BuiltPresentation) -> tuple[Document, ...]:
@@ -337,18 +487,6 @@ def _documents(topic: str, built: BuiltPresentation) -> tuple[Document, ...]:
         return (pptx,)
     pdf = Document(data=built.pdf, filename=f"{name}.pdf", mime_type=_PDF_MIME)
     return (pdf, pptx)
-
-
-async def _remember(
-    deps: Deps, session: Session, topic: str, *, theme_id: str | None
-) -> None:
-    """Запоминает, что повторить по кнопке «Повторить»."""
-    await deps.storage.set_retry_context(
-        session.user.id,
-        RetryContext(
-            kind=RetryKind.PRESENTATION, prompt=topic, theme_id=theme_id
-        ).encode(),
-    )
 
 
 async def _record(

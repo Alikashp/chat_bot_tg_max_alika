@@ -15,7 +15,9 @@ from app.core.actions import (
     Action,
     buy_action,
     document_action,
+    presentation_from_action,
     preset_action,
+    report_from_action,
     theme_action,
 )
 from app.core.models import Button, Keyboard
@@ -325,14 +327,26 @@ def documents_menu(actions: tuple[tuple[str, str], ...]) -> Keyboard:
     )
 
 
-def document_result(actions: tuple[tuple[str, str], ...]) -> Keyboard:
+def document_result(
+    actions: tuple[tuple[str, str], ...], presentation_token: str | None = None
+) -> Keyboard:
     """Кнопки под готовыми файлами — те же действия.
 
     Отдельной кнопки «ещё раз» здесь нет намеренно: файл уже обработан, и
     повторять ровно то же незачем, а вот сделать по нему же конспект после
     доклада — обычное желание. Для этого нужно то же меню.
+
+    ``presentation_token`` — жетон доклада для «Сделать презентацию по
+    докладу». Есть только при включённых презентациях.
     """
-    return documents_menu(actions)
+    menu = documents_menu(actions)
+    if presentation_token is None:
+        return menu
+    link = Button(
+        text=texts.BUTTON_PRESENTATION_FROM_REPORT,
+        action=presentation_from_action(presentation_token),
+    )
+    return Keyboard(rows=(*menu.rows, (link,)))
 
 
 def menu_labels(*, presentations: bool = False) -> tuple[str, ...]:
@@ -358,11 +372,35 @@ def presentation_themes(themes: tuple[tuple[str, str], ...]) -> Keyboard:
     return Keyboard(rows=tuple(rows))
 
 
-def presentation_result() -> Keyboard:
-    """Под итогом после файлов — «Ещё одну презентацию»."""
-    return Keyboard.row(
-        Button(text=texts.BUTTON_PRESENTATION_AGAIN, action=Action.PRESENTATION_AGAIN)
+def presentation_result(report_token: str | None = None) -> Keyboard:
+    """Под итогом после файлов: доклад по ней и «Ещё одну презентацию».
+
+    Доклад — первым: это следующий шаг для того, кто готовится к выступлению.
+    Без жетона (связки выключены) остаётся одна «Ещё одну презентацию».
+    """
+    rows: list[tuple[Button, ...]] = []
+    if report_token is not None:
+        rows.append(
+            (
+                Button(
+                    text=texts.BUTTON_REPORT_FROM_PRESENTATION,
+                    action=report_from_action(report_token),
+                ),
+            )
+        )
+    rows.append(
+        (
+            Button(
+                text=texts.BUTTON_PRESENTATION_AGAIN, action=Action.PRESENTATION_AGAIN
+            ),
+        )
     )
+    return Keyboard(rows=tuple(rows))
+
+
+def link_exit(label: str, action: Action) -> Keyboard:
+    """Выход с ответа устаревшей или уже нажатой кнопки-связки."""
+    return Keyboard.row(Button(text=label, action=action))
 
 
 def presentation_retry() -> Keyboard:

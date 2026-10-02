@@ -49,6 +49,10 @@ class RetryContext:
     #: Оформление презентации. Тема лежит в ``prompt``. Пусто — оформление
     #: ещё не выбрано: упал сам список оформлений, и повтор показывает его.
     theme_id: str | None = None
+    #: Жетон доклада для презентации по нему. Темы и текста здесь нет: они
+    #: из доклада, а доклад в базу не кладётся. Жетон устарел — повторять
+    #: нечего, и кнопка говорит об этом честно.
+    source: str | None = None
 
     def encode(self) -> str:
         """Сериализует контекст для хранилища."""
@@ -87,6 +91,7 @@ def decode(raw: str | None) -> RetryContext | None:
         source_photos=_photos(payload),
         result_photo=_text(payload.get("result_photo")),
         theme_id=_text(payload.get("theme_id")),
+        source=_text(payload.get("source")),
     )
 
 

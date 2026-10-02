@@ -140,7 +140,9 @@ class FibonacciPresentations:
         self._themes_at = self._clock()
         return themes
 
-    async def build(self, topic: str, *, theme_id: str) -> BuiltPresentation:
+    async def build(
+        self, topic: str, *, theme_id: str, material: str = ""
+    ) -> BuiltPresentation:
         """Создать, дождаться, скачать. Слот и место в минуте — до запроса."""
         if self._running >= self._max_concurrent:
             raise PresentationBusyError("TOO_MANY_BUILDS")
@@ -149,19 +151,25 @@ class FibonacciPresentations:
 
         self._running += 1
         try:
-            return await self._build(topic, theme_id)
+            return await self._build(topic, theme_id, material)
         finally:
             self._running -= 1
 
     # --- Сборка --------------------------------------------------------
 
-    async def _build(self, topic: str, theme_id: str) -> BuiltPresentation:
+    async def _build(
+        self, topic: str, theme_id: str, material: str
+    ) -> BuiltPresentation:
         deadline = self._clock() + WAIT_SECONDS
+        # Материал — полем input.text (§3.1); без него колода по одной теме.
+        source: dict[str, str] = {"topic": topic}
+        if material:
+            source["text"] = material
         response = await self._request(
             "POST",
             "/v1/decks",
             read=CREATE_READ_SECONDS,
-            json={"input": {"topic": topic}, "theme_id": theme_id},
+            json={"input": source, "theme_id": theme_id},
             # Один ключ на колоду — для всех повторов её создания (§3.1, §8).
             headers={"Idempotency-Key": self._new_key()},
             deadline=deadline,

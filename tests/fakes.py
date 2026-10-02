@@ -552,6 +552,8 @@ class FakePresentations:
         self.themes_error: Exception | None = None
         self.themes_calls = 0
         self.built: list[tuple[str, str]] = []
+        #: Текст-материал каждой сборки. Пусто — колода по одной теме.
+        self.materials: list[str] = []
         #: Сколько сборок идёт прямо сейчас и сколько шло одновременно максимум.
         self.running = 0
         self.max_running = 0
@@ -562,8 +564,11 @@ class FakePresentations:
             raise self.themes_error
         return self.available
 
-    async def build(self, topic: str, *, theme_id: str) -> BuiltPresentation:
+    async def build(
+        self, topic: str, *, theme_id: str, material: str = ""
+    ) -> BuiltPresentation:
         self.built.append((topic, theme_id))
+        self.materials.append(material)
         self.running += 1
         self.max_running = max(self.max_running, self.running)
         try:

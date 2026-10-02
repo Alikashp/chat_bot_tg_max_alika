@@ -22,7 +22,9 @@ from app.core.actions import (
     parse_document_action,
     parse_email_action,
     parse_method_action,
+    parse_presentation_from_action,
     parse_preset_action,
+    parse_report_from_action,
     parse_theme_action,
 )
 from app.core.documents import DocumentTooLargeError
@@ -193,6 +195,25 @@ async def _route_action(deps: Deps, session: Session, action: str) -> None:
     theme_id = parse_theme_action(action)
     if theme_id is not None:
         await presentations.choose_theme(deps, session, theme_id)
+        return
+
+    report_token = parse_report_from_action(action)
+    if report_token is not None:
+        # Доклад по презентации — та же работа, что доклад по теме, и
+        # ограничитель у неё тот же: двум сразу от одного человека незачем.
+        await _clear_pending(deps, session)
+        await _guarded(
+            deps,
+            session,
+            _image_key(session),
+            lambda d, s: documents.report_from_presentation(d, s, report_token),
+        )
+        return
+
+    deck_token = parse_presentation_from_action(action)
+    if deck_token is not None:
+        await _clear_pending(deps, session)
+        await presentations.from_report(deps, session, deck_token)
         return
 
     repeat_kind = _REPEAT_KINDS.get(action)
@@ -496,9 +517,11 @@ async def _handle_text(deps: Deps, session: Session, text: str) -> None:
             await _say(deps, session, action.invitation)
             return
 
-    if pending.is_awaiting_presentation_topic(
-        session.user.pending
-    ) or pending.parse_await_presentation_theme(session.user.pending):
+    if (
+        pending.is_awaiting_presentation_topic(session.user.pending)
+        or pending.parse_await_presentation_theme(session.user.pending)
+        or pending.parse_await_presentation_source(session.user.pending)
+    ):
         # Тема презентации — и тогда, когда ждём оформление: написанное
         # вместо нажатия на оформление значит «хочу другую тему», а не
         # вопрос в чат.

@@ -497,6 +497,25 @@ PRESENTATION_BUSY = (
 PRESENTATION_IN_PROGRESS = "Презентация уже готовится — дождись её 🙏"
 
 BUTTON_PRESENTATION_AGAIN = "Ещё одну презентацию"
+BUTTON_REPORT_FROM_PRESENTATION = "📑 Сделать доклад по презентации"
+BUTTON_PRESENTATION_FROM_REPORT = "📑 Сделать презентацию по докладу"
+
+#: Кнопку-связку уже нажимали: доклад или презентация по ней уже сделаны или
+#: делаются. Второго результата не будет, а выход — кнопкой раздела.
+LINK_ALREADY_USED = (
+    "По этой кнопке уже сделано — результат в чате выше 👆\n"
+    "Нужен ещё один — начни заново 👇"
+)
+
+#: Данных под кнопкой больше нет: прошло шесть часов или бот перезапускался.
+#: Говорим как есть и ведём туда, где то же самое делается с начала.
+LINK_EXPIRED_REPORT = (
+    "Эта кнопка устарела — тему презентации я уже не помню 🤷\n"
+    "Сделай доклад по теме заново 👇"
+)
+LINK_EXPIRED_PRESENTATION = (
+    "Эта кнопка устарела — текст доклада я не храню 🤷\nСделай презентацию по теме 👇"
+)
 
 #: Имя файла, если из темы ничего пригодного для имени не осталось.
 PRESENTATION_FILENAME = "Презентация"
@@ -528,8 +547,20 @@ def presentation_done() -> Screen:
 def presentation_result(*, with_pdf: bool = True) -> Screen:
     return Screen(
         text=PRESENTATION_RESULT if with_pdf else PRESENTATION_RESULT_PPTX_ONLY,
-        buttons=(BUTTON_PRESENTATION_AGAIN,),
+        buttons=(BUTTON_REPORT_FROM_PRESENTATION, BUTTON_PRESENTATION_AGAIN),
     )
+
+
+def link_already_used(exit_button: str) -> Screen:
+    return Screen(text=LINK_ALREADY_USED, buttons=(exit_button,))
+
+
+def link_expired_report() -> Screen:
+    return Screen(text=LINK_EXPIRED_REPORT, buttons=(MENU_DOCUMENTS,))
+
+
+def link_expired_presentation() -> Screen:
+    return Screen(text=LINK_EXPIRED_PRESENTATION, buttons=(MENU_PRESENTATIONS,))
 
 
 def presentation_error() -> Screen:
@@ -1503,6 +1534,10 @@ def _all_screens() -> tuple[Screen, ...]:
         presentation_done(),
         presentation_result(),
         presentation_result(with_pdf=False),
+        link_already_used(MENU_DOCUMENTS),
+        link_already_used(MENU_PRESENTATIONS),
+        link_expired_report(),
+        link_expired_presentation(),
         presentation_error(),
         presentation_busy(),
         presentation_in_progress(),

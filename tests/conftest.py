@@ -11,6 +11,7 @@ from app.core import support
 from app.core.models import Chat, MessengerKind, User
 from app.core.scenarios.deps import Deps, Session
 from app.core.settings import CoreSettings
+from app.infra.handoff import MemoryHandoff
 from tests.fakes import (
     FakeCards,
     FakeChannel,
@@ -128,6 +129,9 @@ def deps(
         stars=stars,
         channel=channel_,
         now=clock,
+        # Жетоны кнопок-связок живут по тем же часам, что и всё остальное:
+        # иначе «через семь часов кнопка устарела» не проверить.
+        handoff=MemoryHandoff(clock=lambda: clock().timestamp()),
     )
 
 

@@ -520,7 +520,7 @@ async def test_the_referral_button_leads_to_the_offer_then_the_invitation(
 
     from_profile, from_paywall = messenger.texts_said()
     assert from_profile == from_paywall
-    assert "+50 сообщений" in from_profile
+    assert "+20 сообщений" in from_profile
 
     await handle(deps, incoming(action=Action.REFERRAL_SEND))
 

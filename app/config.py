@@ -225,12 +225,12 @@ class Settings(BaseSettings):
     #: менять его можно переменной, без выкладки.
     document_max_tokens: Annotated[int, Field(ge=256, le=8192)] = 4000
 
-    #: Награда за приглашённого друга — обоим.
+    #: Награда за приглашённого друга — только пригласившему.
     referral_bonus_images: Annotated[int, Field(ge=0, le=100)] = 2
-    referral_bonus_messages: Annotated[int, Field(ge=0, le=1000)] = 50
+    referral_bonus_messages: Annotated[int, Field(ge=0, le=1000)] = 20
 
     #: Потолок наград в сутки на одного пригласившего. Ноль — без потолка.
-    referral_daily_reward_limit: Annotated[int, Field(ge=0, le=1000)] = 0
+    referral_daily_reward_limit: Annotated[int, Field(ge=0, le=1000)] = 20
 
     #: Канал, за подписку на который дают разовый бонус. Пусто — бонуса нет.
     #:

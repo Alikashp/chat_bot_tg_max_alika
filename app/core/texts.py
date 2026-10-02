@@ -229,7 +229,7 @@ _GREETING_FROM_PRESENTATIONS = (
 _INVITATION = "Просто напиши мне что-нибудь 👇"
 
 
-def onboarding(*, from_presentations: bool = False, gift: str = "") -> Screen:
+def onboarding(*, from_presentations: bool = False) -> Screen:
     """Первый экран. Две строки — поздороваться и позвать написать.
 
     Числа лимитов отсюда убраны по решению заказчика. Первый экран должен
@@ -237,19 +237,12 @@ def onboarding(*, from_presentations: bool = False, gift: str = "") -> Screen:
     уже называют, сколько ему можно. Свои остатки он в любой момент видит в
     профиле, и там они всегда свежие.
 
-    Третья строка появляется только у приглашённого другом: подарок надо
-    назвать сразу, иначе человек не поймёт, откуда у него больше лимитов.
+    Строки о подарке от друга здесь больше нет (фаза 10): награду получает
+    только пригласивший, и обещать приглашённому то, чего он не получит,
+    нельзя.
     """
     greeting = _GREETING_FROM_PRESENTATIONS if from_presentations else _GREETING
-    lines = [greeting, _INVITATION]
-    if gift:
-        lines.append(gift)
-    return Screen(text="\n".join(lines), buttons=_menu_buttons())
-
-
-def referral_gift(*, messages: int, images: int) -> str:
-    """Приглашённому — четвёртой строкой онбординга (§2.7)."""
-    return f"Тебе подарок от друга: +{_messages(messages)} и +{_images(images)}."
+    return Screen(text=f"{greeting}\n{_INVITATION}", buttons=_menu_buttons())
 
 
 def _menu_buttons() -> tuple[str, ...]:
@@ -651,13 +644,17 @@ def referral_offer(*, bonus_messages: int, bonus_images: int) -> Screen:
     """Что человек получит за друга — до того, как он что-то отправит.
 
     Голая ссылка сама по себе не объясняет, зачем её пересылать. Сначала
-    выгода, потом кнопка: одно действие, и обоим понятно, за что.
+    выгода, потом кнопка: одно действие, и понятно, за что.
+
+    Другу здесь ничего не обещано, и это не забывчивость (фаза 10): награду
+    получает только пригласивший. Вторая строка говорит, когда она придёт, —
+    иначе человек ждал бы её сразу после пересылки.
     """
     return Screen(
         text=(
             f"Позови друга — тебе +{_messages(bonus_messages)} "
-            f"и +{_images(bonus_images)}.\n"
-            "Другу столько же в подарок 🎁"
+            f"и +{_images(bonus_images)} 🎁\n"
+            "Начислю, как только друг запустит бота"
         ),
         buttons=(BUTTON_SEND_TO_FRIEND,),
     )
@@ -1209,7 +1206,6 @@ def _all_screens() -> tuple[Screen, ...]:
     return (
         onboarding(),
         onboarding(from_presentations=True),
-        onboarding(gift=referral_gift(messages=50, images=2)),
         chat_answer("Ответ на вопрос.", offer_new_dialog=False),
         chat_answer("Ответ на вопрос.", offer_new_dialog=True),
         chat_answer(
@@ -1263,9 +1259,9 @@ def _all_screens() -> tuple[Screen, ...]:
             friends=3,
             user_number=1234,
         ),
-        referral_offer(bonus_messages=50, bonus_images=2),
+        referral_offer(bonus_messages=20, bonus_images=2),
         referral_invite("https://t.me/mybot?start=ref_abc123"),
-        referral_reward(messages=50, images=2),
+        referral_reward(messages=20, images=2),
         tariffs_screen(),
         payment_methods(TariffId.PRO, price_rub=599, stars=524),
         email_ask(),

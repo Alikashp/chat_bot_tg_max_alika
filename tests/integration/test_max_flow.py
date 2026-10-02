@@ -376,8 +376,8 @@ async def test_the_menu_rides_along_with_every_message(started: Harness) -> None
     assert started.bot.sent[-1].buttons, "меню не доехало"
 
 
-async def test_a_deeplink_gift_reaches_the_invited_user(harness: Harness) -> None:
-    """§2.7 в MAX: payload — прямой аналог /start ref_XXXX."""
+async def test_a_deeplink_rewards_the_referrer_in_max(harness: Harness) -> None:
+    """§2.7 в MAX: payload — прямой аналог /start ref_XXXX. Награда — пригласившему."""
     inviter = await harness.storage.create_user(
         messenger=MessengerKind.MAX,
         external_id="1000",
@@ -390,10 +390,10 @@ async def test_a_deeplink_gift_reaches_the_invited_user(harness: Harness) -> Non
     assert await harness.post(start_update("ref_friend01")) == 200
 
     invited = await harness.user()
-    assert invited.bonus_messages == 50
+    assert invited.bonus_messages == 0, "приглашённому подарка больше нет"
     refreshed = await harness.storage.get_user_by_id(inviter.id)
     assert refreshed is not None
-    assert refreshed.bonus_images == 5
+    assert (refreshed.bonus_messages, refreshed.bonus_images) == (20, 5)
 
 
 async def test_the_profile_carries_the_support_number(started: Harness) -> None:

@@ -495,7 +495,7 @@ async def test_my_link_offers_a_button_that_sends_the_invitation(
 ) -> None:
     """Два шага: сначала за что, потом само приглашение одной кнопкой."""
     await started.press(Action.MY_LINK)
-    assert "+50 сообщений" in started.texts_said()[0]
+    assert "+20 сообщений" in started.texts_said()[0]
     started.forget()
 
     await started.press(Action.REFERRAL_SEND)

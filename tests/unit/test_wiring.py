@@ -14,12 +14,14 @@ from dataclasses import replace
 from typing import Any
 
 import httpx
+import pytest
 import respx
+from pydantic import ValidationError
 
 from app.config import Settings
 from app.core.models import MessengerKind, Subscription, TariffId
 from app.core.scenarios.deps import Deps
-from app.main import build_cards
+from app.main import build_cards, build_presentations
 from app.ports.payments import PaymentMethod, PaymentStatus, SubscriptionStatus
 from tests.fakes import FakeCards
 
@@ -332,3 +334,36 @@ async def test_a_refund_notice_and_a_payment_notice_are_told_apart(deps: Deps) -
         _refund_notice("yk-1")
     )
     assert _payment_notice_key(_refund_notice("yk-1")) is not None
+
+
+# --- Презентации (фаза 10) -----------------------------------------------
+
+
+def test_presentations_are_off_without_the_key() -> None:
+    """К2: без адреса и ключа раздела нет — провайдер не собирается вовсе."""
+    assert build_presentations(_settings()) == (None, None)
+    half = _settings(presentations_api_url="https://fibonacci.test")
+    assert build_presentations(half) == (None, None)
+
+
+def test_presentations_are_on_with_url_and_key() -> None:
+    settings = _settings(
+        presentations_api_url="https://fibonacci.test",
+        presentations_api_key="fib_test",
+    )
+
+    provider, client = build_presentations(settings)
+
+    assert provider is not None and client is not None
+
+
+def test_concurrent_builds_cannot_exceed_the_key_limits() -> None:
+    """К8: шесть сборок разом не укладываются в 120 запросов в минуту.
+
+    Каждая опрашивает статус раз в 4 секунды — 15 запросов в минуту; шесть —
+    90, и с созданием и скачиванием файлов это уже за пределом ключа. Поэтому
+    настройка выше пяти не принимается вовсе.
+    """
+    assert _settings(presentations_max_concurrent=5).presentations_max_concurrent == 5
+    with pytest.raises(ValidationError):
+        _settings(presentations_max_concurrent=6)

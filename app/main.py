@@ -39,6 +39,7 @@ from app.adapters.payments.yookassa import (
     order_id_of,
     refunded_payment_id_of,
 )
+from app.adapters.presentations.fibonacci import FibonacciPresentations
 from app.adapters.storage.migrations import upgrade_to_head_async
 from app.adapters.storage.postgres import PostgresStorage, create_engine
 from app.adapters.telegram import router as telegram_router
@@ -52,6 +53,7 @@ from app.core.channel import channel_username
 from app.core.models import MessengerKind
 from app.core.receipts import FiscalSettings
 from app.core.referral import MAX_HOST, TELEGRAM_HOST
+from app.core.scenarios import keyboards as core_keyboards
 from app.core.scenarios import payments
 from app.core.scenarios.deps import Deps, session_for
 from app.core.settings import CoreSettings
@@ -296,6 +298,31 @@ def build_cards(
     )
 
 
+def build_presentations(
+    settings: Settings,
+) -> tuple[FibonacciPresentations | None, httpx.AsyncClient | None]:
+    """Сборка презентаций, если ключ API задан.
+
+    Один экземпляр на оба мессенджера: лимиты у провайдера — на ключ, а не
+    на мессенджер, и считать их надо в одном месте (docs/API.md §7).
+    Клиент — с таймаутом чтения 60 секунд и подключения 10 (§8); короче
+    таймаут чтения задаётся на каждом запросе статуса отдельно.
+    """
+    if not settings.presentations_enabled:
+        logger.info("presentations_not_configured")
+        return None, None
+    client = create_client(60.0)
+    return (
+        FibonacciPresentations(
+            client,
+            base_url=settings.presentations_api_url,
+            api_key=settings.presentations_api_key,
+            max_concurrent=settings.presentations_max_concurrent,
+        ),
+        client,
+    )
+
+
 def build_core_settings(
     settings: Settings,
     bot_username: str,
@@ -319,9 +346,11 @@ def build_core_settings(
         signup_images=settings.signup_images,
         presentation_signup_images=settings.presentation_signup_images,
         signup_documents=settings.signup_documents,
+        signup_presentations=settings.signup_presentations,
         document_max_tokens=settings.document_max_tokens,
         referral_bonus_images=settings.referral_bonus_images,
         referral_bonus_messages=settings.referral_bonus_messages,
+        referral_bonus_presentations=settings.referral_bonus_presentations,
         referral_daily_reward_limit=settings.referral_daily_reward_limit,
         channel_url=settings.channel_url,
         channel_bonus_images=settings.channel_bonus_images,
@@ -398,6 +427,10 @@ async def build_wiring(settings: Settings) -> Wiring:
     if cards_client is not None:
         http_clients = (*http_clients, cards_client)
 
+    presentations, presentations_client = build_presentations(settings)
+    if presentations_client is not None:
+        http_clients = (*http_clients, presentations_client)
+
     # Примеры к приколам читаются один раз на старте: их пять, они не
     # меняются между выкатками, и ходить за ними на диск при каждом открытии
     # меню незачем. Оба мессенджера получают одни и те же байты.
@@ -432,6 +465,7 @@ async def build_wiring(settings: Settings) -> Wiring:
             channel=channel,
             now=_utc_now,
             examples=examples,
+            presentations=presentations,
         )
 
     deps = build_deps(
@@ -439,6 +473,9 @@ async def build_wiring(settings: Settings) -> Wiring:
             bot,
             settings.telegram_premium_emoji,
             settings.telegram_premium_button_emoji,
+            # Постоянное меню рисует адаптер, а кнопка презентаций в нём есть,
+            # только когда раздел включён (фаза 10, К2).
+            menu=core_keyboards.main_menu(presentations=presentations is not None),
         ),
         build_core_settings(settings, me.username, referral_link_host=TELEGRAM_HOST),
         # Звёзды бывают только в Telegram: в MAX такого механизма нет.
@@ -822,6 +859,7 @@ async def run() -> None:
             "cards": _ready(settings.cards_enabled),
             "cards_max": _ready(settings.max_cards_enabled and wiring.max is not None),
             "documents": _ready(settings.documents_ready),
+            "presentations": _ready(settings.presentations_enabled),
             "recurring": _ready(settings.yookassa_recurring),
             "recurring_max": _ready(settings.max_yookassa_recurring),
             # Одно на оба магазина: фискальные параметры у продавца одни, а

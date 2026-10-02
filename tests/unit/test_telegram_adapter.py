@@ -40,6 +40,7 @@ from app.core import texts
 from app.core.models import Button, Keyboard, MessageRef, MessengerKind, Photo
 from app.core.models import Chat as CoreChat
 from app.core.photos import PhotoTooLargeError
+from app.core.scenarios import keyboards as core_keyboards
 from tests.fakes import PNG_BYTES
 
 CHAT_ID = 555
@@ -224,7 +225,6 @@ def test_the_menu_is_a_persistent_reply_keyboard() -> None:
     labels = [button.text for row in menu.keyboard for button in row]
     assert labels == [
         texts.MENU_IMAGES,
-        texts.MENU_PRESETS,
         texts.MENU_DOCUMENTS,
         texts.MENU_PROFILE,
         texts.MENU_TARIFFS,
@@ -392,6 +392,26 @@ async def test_an_inline_button_gets_a_premium_icon(session: StubSession) -> Non
     button = markup.inline_keyboard[0][0]
     assert button.text == "Конфиденциальность"
     assert button.icon_custom_emoji_id == "6037249452824072506"
+
+
+async def test_the_persistent_menu_shows_presentations_when_on(
+    session: StubSession,
+) -> None:
+    """К1: в Telegram кнопка презентаций — в постоянном меню, если раздел включён."""
+    with_presentations = TelegramMessenger(
+        Bot(token="42:TEST", session=session),
+        menu=core_keyboards.main_menu(presentations=True),
+    )
+
+    await with_presentations.send_text(CORE_CHAT, "привет")
+
+    markup = _markup_of(session)
+    assert isinstance(markup, ReplyKeyboardMarkup)
+    assert [[b.text for b in row] for row in markup.keyboard] == [
+        [texts.MENU_IMAGES, texts.MENU_DOCUMENTS],
+        [texts.MENU_PRESENTATIONS],
+        [texts.MENU_PROFILE, texts.MENU_TARIFFS],
+    ]
 
 
 async def test_the_main_menu_never_gets_icons(session: StubSession) -> None:

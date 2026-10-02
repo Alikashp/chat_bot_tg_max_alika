@@ -24,6 +24,7 @@ class Action(StrEnum):
     MENU_PROFILE = "m:me"
     MENU_TARIFFS = "m:pay"
     MENU_DOCUMENTS = "m:doc"
+    MENU_PRESENTATIONS = "m:pres"
     #: Показать само меню. Нужен там, где постоянной клавиатуры нет (MAX).
     MENU_SHOW = "m:show"
 
@@ -46,6 +47,10 @@ class Action(StrEnum):
     # Документы
     DOCUMENT_ANOTHER = "d:other"
 
+    # Презентации (фаза 10)
+    PRESENTATION_AGAIN = "v:again"
+    PRESENTATION_RETRY = "v:retry"
+
     # Подписка (§4.14 оферты: отмена — в профиле)
     SUBSCRIPTION = "s:show"
     SUBSCRIPTION_OFF = "s:off"
@@ -66,6 +71,9 @@ PRESET_PREFIX = "p:pick:"
 
 #: Префикс выбора действия над файлом. За ним идентификатор из реестра.
 DOCUMENT_PREFIX = "d:pick:"
+
+#: Префикс выбора оформления презентации. За ним идентификатор темы из API.
+THEME_PREFIX = "v:theme:"
 
 #: Префикс покупки тарифа. За ним идёт идентификатор тарифа.
 BUY_PREFIX = "t:buy:"
@@ -100,6 +108,18 @@ def parse_document_action(action: str) -> str | None:
     if not action.startswith(DOCUMENT_PREFIX):
         return None
     return action.removeprefix(DOCUMENT_PREFIX) or None
+
+
+def theme_action(theme_id: str) -> str:
+    """Действие «выбрано такое-то оформление презентации»."""
+    return f"{THEME_PREFIX}{theme_id}"
+
+
+def parse_theme_action(action: str) -> str | None:
+    """Достаёт идентификатор оформления; None — если это не оно."""
+    if not action.startswith(THEME_PREFIX):
+        return None
+    return action.removeprefix(THEME_PREFIX) or None
 
 
 def method_action(method: str, tariff_id: str) -> str:

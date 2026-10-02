@@ -23,6 +23,7 @@ from app.core.actions import (
     parse_email_action,
     parse_method_action,
     parse_preset_action,
+    parse_theme_action,
 )
 from app.core.documents import DocumentTooLargeError
 from app.core.models import IncomingMessage, TariffId
@@ -37,6 +38,7 @@ from app.core.scenarios import (
     keyboards,
     onboarding,
     payments,
+    presentations,
     presets,
     profile,
     referral,
@@ -188,6 +190,11 @@ async def _route_action(deps: Deps, session: Session, action: str) -> None:
         await _pick_document_action(deps, session, document_action_id)
         return
 
+    theme_id = parse_theme_action(action)
+    if theme_id is not None:
+        await presentations.choose_theme(deps, session, theme_id)
+        return
+
     repeat_kind = _REPEAT_KINDS.get(action)
     if repeat_kind is not None:
         # Повтор чата стоит сообщения, повтор картинки — картинки: ключи
@@ -237,12 +244,21 @@ async def _route_action(deps: Deps, session: Session, action: str) -> None:
             # клавиатуры не бывает: в MAX под каждым ответом висит одна
             # кнопка, а не все пять пунктов.
             await _clear_pending(deps, session)
+            on = deps.presentations_on
             await deps.messenger.send_text(
                 session.chat,
-                texts.menu(keyboards.menu_labels()).text,
-                keyboard=keyboards.main_menu(),
+                texts.menu(keyboards.menu_labels(presentations=on)).text,
+                keyboard=keyboards.main_menu(presentations=on),
                 show_menu=False,
             )
+        case Action.MENU_PRESENTATIONS | Action.PRESENTATION_AGAIN:
+            await _clear_pending(deps, session)
+            await presentations.start(deps, session)
+        case Action.PRESENTATION_RETRY:
+            # Ограничитель не нужен: одна сборка на человека держится слотом
+            # в базе (presentations.claim_presentation), а не в памяти.
+            await _clear_pending(deps, session)
+            await presentations.retry(deps, session)
         case Action.MENU_DOCUMENTS | Action.DOCUMENT_ANOTHER:
             await _clear_pending(deps, session)
             await documents.show_menu(deps, session)
@@ -479,6 +495,15 @@ async def _handle_text(deps: Deps, session: Session, text: str) -> None:
         if action is not None:
             await _say(deps, session, action.invitation)
             return
+
+    if pending.is_awaiting_presentation_topic(
+        session.user.pending
+    ) or pending.parse_await_presentation_theme(session.user.pending):
+        # Тема презентации — и тогда, когда ждём оформление: написанное
+        # вместо нажатия на оформление значит «хочу другую тему», а не
+        # вопрос в чат.
+        await presentations.receive_topic(deps, session, text)
+        return
 
     if pending.is_awaiting_image_prompt(session.user.pending):
 

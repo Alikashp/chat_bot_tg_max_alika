@@ -23,7 +23,9 @@ from app.ports.ai import ContentRefusedError
 async def ask_for_description(deps: Deps, session: Session) -> None:
     """Спрашивает, что нарисовать."""
     screen = texts.image_ask()
-    await deps.messenger.send_text(session.chat, screen.text)
+    await deps.messenger.send_text(
+        session.chat, screen.text, keyboard=keyboards.image_ask()
+    )
 
 
 async def draw(deps: Deps, session: Session, description: str) -> None:

@@ -8,7 +8,7 @@ core/limits.py, а хранилище лишь выполняет атомарн
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Protocol
 
 from app.core import sources
@@ -64,6 +64,7 @@ class Storage(Protocol):
         bonus_documents: int,
         username: str = NO_USERNAME,
         source: str = sources.DIRECT,
+        bonus_presentations: int = 0,
     ) -> User:
         """Заводит нового пользователя — или возвращает уже заведённого.
 
@@ -79,7 +80,10 @@ class Storage(Protocol):
         реализация обязана бросить ValueError.
 
         ``bonus_images`` — картинки, которые человек получает при регистрации,
-        ``bonus_documents`` — то же для разборов документов.
+        ``bonus_documents`` — то же для разборов документов,
+        ``bonus_presentations`` — для презентаций. Вместе с ними ставится
+        отметка о разовой выдаче презентации: по ней миграция и любая будущая
+        раздача отличают тех, кто её уже получил (фаза 10, К6).
         Кладутся в бонусный баланс сразу, одной вставкой с пользователем:
         отдельным начислением следом они бы терялись у того, кому не повезло
         с падением между двумя запросами.
@@ -153,6 +157,7 @@ class Storage(Protocol):
         messages: int = 0,
         images: int = 0,
         documents: int = 0,
+        presentations: int = 0,
     ) -> bool:
         """Атомарно списывает бонусный баланс.
 
@@ -168,8 +173,28 @@ class Storage(Protocol):
         messages: int = 0,
         images: int = 0,
         documents: int = 0,
+        presentations: int = 0,
     ) -> None:
         """Атомарно начисляет бонусный баланс (награда за реферала)."""
+        ...
+
+    async def claim_presentation(
+        self, user_id: UserId, now: datetime, *, stale_after: timedelta
+    ) -> bool:
+        """Занимает единственный слот сборки презентации у человека.
+
+        True — слот наш, False — у человека уже идёт сборка. Сборка, начатая
+        раньше ``now - stale_after``, считается брошенной (процесс умер
+        посреди неё), и слот можно занять снова: иначе выкатка во время
+        сборки запирала бы человека навсегда.
+
+        Проверка и захват — одна операция: двумя запросами два одновременных
+        нажатия оба увидели бы «свободно» и собрали бы две колоды.
+        """
+        ...
+
+    async def release_presentation(self, user_id: UserId) -> None:
+        """Освобождает слот сборки. Вызывается в finally."""
         ...
 
     async def record_generation(self, generation: Generation) -> None:

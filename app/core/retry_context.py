@@ -27,6 +27,7 @@ class RetryKind(StrEnum):
     CHAT = "chat"
     IMAGE = "image"
     PRESET = "preset"
+    PRESENTATION = "presentation"
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,6 +46,9 @@ class RetryContext:
     source_photos: tuple[str, ...] = ()
     #: Готовая картинка — чтобы переслать её с подписью и ссылкой.
     result_photo: str | None = None
+    #: Оформление презентации. Тема лежит в ``prompt``. Пусто — оформление
+    #: ещё не выбрано: упал сам список оформлений, и повтор показывает его.
+    theme_id: str | None = None
 
     def encode(self) -> str:
         """Сериализует контекст для хранилища."""
@@ -82,6 +86,7 @@ def decode(raw: str | None) -> RetryContext | None:
         preset_id=_text(payload.get("preset_id")),
         source_photos=_photos(payload),
         result_photo=_text(payload.get("result_photo")),
+        theme_id=_text(payload.get("theme_id")),
     )
 
 

@@ -41,12 +41,9 @@ def test_onboarding_does_not_report_limits() -> None:
     Свои остатки он видит в профиле, и там они всегда свежие.
     """
     plain = texts.onboarding().text
-    invited = texts.onboarding(gift=texts.referral_gift(messages=50, images=2)).text
 
     assert not any(char.isdigit() for char in plain)
     assert "в день" not in plain
-    # У приглашённого числа есть — но это подарок, а не отчёт о лимитах.
-    assert "в день" not in invited
 
 
 def test_onboarding_from_presentations_replaces_the_first_line() -> None:
@@ -59,11 +56,14 @@ def test_onboarding_from_presentations_replaces_the_first_line() -> None:
     )
 
 
-def test_onboarding_mentions_the_gift_from_a_friend() -> None:
-    """§2.7: приглашённый должен сразу понять, откуда у него больше лимитов."""
-    screen = texts.onboarding(gift=texts.referral_gift(messages=50, images=2))
+def test_the_referral_offer_promises_the_friend_nothing() -> None:
+    """Фаза 10, К7: другу ничего не начисляется — значит, и не обещается."""
+    text = texts.referral_offer(bonus_messages=20, bonus_images=2).text
 
-    assert screen.lines[2] == "Тебе подарок от друга: +50 сообщений и +2 картинки."
+    assert "+20 сообщений" in text
+    assert "+2 картинки" in text
+    assert "Другу" not in text
+    assert "подар" not in text
 
 
 def test_chat_error_promises_the_message_was_not_spent() -> None:

@@ -24,6 +24,7 @@ from app.core.models import (
 from app.core.receipts import Receipt
 from app.ports.ai import Answer, ImageQuality
 from app.ports.payments import PaymentIntent
+from app.ports.presentations import BuiltPresentation, PresentationTheme
 
 #: Минимальный настоящий PNG: восемь байт сигнатуры плюс немного тела.
 #: Проверка формата смотрит именно на сигнатуру, поэтому подделка обязана
@@ -518,3 +519,53 @@ class FakeStars:
         self, request_id: str, *, ok: bool, reason: str | None = None
     ) -> None:
         self.approvals.append((request_id, ok))
+
+
+#: Байты, которые фейковый провайдер отдаёт вместо файлов. Разные, чтобы по
+#: отданному было видно, какой из двух файлов уехал.
+PPTX_BYTES = b"PK\x03\x04pptx"
+PDF_BYTES = b"%PDF-1.7 deck"
+
+
+class FakePresentations:
+    """Провайдер презентаций с заранее заданным поведением.
+
+    Сборка честно отдаёт управление петле событий. Без этого тест на двойное
+    нажатие был бы зелёным и без защиты: второй обработчик просто не успел бы
+    начаться, пока первый не кончил (docs/грабли.md, раздел «Тесты»).
+    """
+
+    def __init__(self) -> None:
+        self.available: tuple[PresentationTheme, ...] = (
+            PresentationTheme(id="graphite_light", name="Графит светлая"),
+            PresentationTheme(id="azure_coral", name="Лазурь"),
+        )
+        self.pdf: bytes | None = PDF_BYTES
+        #: Чем падает сборка. Список — по одной ошибке на вызов, по порядку;
+        #: пустой — сборки удаются.
+        self.errors: list[Exception] = []
+        self.themes_error: Exception | None = None
+        self.themes_calls = 0
+        self.built: list[tuple[str, str]] = []
+        #: Сколько сборок идёт прямо сейчас и сколько шло одновременно максимум.
+        self.running = 0
+        self.max_running = 0
+
+    async def themes(self) -> tuple[PresentationTheme, ...]:
+        self.themes_calls += 1
+        if self.themes_error is not None:
+            raise self.themes_error
+        return self.available
+
+    async def build(self, topic: str, *, theme_id: str) -> BuiltPresentation:
+        self.built.append((topic, theme_id))
+        self.running += 1
+        self.max_running = max(self.max_running, self.running)
+        try:
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+            if self.errors:
+                raise self.errors.pop(0)
+            return BuiltPresentation(pptx=PPTX_BYTES, pdf=self.pdf)
+        finally:
+            self.running -= 1

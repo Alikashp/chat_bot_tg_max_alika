@@ -23,6 +23,9 @@ async def show_offer(deps: Deps, session: Session) -> None:
     screen = texts.referral_offer(
         bonus_messages=deps.settings.referral_bonus_messages,
         bonus_images=deps.settings.referral_bonus_images,
+        bonus_presentations=(
+            deps.settings.referral_bonus_presentations if deps.presentations_on else 0
+        ),
     )
     await deps.messenger.send_text(
         session.chat, screen.text, keyboard=keyboards.referral_offer()

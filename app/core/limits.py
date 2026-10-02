@@ -38,6 +38,7 @@ class LimitKind(StrEnum):
     MESSAGES = "messages"
     IMAGES = "images"
     DOCUMENTS = "documents"
+    PRESENTATIONS = "presentations"
 
 
 class Source(StrEnum):
@@ -120,6 +121,15 @@ def allowance(user: User, usage: Usage, tariff: Tariff, kind: LimitKind) -> Allo
             daily_limit=daily_messages(tariff),
             daily_used=usage.messages_used,
             bonus=user.bonus_messages,
+        )
+    if kind is LimitKind.PRESENTATIONS:
+        # Дневной нормы у презентаций нет ни на одном тарифе: каждая — разовая
+        # выдача (регистрация, друг), и всё лежит в бонусе.
+        return Allowance(
+            kind=kind,
+            daily_limit=0,
+            daily_used=0,
+            bonus=user.bonus_presentations,
         )
     if kind is LimitKind.DOCUMENTS:
         return Allowance(

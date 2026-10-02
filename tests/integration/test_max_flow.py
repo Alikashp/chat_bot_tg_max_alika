@@ -376,8 +376,8 @@ async def test_the_menu_rides_along_with_every_message(started: Harness) -> None
     assert started.bot.sent[-1].buttons, "меню не доехало"
 
 
-async def test_a_deeplink_gift_reaches_the_invited_user(harness: Harness) -> None:
-    """§2.7 в MAX: payload — прямой аналог /start ref_XXXX."""
+async def test_a_deeplink_rewards_the_referrer_in_max(harness: Harness) -> None:
+    """§2.7 в MAX: payload — прямой аналог /start ref_XXXX. Награда — пригласившему."""
     inviter = await harness.storage.create_user(
         messenger=MessengerKind.MAX,
         external_id="1000",
@@ -390,10 +390,10 @@ async def test_a_deeplink_gift_reaches_the_invited_user(harness: Harness) -> Non
     assert await harness.post(start_update("ref_friend01")) == 200
 
     invited = await harness.user()
-    assert invited.bonus_messages == 50
+    assert invited.bonus_messages == 0, "приглашённому подарка больше нет"
     refreshed = await harness.storage.get_user_by_id(inviter.id)
     assert refreshed is not None
-    assert refreshed.bonus_images == 5
+    assert (refreshed.bonus_messages, refreshed.bonus_images) == (20, 5)
 
 
 async def test_the_profile_carries_the_support_number(started: Harness) -> None:
@@ -421,6 +421,34 @@ async def test_a_menu_button_press_opens_its_screen(started: Harness) -> None:
 
     assert started.texts_said() == [texts.IMAGE_ASK]
     assert started.bot.callbacks == ["mid-in-1"], "нажатие не подтверждено"
+
+
+async def test_the_menu_in_max_matches_telegram(started: Harness) -> None:
+    """Фаза 10, К1: меню одно на оба мессенджера, приколы — под «Картинками»."""
+    await started.press(Action.MENU_SHOW)
+
+    labels = [button.text for row in started.bot.sent[-1].buttons for button in row]
+    assert labels == [
+        texts.MENU_IMAGES,
+        texts.MENU_DOCUMENTS,
+        texts.MENU_PROFILE,
+        texts.MENU_TARIFFS,
+    ]
+
+    await started.press(Action.MENU_IMAGES)
+
+    under_images = [b.text for row in started.bot.sent[-1].buttons for b in row]
+    assert texts.MENU_PRESETS in under_images
+
+
+async def test_an_old_presets_button_in_max_still_works(started: Harness) -> None:
+    """Под старыми сообщениями в MAX лежат кнопки с прежним меню.
+
+    Они присылают то же действие, что и раньше, и вести обязаны туда же.
+    """
+    await started.press(Action.MENU_PRESETS)
+
+    assert started.texts_said()[-1] == texts.PRESETS_ASK
 
 
 async def test_the_waiting_message_is_edited_into_the_picture(

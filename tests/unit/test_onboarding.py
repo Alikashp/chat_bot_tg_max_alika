@@ -164,26 +164,12 @@ async def test_the_source_is_not_rewritten_on_a_later_start(
 # --- Рефералка (§2.7) ----------------------------------------------------
 
 
-async def test_referral_rewards_both_sides(
-    deps: Deps, storage: InMemoryStorage, user: User
-) -> None:
-    """Критерий приёмки №9: награда обоим и сразу."""
-    session = await start(deps, payload=f"ref_{user.referral_code}")
-
-    referrer = await refresh(storage, user)
-    referee = await refresh(storage, session.user)
-    # Три картинки у обоих уже лежат — они выданы при регистрации. Награда
-    # прибавляется к ним, а не заменяет их: 3 + 2.
-    assert (referrer.bonus_messages, referrer.bonus_images) == (50, 5)
-    assert (referee.bonus_messages, referee.bonus_images) == (50, 5)
-
-
 async def test_referrer_is_told_immediately(
     deps: Deps, messenger: FakeMessenger, user: User
 ) -> None:
     await start(deps, payload=f"ref_{user.referral_code}")
 
-    expected = texts.referral_reward(messages=50, images=2).text
+    expected = texts.referral_reward(messages=20, images=2).text
     assert expected in messenger.texts_said()
 
 
@@ -201,20 +187,33 @@ async def test_the_referrer_notice_names_the_person_not_the_chat(
     notice = next(
         sent
         for sent in messenger.texts
-        if sent.text == texts.referral_reward(messages=50, images=2).text
+        if sent.text == texts.referral_reward(messages=20, images=2).text
     )
     assert notice.chat.is_person is True
     assert notice.chat.chat_id == user.external_id
 
 
-async def test_invited_user_sees_the_gift_in_onboarding(
+async def test_the_reward_goes_to_the_referrer_alone(
+    deps: Deps, storage: InMemoryStorage, user: User
+) -> None:
+    """Фаза 10, К7: +2 картинки и +20 сообщений — пригласившему, и только ему."""
+    session = await start(deps, payload=f"ref_{user.referral_code}")
+
+    referrer = await refresh(storage, user)
+    assert (referrer.bonus_messages, referrer.bonus_images) == (20, 3 + 2)
+    invited = await refresh(storage, session.user)
+    # Только выданное при регистрации: подарка от друга больше нет.
+    assert (invited.bonus_messages, invited.bonus_images) == (0, 3)
+
+
+async def test_the_invited_user_is_promised_nothing(
     deps: Deps, messenger: FakeMessenger, user: User
 ) -> None:
+    """Приглашённому не дарят — значит, и первый экран о подарке молчит."""
     await start(deps, payload=f"ref_{user.referral_code}")
 
-    assert messenger.last_text.text.endswith(
-        "Тебе подарок от друга: +50 сообщений и +2 картинки."
-    )
+    assert messenger.last_text.text == texts.onboarding().text
+    assert "подар" not in messenger.last_text.text
 
 
 async def test_referral_is_idempotent(
@@ -230,7 +229,7 @@ async def test_referral_is_idempotent(
     await start(deps, payload=payload)
 
     referrer = await refresh(storage, user)
-    assert (referrer.bonus_messages, referrer.bonus_images) == (50, 5)
+    assert (referrer.bonus_messages, referrer.bonus_images) == (20, 5)
     assert await storage.count_referrals(user.id) == 1
 
 
@@ -288,22 +287,22 @@ def capped(deps: Deps, limit: int) -> Deps:
     )
 
 
-async def test_by_default_friends_are_not_capped(
+async def test_by_default_twenty_friends_a_day_are_rewarded(
     deps: Deps, storage: InMemoryStorage, user: User, logger: FakeLogger
 ) -> None:
-    """«Плюс две за друга, без лимита»: потолок по умолчанию выключен.
+    """Фаза 10, К7: потолок наград по умолчанию — двадцать друзей в сутки.
 
-    Звать друзей — основной способ взять картинки бесплатно, и упереться в
-    потолок на третьем друге значило бы остановить ровно то, ради чего
-    человек ссылку и пересылает.
+    Награда за друга теперь включает презентацию, а она стоит денег. Двадцать
+    живых друзей за сутки — с запасом для честного человека и стена для
+    того, кто регистрирует друзей скриптом.
     """
     payload = f"ref_{user.referral_code}"
     for index in range(25):
         await start(deps, payload=payload, external_id=f"guest{index}")
 
-    # Три при регистрации плюс по две за каждого из двадцати пяти друзей.
-    assert (await refresh(storage, user)).bonus_images == 3 + 25 * 2
-    assert "referral_limit_reached" not in logger.names()
+    # Три при регистрации плюс по две за каждого из первых двадцати друзей.
+    assert (await refresh(storage, user)).bonus_images == 3 + 20 * 2
+    assert "referral_limit_reached" in logger.names()
 
 
 async def test_daily_reward_limit_stops_farming_when_switched_on(

@@ -45,7 +45,7 @@ async def start(
     if existing is not None:
         existing = await identity.remember_username(deps, existing, username)
         session = Session(user=existing, chat=chat, day=deps.today(), now=deps.now())
-        await _greet(deps, session, from_presentations=False, gifted=False)
+        await _greet(deps, session, from_presentations=False)
         return session
 
     from_presentations = referral.is_from_presentations(payload)
@@ -59,17 +59,8 @@ async def start(
     )
     session = Session(user=user, chat=chat, day=deps.today(), now=deps.now())
 
-    gifted = await _apply_referral(deps, session, payload)
-    if gifted:
-        # Бонус уже начислен — перечитываем, чтобы первый же экран показывал
-        # правду, а не то, что было до подарка.
-        refreshed = await deps.storage.get_user_by_id(user.id)
-        if refreshed is not None:
-            session = Session(
-                user=refreshed, chat=chat, day=session.day, now=session.now
-            )
-
-    await _greet(deps, session, from_presentations=from_presentations, gifted=gifted)
+    await _apply_referral(deps, session, payload)
+    await _greet(deps, session, from_presentations=from_presentations)
     return session
 
 
@@ -98,6 +89,7 @@ async def _create_user(
                 support_number=support.generate_number(),
                 bonus_images=granted,
                 bonus_documents=deps.settings.signup_documents,
+                bonus_presentations=deps.settings.signup_presentations,
                 username=username_or_none(username),
                 source=source,
             )
@@ -106,8 +98,13 @@ async def _create_user(
     raise RuntimeError("не удалось подобрать свободный реферальный код") from last_error
 
 
-async def _apply_referral(deps: Deps, session: Session, payload: str) -> bool:
-    """Начисляет награду обоим, если ссылка настоящая. Возвращает, был ли подарок.
+async def _apply_referral(deps: Deps, session: Session, payload: str) -> None:
+    """Награждает пригласившего, если ссылка настоящая.
+
+    Награда только ему (фаза 10). Приглашённому ничего не начисляется: он и
+    так получает всё, что положено новому человеку, а подарок «за то, что
+    пришёл по ссылке» превращал каждую регистрацию через свою же ссылку в
+    двойную выдачу.
 
     Идемпотентность обеспечивает хранилище: повторный /start по той же ссылке
     физически не может записать пару дважды. Здесь остаётся только суточный
@@ -115,40 +112,44 @@ async def _apply_referral(deps: Deps, session: Session, payload: str) -> bool:
     """
     code = referral.parse_referral_payload(payload)
     if code is None:
-        return False
+        return
 
     referrer = await deps.storage.get_user_by_referral_code(code)
     if referrer is None or referrer.id == session.user.id:
         # Несуществующий код или ссылка на самого себя. Про self-referral
         # хранилище знает и само, но лишний запрос делать незачем.
-        return False
+        return
 
     if not await _within_daily_limit(deps, referrer.id):
-        return False
+        return
 
     if not await deps.storage.record_referral(referrer.id, session.user.id):
-        return False
+        return
 
-    bonus_messages = deps.settings.referral_bonus_messages
-    bonus_images = deps.settings.referral_bonus_images
     await deps.storage.add_bonus(
-        referrer.id, messages=bonus_messages, images=bonus_images
+        referrer.id,
+        messages=deps.settings.referral_bonus_messages,
+        images=deps.settings.referral_bonus_images,
+        presentations=_presentations_for_friend(deps),
     )
-    await deps.storage.add_bonus(
-        session.user.id, messages=bonus_messages, images=bonus_images
-    )
-
     await _notify_referrer(deps, referrer)
-    return True
+
+
+def _presentations_for_friend(deps: Deps) -> int:
+    """Презентация за друга — только там, где раздел включён (фаза 10, К2).
+
+    Без ключа API ни кнопки, ни обещания нет, и выдавать то, о чём человеку
+    не сказали и чем он не может воспользоваться, незачем.
+    """
+    return deps.settings.referral_bonus_presentations if deps.presentations_on else 0
 
 
 async def _within_daily_limit(deps: Deps, referrer_id: UserId) -> bool:
     """Не упёрся ли пригласивший в суточный потолок наград (§2.7, антифрод).
 
-    Потолок по умолчанию выключен: приглашения стали основным способом взять
-    картинки бесплатно, и ограничивать их числом значит останавливать ровно
-    то, ради чего человек зовёт друзей. Ноль означает «без потолка»; включить
-    его обратно можно переменной окружения, не трогая код.
+    По умолчанию двадцать друзей в сутки (фаза 10): в награду входит
+    презентация, а она стоит денег за каждую колоду. Ноль означает «без
+    потолка» — поменять можно переменной окружения, не трогая код.
     """
     limit = deps.settings.referral_daily_reward_limit
     if limit <= 0:
@@ -177,6 +178,7 @@ async def _notify_referrer(deps: Deps, referrer: User) -> None:
     screen = texts.referral_reward(
         messages=deps.settings.referral_bonus_messages,
         images=deps.settings.referral_bonus_images,
+        presentations=_presentations_for_friend(deps),
     )
     try:
         await deps.messenger.send_text(
@@ -196,19 +198,7 @@ async def _notify_referrer(deps: Deps, referrer: User) -> None:
         )
 
 
-async def _greet(
-    deps: Deps, session: Session, *, from_presentations: bool, gifted: bool
-) -> None:
+async def _greet(deps: Deps, session: Session, *, from_presentations: bool) -> None:
     """Первый экран — и второй, и сотый: /start здоровается всегда."""
-    screen = texts.onboarding(
-        from_presentations=from_presentations,
-        gift=(
-            texts.referral_gift(
-                messages=deps.settings.referral_bonus_messages,
-                images=deps.settings.referral_bonus_images,
-            )
-            if gifted
-            else ""
-        ),
-    )
+    screen = texts.onboarding(from_presentations=from_presentations)
     await deps.messenger.send_text(session.chat, screen.text, show_menu=True)

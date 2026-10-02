@@ -528,7 +528,7 @@ async def test_my_link_first_explains_what_it_gives(
     """§2.7: голая ссылка не объясняет, зачем её пересылать."""
     await referral.show_offer(deps, session)
 
-    assert "+50 сообщений" in messenger.last_text.text
+    assert "+20 сообщений" in messenger.last_text.text
     assert messenger.last_text.keyboard is not None
     assert session.user.referral_code not in messenger.last_text.text
 

@@ -499,7 +499,7 @@ async def test_a_failed_generation_is_written_too(storage: Storage) -> None:
         Generation(
             user_id=user.id,
             kind=GenerationKind.CHAT,
-            model="gpt-5.6-luna",
+            model="gpt-6-luna",
             status=GenerationStatus.FAILED,
             duration_ms=0,
             error_code="TimeoutError",

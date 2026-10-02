@@ -236,16 +236,27 @@ async def charge(deps: Deps, subscription: Subscription) -> None:
         await _await_stars(deps, subscription, user)
         return
 
-    cards = deps.cards
     method_id = subscription.payment_method_id
-    if cards is None or not cards.recurring or method_id is None:
-        # Списывать нечем: провайдер выключен или не умеет повторных
-        # списаний. Тянуть подписку, по которой не будет денег, нельзя —
-        # она обещает человеку тариф, которого он не получит.
+    if method_id is None:
+        # Списывать нечем у самого человека: способа оплаты не сохранено.
+        # Тянуть подписку, по которой не будет денег, нельзя — она обещает
+        # тариф, которого человек не получит.
         deps.logger.error(
             "subscription_cannot_charge", user_id=int(subscription.user_id)
         )
         await _end(deps, subscription, user)
+        return
+
+    cards = deps.cards
+    if cards is None or not cards.recurring:
+        # Магазин не настроен: пропали ключи или выключены автоплатежи. Это
+        # наша поломка, а не решение человека, и прекращать из-за неё
+        # подписку нельзя: отмена стирает сохранённую карту, и после починки
+        # продлить было бы нечем. Пропускаем проход и кричим в лог — срок
+        # остался прежним, и следующий проход попробует снова.
+        deps.logger.error(
+            "subscription_shop_not_configured", user_id=int(subscription.user_id)
+        )
         return
 
     if subscription.charge_order_id is not None:

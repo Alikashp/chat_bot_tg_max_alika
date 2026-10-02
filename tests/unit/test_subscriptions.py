@@ -537,6 +537,85 @@ async def test_the_paid_period_survives_a_failed_charge(
     assert after.tariff_expires_at == until
 
 
+# --- Магазин не настроен -------------------------------------------------
+
+
+async def test_an_unconfigured_shop_does_not_end_the_subscription(
+    deps: Deps,
+    storage: InMemoryStorage,
+    user: User,
+    messenger: FakeMessenger,
+    logger: FakeLogger,
+) -> None:
+    """Ключи магазина пропали — это наша поломка, а не отказ человека.
+
+    Раньше подписка от этого прекращалась, а отмена ещё и стирает сохранённую
+    карту. Вернуть её после починки нечем: человеку пришлось бы платить
+    заново руками, и узнал бы он об этом из сообщения «подписка кончилась».
+    """
+    unconfigured = replace(deps, cards=None)
+    subscription = await _subscribe(unconfigured, user, charge_at=timedelta(0))
+
+    await subscriptions.charge(unconfigured, subscription)
+
+    kept = await storage.get_subscription(user.id)
+    assert kept is not None
+    assert kept.status == SubscriptionStatus.ACTIVE.value
+    assert kept.payment_method_id == "card-1"
+    assert messenger.texts_said() == []
+    assert "subscription_shop_not_configured" in logger.names()
+
+
+async def test_recurring_switched_off_does_not_end_the_subscription(
+    deps: Deps, storage: InMemoryStorage, user: User, messenger: FakeMessenger
+) -> None:
+    cards = FakeCards(recurring=False)
+    switched_off = replace(deps, cards=cards)
+    subscription = await _subscribe(switched_off, user, charge_at=timedelta(0))
+
+    await subscriptions.charge(switched_off, subscription)
+
+    kept = await storage.get_subscription(user.id)
+    assert kept is not None
+    assert kept.status == SubscriptionStatus.ACTIVE.value
+    assert kept.payment_method_id == "card-1"
+    assert cards.keys == []
+    assert messenger.texts_said() == []
+
+
+async def test_a_repaired_shop_charges_the_kept_subscription(
+    deps: Deps, storage: InMemoryStorage, user: User
+) -> None:
+    subscription = await _subscribe(
+        replace(deps, cards=None), user, charge_at=timedelta(0)
+    )
+    await subscriptions.charge(replace(deps, cards=None), subscription)
+
+    cards = FakeCards(recurring=True)
+    kept = await storage.get_subscription(user.id)
+    assert kept is not None
+    await subscriptions.charge(replace(deps, cards=cards), kept)
+
+    assert cards.charged[0][1:] == (599, "card-1")
+
+
+async def test_a_subscription_without_a_saved_card_ends(
+    deps: Deps, storage: InMemoryStorage, user: User, messenger: FakeMessenger
+) -> None:
+    """Списывать нечем у самого человека — такую подписку честно прекратить."""
+    cards = FakeCards(recurring=True)
+    recurring = replace(deps, cards=cards)
+    subscription = await _subscribe(recurring, user, charge_at=timedelta(0))
+    await storage.save_subscription(replace(subscription, payment_method_id=None))
+
+    await subscriptions.charge(recurring, subscription)
+
+    ended = await storage.get_subscription(user.id)
+    assert ended is not None and ended.status == SubscriptionStatus.CANCELLED.value
+    assert cards.keys == []
+    assert "вернули бесплатные лимиты" in messenger.last_text.text
+
+
 # --- Один период — один заказ (П7) ---------------------------------------
 
 

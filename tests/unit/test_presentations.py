@@ -21,14 +21,17 @@ from app.core.models import Chat, IncomingMessage, MessengerKind, User
 from app.core.router import handle
 from app.core.scenarios import keyboards, onboarding
 from app.core.scenarios.deps import Deps
+from app.core.scenarios.presentations import normalise_topic
 from app.ports.presentations import (
     PresentationBusyError,
     PresentationError,
     PresentationTimeoutError,
 )
+from config.presentation_topics import SUGGESTED_TOPICS
 from tests.fakes import (
     PDF_BYTES,
     PPTX_BYTES,
+    FakeImages,
     FakeLLM,
     FakeLogger,
     FakeMessenger,
@@ -877,3 +880,66 @@ async def test_a_second_press_makes_no_second_deck_from_the_report(
 
     assert len(presentations.built) == 1
     assert await left(storage, owner) == 1
+
+
+# --- «Придумай сам» (Д4) -------------------------------------------------
+
+
+async def test_the_topic_question_offers_to_invent_one(
+    enabled: Deps, owner: User, messenger: FakeMessenger
+) -> None:
+    """Под «О чём презентация?» — «Придумай сам» и «Отмена»."""
+    await handle(enabled, incoming(action=Action.MENU_PRESENTATIONS))
+
+    assert result_buttons(messenger) == [
+        (texts.BUTTON_SUGGEST_TOPIC, Action.PRESENTATION_SUGGEST),
+        (texts.BUTTON_CANCEL, Action.MENU_SHOW),
+    ]
+    assert texts.BUTTON_SUGGEST_TOPIC == "Придумай сам"
+
+
+async def test_an_invented_topic_comes_from_the_list_without_any_provider(
+    enabled: Deps,
+    owner: User,
+    storage: InMemoryStorage,
+    messenger: FakeMessenger,
+    llm: FakeLLM,
+    images_: FakeImages,
+    presentations: FakePresentations,
+) -> None:
+    """Д4: тема — из config/, ни к ИИ, ни к картинкам, ни к сборке не ходим.
+
+    Человек видит тему и сразу выбирает оформление; список оформлений — тот
+    же шаг, что и после темы, написанной руками.
+    """
+    await handle(enabled, incoming(action=Action.MENU_PRESENTATIONS))
+    await handle(enabled, incoming(action=Action.PRESENTATION_SUGGEST))
+
+    assert llm.calls == []
+    assert images_.generated == [] and images_.edited == []
+    assert presentations.built == []
+    shown = messenger.last_text.text
+    topic = next(t for t in SUGGESTED_TOPICS if t in shown)
+    assert (
+        shown == texts.presentation_suggested(topic, ("Графит светлая", "Лазурь")).text
+    )
+    assert labels_of(messenger)[:2] == ["Графит светлая", "Лазурь"]
+
+    await handle(enabled, incoming(action=theme_action("azure_coral")))
+    assert presentations.built == [(topic, "azure_coral")]
+
+
+def test_the_topic_list_is_ready_to_use() -> None:
+    """Каждая тема из списка проходит границы 3–200 знаков."""
+    assert "Искусственный интеллект: польза и риски" in SUGGESTED_TOPICS
+    assert all(normalise_topic(topic) == topic for topic in SUGGESTED_TOPICS)
+    assert len(set(SUGGESTED_TOPICS)) == len(SUGGESTED_TOPICS)
+
+
+async def test_inventing_with_nothing_left_shows_the_paywall(
+    enabled: Deps, user: User, messenger: FakeMessenger
+) -> None:
+    """Кнопка из старого сообщения при пустом остатке — пейволл, не тема."""
+    await handle(enabled, incoming(action=Action.PRESENTATION_SUGGEST))
+
+    assert messenger.last_text.text == texts.paywall_presentations(1).text

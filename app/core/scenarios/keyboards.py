@@ -354,6 +354,21 @@ def menu_labels(*, presentations: bool = False) -> tuple[str, ...]:
     return tuple(label for row in _menu_rows(presentations) for label, _ in row)
 
 
+def presentation_ask() -> Keyboard:
+    """Под «О чём презентация?»: «Придумай сам» и «Отмена»."""
+    return Keyboard(
+        rows=(
+            (
+                Button(
+                    text=texts.BUTTON_SUGGEST_TOPIC,
+                    action=Action.PRESENTATION_SUGGEST,
+                ),
+            ),
+            (Button(text=texts.BUTTON_CANCEL, action=Action.MENU_SHOW),),
+        )
+    )
+
+
 def presentation_cancel() -> Keyboard:
     """«Отмена» на шагах темы и оформления: снимает ожидание и ведёт в меню."""
     return Keyboard.row(Button(text=texts.BUTTON_CANCEL, action=Action.MENU_SHOW))

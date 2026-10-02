@@ -275,6 +275,9 @@ async def _route_action(deps: Deps, session: Session, action: str) -> None:
         case Action.MENU_PRESENTATIONS | Action.PRESENTATION_AGAIN:
             await _clear_pending(deps, session)
             await presentations.start(deps, session)
+        case Action.PRESENTATION_SUGGEST:
+            await _clear_pending(deps, session)
+            await presentations.suggest(deps, session)
         case Action.PRESENTATION_RETRY:
             # Ограничитель не нужен: одна сборка на человека держится слотом
             # в базе (presentations.claim_presentation), а не в памяти.

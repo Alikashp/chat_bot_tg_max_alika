@@ -459,6 +459,9 @@ PRESENTATION_TOPIC_BAD = "Тема нужна от 3 до 200 знаков. На
 
 PRESENTATION_PICK_THEME = "Выбери оформление 👇"
 
+#: Под вопросом о теме. Дословно из поручения.
+BUTTON_SUGGEST_TOPIC = "Придумай сам"
+
 #: Дословно из поручения заказчика. Многоточия нет намеренно: обещание
 #: «около минуты» и так говорит, что ждать.
 PRESENTATION_WORKING = "Готовлю презентацию, около минуты"
@@ -522,11 +525,23 @@ PRESENTATION_FILENAME = "Презентация"
 
 
 def presentation_ask() -> Screen:
-    return Screen(text=PRESENTATION_ASK, buttons=(BUTTON_CANCEL,))
+    return Screen(text=PRESENTATION_ASK, buttons=(BUTTON_SUGGEST_TOPIC, BUTTON_CANCEL))
 
 
 def presentation_topic_bad() -> Screen:
     return Screen(text=PRESENTATION_TOPIC_BAD, next_step="ждём тему ещё раз")
+
+
+def presentation_suggested(topic: str, theme_buttons: tuple[str, ...]) -> Screen:
+    """Тема из «Придумай сам» — и сразу выбор оформления, одним сообщением.
+
+    Тему показываем обязательно: человек должен видеть, о чём будет его
+    презентация, до того как она соберётся и спишется.
+    """
+    return Screen(
+        text=f"Тема: {topic}\n{PRESENTATION_PICK_THEME}",
+        buttons=(*theme_buttons, BUTTON_CANCEL),
+    )
 
 
 def presentation_pick_theme(theme_buttons: tuple[str, ...]) -> Screen:
@@ -1530,6 +1545,9 @@ def _all_screens() -> tuple[Screen, ...]:
         presentation_ask(),
         presentation_topic_bad(),
         presentation_pick_theme(("Графит светлая", "Лазурь", "Свежая зелёная")),
+        presentation_suggested(
+            "Искусственный интеллект: польза и риски", ("Графит светлая", "Лазурь")
+        ),
         presentation_working(),
         presentation_done(),
         presentation_result(),

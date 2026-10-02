@@ -42,6 +42,7 @@ from app.core.scenarios import keyboards, paywall, spending, telemetry
 from app.core.scenarios.deps import Deps, Session
 from app.ports.handoff import Carried
 from app.ports.presentations import BuiltPresentation, PresentationBusyError
+from config.presentation_topics import SUGGESTED_TOPICS
 
 #: Границы темы — те же, что у провайдера (docs/API.md §3.1).
 MIN_TOPIC = 3
@@ -90,7 +91,33 @@ async def start(deps: Deps, session: Session) -> None:
     await deps.messenger.send_text(
         session.chat,
         texts.presentation_ask().text,
-        keyboard=keyboards.presentation_cancel(),
+        keyboard=keyboards.presentation_ask(),
+    )
+
+
+async def suggest(deps: Deps, session: Session) -> None:
+    """«Придумай сам»: тема из готового списка, и сразу выбор оформления.
+
+    Ни к какому провайдеру за темой не ходим: список лежит в config/, и
+    выбор из него бесплатный и мгновенный. Остаток проверяется заново —
+    кнопка могла прийти из старого сообщения.
+    """
+    if deps.presentations is None:
+        await _unavailable(deps, session)
+        return
+
+    allowance = await spending.current_allowance(deps, session, LimitKind.PRESENTATIONS)
+    if allowance.exhausted:
+        await paywall.show(deps, session, LimitKind.PRESENTATIONS)
+        return
+
+    topic = _pick(deps)
+    await _offer_themes(
+        deps,
+        session,
+        awaiting=pending.await_presentation_theme(topic),
+        remember=RetryContext(kind=RetryKind.PRESENTATION, prompt=topic),
+        shown_topic=topic,
     )
 
 
@@ -265,8 +292,20 @@ async def _link_gone(deps: Deps, session: Session, token: str) -> None:
     )
 
 
+def _pick(deps: Deps) -> str:
+    """Тема из списка. По часам, а не случайно: в тестах часы стоят, и
+    выбор повторяем, а человеку разница незаметна."""
+    moment = int(deps.now().timestamp() * 1000)
+    return SUGGESTED_TOPICS[moment % len(SUGGESTED_TOPICS)]
+
+
 async def _offer_themes(
-    deps: Deps, session: Session, *, awaiting: str, remember: RetryContext
+    deps: Deps,
+    session: Session,
+    *,
+    awaiting: str,
+    remember: RetryContext,
+    shown_topic: str | None = None,
 ) -> None:
     """Список оформлений — из API, не зашитый у нас.
 
@@ -298,10 +337,14 @@ async def _offer_themes(
 
     await deps.storage.set_pending(session.user.id, awaiting)
     choices = tuple((theme.name, theme.id) for theme in themes)
+    names = tuple(name for name, _ in choices)
+    screen = (
+        texts.presentation_suggested(shown_topic, names)
+        if shown_topic is not None
+        else texts.presentation_pick_theme(names)
+    )
     await deps.messenger.send_text(
-        session.chat,
-        texts.presentation_pick_theme(tuple(name for name, _ in choices)).text,
-        keyboard=keyboards.presentation_themes(choices),
+        session.chat, screen.text, keyboard=keyboards.presentation_themes(choices)
     )
 
 

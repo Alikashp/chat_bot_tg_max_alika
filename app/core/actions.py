@@ -50,6 +50,7 @@ class Action(StrEnum):
     # Презентации (фаза 10)
     PRESENTATION_AGAIN = "v:again"
     PRESENTATION_RETRY = "v:retry"
+    PRESENTATION_SUGGEST = "v:idea"
 
     # Подписка (§4.14 оферты: отмена — в профиле)
     SUBSCRIPTION = "s:show"

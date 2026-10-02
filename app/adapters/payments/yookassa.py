@@ -15,6 +15,7 @@ respx мокает транспорт httpx, а собственные повт�
 from __future__ import annotations
 
 from base64 import b64encode
+from datetime import timedelta
 from typing import Any
 
 import httpx
@@ -23,10 +24,12 @@ from app.adapters.ai.errors import ProviderError
 from app.adapters.ai.http import request_json
 from app.core.receipts import Receipt
 from app.core.tariffs import RUB
-from app.ports.payments import PaymentIntent
+from app.ports.payments import ChargeResult, ChargeStatus, PaymentIntent
 
 #: Статус, при котором деньги действительно у нас.
 _SUCCEEDED = "succeeded"
+#: Статус платежа, который не прошёл и уже не пройдёт.
+_CANCELED = "canceled"
 
 
 class YooKassaPayments:
@@ -51,6 +54,10 @@ class YooKassaPayments:
         # Поэтому это настройка, а не константа, — и по ней же сценарий
         # решает, что писать на экране заказа.
         self.recurring = recurring
+        # Срок из документации ЮKassa («Формат взаимодействия», раздел про
+        # идемпотентность): ключ действует 24 часа с первого запроса, после
+        # чего повтор выполняется как новый запрос.
+        self.idempotence_window = timedelta(hours=24)
         credentials = b64encode(f"{shop_id}:{secret_key}".encode()).decode()
         self._headers = {
             "Authorization": f"Basic {credentials}",
@@ -119,17 +126,17 @@ class YooKassaPayments:
         description: str,
         payment_method_id: str,
         receipt: Receipt | None = None,
-    ) -> str | None:
-        """Списывает по сохранённой карте. Возвращает платёж или None.
+    ) -> ChargeResult:
+        """Списывает по сохранённой карте.
 
-        None — это отказ, а не сбой: на карте не хватило денег, истёк срок,
-        банк не пропустил. Такое разбирается не исключением, а §4.16 оферты —
+        Отказ — это не сбой: на карте не хватило денег, истёк срок, банк не
+        пропустил. Такое разбирается не исключением, а §4.16 оферты —
         повторами в течение трёх дней. Исключение остаётся за случаем, когда
-        ЮKassa не ответила вовсе: тогда неизвестно, списали или нет, и
-        считать попытку неудачной нельзя.
+        ЮKassa не ответила вовсе: тогда неизвестно, списали или нет.
 
         Идемпотентность та же, что и у первого платежа: наш заказ. Повторный
-        вызов по тому же заказу не спишет второй раз.
+        вызов по тому же заказу в течение суток не спишет второй раз — ЮKassa
+        вернёт прежний платёж.
         """
         payload: dict[str, Any] = {
             "amount": {"value": f"{amount_rub}.00", "currency": RUB},
@@ -142,9 +149,11 @@ class YooKassaPayments:
             payload["receipt"] = _receipt(receipt)
 
         response = await self._create(payload, idempotence_key=order_id)
-        if response.get("status") != _SUCCEEDED or response.get("paid") is not True:
-            return None
-        return _payment_id(response)
+        return ChargeResult(_charge_status(response), _payment_id(response))
+
+    async def charge_status(self, external_id: str) -> ChargeStatus:
+        """Чем кончилось автосписание — по нашему ключу, а не по уведомлению."""
+        return _charge_status(await self._payment(external_id))
 
     async def saved_method_of(self, external_id: str) -> str | None:
         """Идентификатор карты, сохранённой при этом платеже.
@@ -216,6 +225,22 @@ class YooKassaPayments:
         return _rubles(amount.get("value")) == expected_rub and (
             amount.get("currency") == RUB
         )
+
+
+def _charge_status(response: dict[str, Any]) -> ChargeStatus:
+    """Статус платежа ЮKassa в терминах автосписания.
+
+    Отказом считается только canceled — единственный статус, из которого
+    платёж уже никуда не перейдёт. Всё прочее, что не succeeded, — «ещё в
+    пути»: прочитать его как отказ значило бы завести на следующей попытке
+    новый заказ и списать дважды, когда первый всё-таки пройдёт.
+    """
+    status = response.get("status")
+    if status == _SUCCEEDED and response.get("paid") is True:
+        return ChargeStatus.CHARGED
+    if status == _CANCELED:
+        return ChargeStatus.REFUSED
+    return ChargeStatus.PENDING
 
 
 def _receipt(receipt: Receipt) -> dict[str, Any]:

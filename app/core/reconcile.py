@@ -76,10 +76,16 @@ class Reconciler:
             return
         if not await deps.cards.is_paid(order.external_id, expected_rub=order.amount):
             return
+        # Заказ может оказаться автосписанием за период, ответ на которое
+        # потерялся. Узнавать это надо до выдачи: она освобождает период.
+        subscription = await deps.storage.get_subscription(order.user_id)
+        renewal = subscription is not None and subscription.charge_order_id == order.id
         confirmed = await payments.confirm(deps, order.id)
         if confirmed is None:
             return
         deps.logger.info(
             "payment_reconciled", user_id=int(user.id), payment_id=order.id
         )
-        await payments.announce(deps, session_for(deps, user), confirmed)
+        await payments.announce(
+            deps, session_for(deps, user), confirmed, renewal=renewal
+        )

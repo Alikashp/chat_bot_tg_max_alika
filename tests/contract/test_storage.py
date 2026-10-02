@@ -1162,6 +1162,91 @@ async def test_advancing_a_missing_subscription_is_false(storage: Storage) -> No
     )
 
 
+async def test_a_charge_order_is_held_until_released(storage: Storage) -> None:
+    """Один период — один заказ: пока исход неизвестен, второй не занять."""
+    user = await _make_user(storage, "sub-hold-1")
+    await _make_subscription(storage, user)
+    first = await _payment(storage, user)
+    second = await _payment(storage, user)
+
+    assert await storage.hold_charge_order(user.id, first.id) is True
+    assert await storage.hold_charge_order(user.id, second.id) is False
+    found = await storage.get_subscription(user.id)
+    assert found is not None and found.charge_order_id == first.id
+
+    # Отпустить можно только тот заказ, который держишь: чужой отпуск —
+    # это опоздавший проход, и он не должен освобождать место новому заказу.
+    await storage.release_charge_order(user.id, second.id)
+    found = await storage.get_subscription(user.id)
+    assert found is not None and found.charge_order_id == first.id
+
+    await storage.release_charge_order(user.id, first.id)
+    assert await storage.hold_charge_order(user.id, second.id) is True
+
+
+async def test_a_cancelled_subscription_holds_no_charge_order(
+    storage: Storage,
+) -> None:
+    user = await _make_user(storage, "sub-hold-2")
+    await _make_subscription(storage, user)
+    await storage.cancel_subscription(user.id, MOMENT)
+    order = await _payment(storage, user)
+
+    assert await storage.hold_charge_order(user.id, order.id) is False
+
+
+async def test_the_grant_releases_the_held_order(storage: Storage) -> None:
+    """Выдача периода закрывает и его заказ: следующий период — новый заказ."""
+    user = await _make_user(storage, "sub-hold-3")
+    await _make_subscription(storage, user)
+    order = await _payment(storage, user)
+    await storage.hold_charge_order(user.id, order.id)
+
+    await storage.complete_payment(
+        order.id,
+        tariff=TariffId.PRO,
+        expires_at=MOMENT + timedelta(days=30),
+        seen_tariff=user.tariff,
+        seen_expiry=user.tariff_expires_at,
+        subscription=_new_subscription(user),
+    )
+
+    found = await storage.get_subscription(user.id)
+    assert found is not None and found.charge_order_id is None
+
+
+async def test_retrying_the_same_charge_needs_no_new_reminder(
+    storage: Storage,
+) -> None:
+    """Повтор того же списания — не новое списание: человек уже предупреждён.
+
+    Без этого перенос срока на час выглядел бы для прохода напоминаний как
+    новое списание, и человек получал бы «завтра спишем» каждый час.
+    """
+    user = await _make_user(storage, "sub-hold-4")
+    await _make_subscription(storage, user)
+    await storage.mark_reminded(user.id, MOMENT)
+    later = MOMENT + timedelta(hours=1)
+
+    await storage.advance_subscription(
+        user.id,
+        next_charge_at=later,
+        status="active",
+        failed_since=None,
+        same_charge=True,
+    )
+
+    found = await storage.get_subscription(user.id)
+    assert found is not None
+    assert (found.reminded_for, found.price_checked_for) == (later, later)
+    assert (
+        await storage.subscriptions_to_remind(
+            MOMENT, MOMENT + timedelta(days=1), limit=10
+        )
+        == []
+    )
+
+
 # --- Имя пользователя ----------------------------------------------------
 
 

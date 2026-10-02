@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import json
+from datetime import timedelta
 
 import httpx
 import pytest
@@ -20,6 +21,7 @@ from app.adapters.payments.yookassa import (
     refunded_payment_id_of,
 )
 from app.core.receipts import FiscalSettings, Receipt, receipt_for
+from app.ports.payments import ChargeResult, ChargeStatus
 
 BASE = "https://api.example/v3"
 PAYMENTS_URL = f"{BASE}/payments"
@@ -240,7 +242,7 @@ async def test_a_repeat_charge_uses_the_saved_card() -> None:
         return_value=httpx.Response(200, json=_succeeded())
     )
 
-    payment_id = await _provider().charge_saved(
+    result = await _provider().charge_saved(
         order_id="order-2",
         amount_rub=599,
         description="Тариф Про",
@@ -248,7 +250,7 @@ async def test_a_repeat_charge_uses_the_saved_card() -> None:
     )
 
     body = json.loads(route.calls[0].request.content)
-    assert payment_id == "2d0a1b"
+    assert result == ChargeResult(ChargeStatus.CHARGED, "2d0a1b")
     assert body["payment_method_id"] == "card-1"
     assert body["capture"] is True
     assert route.calls[0].request.headers["Idempotence-Key"] == "order-2"
@@ -266,15 +268,61 @@ async def test_a_refused_charge_is_not_an_error() -> None:
         return_value=httpx.Response(200, json={"id": "2d0a1b", "status": "canceled"})
     )
 
-    assert (
-        await _provider().charge_saved(
-            order_id="order-2",
-            amount_rub=599,
-            description="Тариф Про",
-            payment_method_id="card-1",
-        )
-        is None
+    assert await _provider().charge_saved(
+        order_id="order-2",
+        amount_rub=599,
+        description="Тариф Про",
+        payment_method_id="card-1",
+    ) == ChargeResult(ChargeStatus.REFUSED, "2d0a1b")
+
+
+@respx.mock
+async def test_a_charge_in_progress_is_not_a_refusal() -> None:
+    """«В обработке» — не отказ и не успех: такой платёж ждут, а не повторяют.
+
+    Прочитать его как отказ значило бы завести на следующей попытке новый
+    заказ — и списать дважды, когда первый всё-таки пройдёт.
+    """
+    respx.post(PAYMENTS_URL).mock(
+        return_value=httpx.Response(200, json={"id": "2d0a1b", "status": "pending"})
     )
+
+    assert await _provider().charge_saved(
+        order_id="order-2",
+        amount_rub=599,
+        description="Тариф Про",
+        payment_method_id="card-1",
+    ) == ChargeResult(ChargeStatus.PENDING, "2d0a1b")
+
+
+@pytest.mark.parametrize(
+    ("payment", "status"),
+    [
+        ({"status": "succeeded", "paid": True}, ChargeStatus.CHARGED),
+        ({"status": "canceled", "paid": False}, ChargeStatus.REFUSED),
+        ({"status": "pending", "paid": False}, ChargeStatus.PENDING),
+        ({"status": "waiting_for_capture", "paid": True}, ChargeStatus.PENDING),
+    ],
+)
+@respx.mock
+async def test_the_outcome_of_a_charge_is_read_with_our_key(
+    payment: dict[str, object], status: ChargeStatus
+) -> None:
+    route = respx.get(f"{PAYMENTS_URL}/2d0a1b").mock(
+        return_value=httpx.Response(200, json={"id": "2d0a1b", **payment})
+    )
+
+    assert await _provider().charge_status("2d0a1b") is status
+    assert route.calls[0].request.headers["Authorization"].startswith("Basic ")
+
+
+def test_the_key_lifetime_is_the_documented_one() -> None:
+    """24 часа — срок из документации ЮKassa («Формат взаимодействия»).
+
+    Повтор позже этого срока ЮKassa выполняет как новый запрос, поэтому от
+    этого числа считается, сколько можно повторять автосписание вслепую.
+    """
+    assert _provider().idempotence_window == timedelta(hours=24)
 
 
 @respx.mock

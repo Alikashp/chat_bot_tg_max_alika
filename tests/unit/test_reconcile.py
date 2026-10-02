@@ -16,7 +16,7 @@ from datetime import timedelta
 from app.adapters.storage.memory import InMemoryStorage
 from app.core import texts
 from app.core.limits import current_day
-from app.core.models import MessengerKind, TariffId, User
+from app.core.models import MessengerKind, Subscription, TariffId, User
 from app.core.reconcile import Reconciler
 from app.core.scenarios.deps import Deps
 from app.ports.payments import PaymentStatus
@@ -186,3 +186,38 @@ async def test_a_notice_failing_on_the_reread_is_finished_by_reconciliation(
     assert fresh.tariff_expires_at == clock() + timedelta(days=30)
     order = await storage.get_payment(order_id)
     assert order is not None and order.status == PaymentStatus.PAID.value
+
+
+async def test_a_renewal_order_is_announced_as_a_renewal(
+    deps: Deps,
+    user: User,
+    storage: InMemoryStorage,
+    messenger: FakeMessenger,
+    clock: FrozenClock,
+) -> None:
+    """Списание за период, доведённое сверкой, — это продление, а не покупка.
+
+    Человек ничего не покупал: экран «Оплата прошла» его бы только запутал.
+    """
+    cards = FakeCards(recurring=True)
+    recurring = replace(deps, cards=cards)
+    order_id = await _order(storage, user)
+    await storage.save_subscription(
+        Subscription(
+            user_id=user.id,
+            tariff=TariffId.PRO,
+            method="card",
+            status="active",
+            amount=599,
+            currency="RUB",
+            next_charge_at=clock.now,
+            created_at=clock.now,
+            payment_method_id="card-1",
+        )
+    )
+    assert await storage.hold_charge_order(user.id, order_id)
+    clock.advance(minutes=11)
+
+    await _reconciler({MessengerKind.TELEGRAM: recurring}).run()
+
+    assert "Продлили тариф" in messenger.last_text.text

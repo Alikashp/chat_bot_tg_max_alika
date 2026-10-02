@@ -621,6 +621,7 @@ class PostgresStorage:
         status: str,
         failed_since: datetime | None,
         amount: int | None = None,
+        same_charge: bool = False,
     ) -> bool:
         """Точечное обновление, которое не трогает отменённую подписку.
 
@@ -635,6 +636,9 @@ class PostgresStorage:
         }
         if amount is not None:
             values["amount"] = amount
+        if same_charge:
+            values["reminded_for"] = next_charge_at
+            values["price_checked_for"] = next_charge_at
         query = (
             update(subscriptions)
             .where(
@@ -646,6 +650,36 @@ class PostgresStorage:
         )
         async with self._session() as session, session.begin():
             return (await session.execute(query)).one_or_none() is not None
+
+    async def hold_charge_order(self, user_id: UserId, order_id: str) -> bool:
+        """Занимает период заказом — только если он свободен.
+
+        Условие внутри UPDATE по той же причине, что и у остальных методов
+        подписки: проверка перед записью пропустила бы второй заказ.
+        """
+        query = (
+            update(subscriptions)
+            .where(
+                subscriptions.c.user_id == user_id,
+                subscriptions.c.status != SubscriptionStatus.CANCELLED.value,
+                subscriptions.c.charge_order_id.is_(None),
+            )
+            .values(charge_order_id=order_id)
+            .returning(subscriptions.c.user_id)
+        )
+        async with self._session() as session, session.begin():
+            return (await session.execute(query)).one_or_none() is not None
+
+    async def release_charge_order(self, user_id: UserId, order_id: str) -> None:
+        async with self._session() as session, session.begin():
+            await session.execute(
+                update(subscriptions)
+                .where(
+                    subscriptions.c.user_id == user_id,
+                    subscriptions.c.charge_order_id == order_id,
+                )
+                .values(charge_order_id=None)
+            )
 
     async def cancel_subscription(self, user_id: UserId, at: datetime) -> bool:
         query = (
@@ -844,6 +878,7 @@ def _to_subscription(row: Any) -> Subscription:
         price_checked_for=row.price_checked_for,
         failed_since=row.failed_since,
         cancelled_at=row.cancelled_at,
+        charge_order_id=row.charge_order_id,
     )
 
 
@@ -918,6 +953,7 @@ def _upsert_subscription(subscription: Subscription) -> Any:
         "price_checked_for": subscription.price_checked_for,
         "failed_since": subscription.failed_since,
         "cancelled_at": subscription.cancelled_at,
+        "charge_order_id": subscription.charge_order_id,
     }
     updates = {key: value for key, value in values.items() if key != "user_id"}
     return (

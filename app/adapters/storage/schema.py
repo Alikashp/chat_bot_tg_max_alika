@@ -158,6 +158,8 @@ subscriptions = Table(
     Column("price_checked_for", DateTime(timezone=True), nullable=True),
     Column("failed_since", DateTime(timezone=True), nullable=True),
     Column("cancelled_at", DateTime(timezone=True), nullable=True),
+    # Заказ списания с неизвестным исходом: один период — один заказ.
+    Column("charge_order_id", String(36), nullable=True),
     CheckConstraint("amount > 0", name="ck_subscriptions_amount"),
 )
 

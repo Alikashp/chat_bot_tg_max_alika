@@ -382,6 +382,7 @@ class InMemoryStorage:
         status: str,
         failed_since: datetime | None,
         amount: int | None = None,
+        same_charge: bool = False,
     ) -> bool:
         current = self._subscriptions.get(user_id)
         if current is None or current.status == SubscriptionStatus.CANCELLED.value:
@@ -392,8 +393,28 @@ class InMemoryStorage:
             status=status,
             failed_since=failed_since,
             amount=current.amount if amount is None else amount,
+            reminded_for=next_charge_at if same_charge else current.reminded_for,
+            price_checked_for=(
+                next_charge_at if same_charge else current.price_checked_for
+            ),
         )
         return True
+
+    async def hold_charge_order(self, user_id: UserId, order_id: str) -> bool:
+        current = self._subscriptions.get(user_id)
+        if (
+            current is None
+            or current.status == SubscriptionStatus.CANCELLED.value
+            or current.charge_order_id is not None
+        ):
+            return False
+        self._subscriptions[user_id] = replace(current, charge_order_id=order_id)
+        return True
+
+    async def release_charge_order(self, user_id: UserId, order_id: str) -> None:
+        current = self._subscriptions.get(user_id)
+        if current is not None and current.charge_order_id == order_id:
+            self._subscriptions[user_id] = replace(current, charge_order_id=None)
 
     async def cancel_subscription(self, user_id: UserId, at: datetime) -> bool:
         current = self._subscriptions.get(user_id)

@@ -25,11 +25,17 @@ from datetime import datetime, timedelta
 
 from app.core import texts
 from app.core.limits import current_day
-from app.core.models import Subscription, User
+from app.core.models import Payment, Subscription, User
 from app.core.scenarios import keyboards, payments
 from app.core.scenarios.deps import Deps, Session, session_for
 from app.core.tariffs import RUB, tariff_of
-from app.ports.payments import PaymentMethod, SubscriptionStatus
+from app.ports.payments import (
+    CardPayments,
+    ChargeStatus,
+    PaymentMethod,
+    PaymentStatus,
+    SubscriptionStatus,
+)
 
 
 async def show(deps: Deps, session: Session) -> None:
@@ -230,11 +236,9 @@ async def charge(deps: Deps, subscription: Subscription) -> None:
         await _await_stars(deps, subscription, user)
         return
 
-    if (
-        deps.cards is None
-        or not deps.cards.recurring
-        or (subscription.payment_method_id is None)
-    ):
+    cards = deps.cards
+    method_id = subscription.payment_method_id
+    if cards is None or not cards.recurring or method_id is None:
         # Списывать нечем: провайдер выключен или не умеет повторных
         # списаний. Тянуть подписку, по которой не будет денег, нельзя —
         # она обещает человеку тариф, которого он не получит.
@@ -242,6 +246,15 @@ async def charge(deps: Deps, subscription: Subscription) -> None:
             "subscription_cannot_charge", user_id=int(subscription.user_id)
         )
         await _end(deps, subscription, user)
+        return
+
+    if subscription.charge_order_id is not None:
+        # Списание за этот период уже начато, и чем оно кончилось, неизвестно.
+        # О нём человека уже предупредили — переносить и напоминать заново
+        # незачем; надо узнать исход.
+        await _settle(
+            deps, cards, subscription, user, subscription.charge_order_id, method_id
+        )
         return
 
     if subscription.reminded_for != subscription.next_charge_at:
@@ -281,44 +294,163 @@ async def charge(deps: Deps, subscription: Subscription) -> None:
         currency=subscription.currency,
         docs_version=deps.settings.docs_version,
     )
+    # Период занимается заказом до первого обращения к провайдеру: после него
+    # исход может оказаться неизвестным, и повторять придётся ровно этот
+    # заказ. Упади мы между созданием заказа и этой отметкой — заказ
+    # останется брошенным, но к провайдеру с ним никто не ходил, и денег по
+    # нему не было.
+    if not await deps.storage.hold_charge_order(subscription.user_id, order.id):
+        deps.logger.warning("subscription_charge_order_busy", user_id=int(user.id))
+        return
+    await _attempt(deps, cards, subscription, user, order, method_id)
+
+
+# --- Один период — один заказ (П7) ---------------------------------------
+#
+# Пока исход списания неизвестен — провайдер не ответил, ответ потерялся,
+# процесс перезапустился, платёж ещё в обработке, — новый заказ не заводится.
+# Новый заказ означал бы новый ключ идемпотентности, а провайдер, которому
+# первый запрос дошёл, честно списал бы второй раз. Повтор идёт с тем же
+# заказом, пока провайдер помнит ключ; новый заказ — только после явного
+# отказа банка.
+
+#: Запас до конца окна идемпотентности. Запрос, отправленный за минуту до
+#: истечения ключа, может дойти до провайдера уже после — и стать новым
+#: платежом.
+_KEY_MARGIN = timedelta(hours=1)
+
+
+async def _settle(
+    deps: Deps,
+    cards: CardPayments,
+    subscription: Subscription,
+    user: User,
+    order_id: str,
+    method_id: str,
+) -> None:
+    """Доводит заказ периода, исход которого остался неизвестным."""
+    order = await deps.storage.get_payment(order_id)
+    if order is None or order.status != PaymentStatus.PENDING.value:
+        # Заказ уже закрыт — выдача освобождает период сама, так что сюда
+        # попадает только опоздавшая отметка. Держать её дальше значило бы
+        # больше никогда не списать.
+        deps.logger.warning("subscription_charge_order_stale", user_id=int(user.id))
+        await deps.storage.release_charge_order(subscription.user_id, order_id)
+        return
+
+    if order.external_id is not None:
+        # Платёж у провайдера уже есть. Его не создают заново, а спрашивают,
+        # чем он кончился.
+        try:
+            status = await cards.charge_status(order.external_id)
+        except Exception as error:
+            deps.logger.warning(
+                "subscription_charge_error",
+                user_id=int(user.id),
+                error=repr(error),
+            )
+            await _retry_same(deps, subscription)
+            return
+        await _resolve(deps, subscription, user, order, status)
+        return
+
+    if deps.now() >= order.created_at + cards.idempotence_window - _KEY_MARGIN:
+        # Провайдер так и не ответил, а ключ он вот-вот забудет. Повтор с
+        # забытым ключом — это новый платёж, новый заказ — тоже. Денег больше
+        # не трогаем: продление прекращаем, а заказ оставляем открытым — если
+        # первое списание всё-таки прошло, его закроет уведомление ЮKassa.
+        deps.logger.error(
+            "subscription_charge_unresolved",
+            user_id=int(user.id),
+            payment_id=order.id,
+        )
+        await _end(deps, subscription, user)
+        return
+
+    await _attempt(deps, cards, subscription, user, order, method_id)
+
+
+async def _attempt(
+    deps: Deps,
+    cards: CardPayments,
+    subscription: Subscription,
+    user: User,
+    order: Payment,
+    method_id: str,
+) -> None:
+    """Просит провайдера списать по заказу периода.
+
+    Всё, что уходит провайдеру, берётся из заказа, а не из подписки: повтор
+    с тем же ключом, но другой суммой ЮKassa отвергнет — и исход снова
+    останется неизвестным.
+    """
     try:
-        external_id = await deps.cards.charge_saved(
+        result = await cards.charge_saved(
             order_id=order.id,
-            amount_rub=subscription.amount,
+            amount_rub=order.amount,
             description=texts.invoice(
-                subscription.tariff, days=deps.settings.subscription_days
+                order.tariff, days=deps.settings.subscription_days
             )[0],
-            payment_method_id=subscription.payment_method_id,
+            payment_method_id=method_id,
             receipt=payments.receipt_for_order(
                 deps,
                 email=user.email,
-                tariff_id=subscription.tariff,
-                amount_rub=subscription.amount,
+                tariff_id=order.tariff,
+                amount_rub=order.amount,
             ),
         )
     except Exception as error:
-        # Провайдер не ответил. Это не отказ банка: денег никто не списывал,
-        # и считать попытку неудачной нельзя — иначе сбой сети у нас стоил бы
-        # человеку подписки. Пробуем в следующий раз.
+        # Провайдер не ответил. Это не отказ банка: неизвестно, списали ли
+        # деньги, и считать попытку неудачной нельзя — иначе сбой сети у нас
+        # стоил бы человеку подписки. Повторяем тот же заказ, и скоро.
         deps.logger.warning(
             "subscription_charge_error",
             user_id=int(subscription.user_id),
             error=repr(error),
         )
-        await deps.storage.advance_subscription(
-            subscription.user_id,
-            next_charge_at=_retry_at(deps),
-            status=subscription.status,
-            failed_since=subscription.failed_since,
-        )
+        await _retry_same(deps, subscription)
         return
 
-    if external_id is None:
+    if result.external_id is not None and not await deps.storage.attach_external_id(
+        order.id, result.external_id
+    ):
+        # Платёж провайдера уже привязан к другому заказу. Ключом служит наш
+        # заказ, так что такого быть не должно; выдавать по нему период
+        # нельзя, а разбираться — руками.
+        deps.logger.error("subscription_charge_foreign_payment", user_id=int(user.id))
+        return
+    await _resolve(deps, subscription, user, order, result.status)
+
+
+async def _resolve(
+    deps: Deps,
+    subscription: Subscription,
+    user: User,
+    order: Payment,
+    status: ChargeStatus,
+) -> None:
+    """Исход известен — или ещё нет."""
+    if status is ChargeStatus.CHARGED:
+        await _charged(deps, order.id, user)
+    elif status is ChargeStatus.PENDING:
+        await _retry_same(deps, subscription)
+    else:
+        # Явный отказ — единственный исход, после которого следующая попытка
+        # вправе завести новый заказ.
+        await deps.storage.release_charge_order(subscription.user_id, order.id)
         await _charge_failed(deps, subscription, user)
-        return
 
-    await deps.storage.attach_external_id(order.id, external_id)
-    await _charged(deps, order.id, user)
+
+async def _retry_same(deps: Deps, subscription: Subscription) -> None:
+    """Переспросить то же списание скоро — пока провайдер помнит ключ."""
+    await deps.storage.advance_subscription(
+        subscription.user_id,
+        next_charge_at=deps.now()
+        + timedelta(minutes=deps.settings.charge_unknown_retry_minutes),
+        status=subscription.status,
+        failed_since=subscription.failed_since,
+        same_charge=True,
+    )
 
 
 # --- Вспомогательное -----------------------------------------------------

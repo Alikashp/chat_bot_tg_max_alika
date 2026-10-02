@@ -794,26 +794,43 @@ def profile(
     images_left: int,
     documents_left: int,
     friends: int,
+    presentations_left: int | None = None,
     user_number: int | None = None,
 ) -> Screen:
     """Реальные числа и два выхода.
+
+    ``presentations_left`` — None, когда раздела презентаций нет (нет ключа
+    API): тогда и в профиле о них ни слова.
 
     ``user_number`` — номер для поддержки. Появляется не везде: в Telegram
     человека видно по @username, а в MAX username есть не у всех, и без
     номера опознать написавшего нечем.
     """
+    left = [
+        f"{_button_name(MENU_IMAGES)}: {images_left}",
+        f"{_button_name(MENU_DOCUMENTS)}: {documents_left}",
+    ]
+    if presentations_left is not None:
+        left.append(f"{_button_name(MENU_PRESENTATIONS)}: {presentations_left}")
     lines = [
         f"Твой тариф: {TARIFF_TITLES[tariff_id]}",
         f"Сообщений сегодня: {messages_used} из {messages_limit}",
-        # Одной строкой, а не двумя: экран и так на пределе в пять строк
-        # (§2.9), а номер для поддержки добавляет шестую. Точка посередине
-        # читается лучше запятой — это два отдельных счёта, а не перечень.
-        f"Картинок: {images_left} · Разборов: {documents_left}",
+        # Остатки — одной строкой: экран ограничен пятью (§2.9), а номер для
+        # поддержки в MAX берёт пятую. Подписи — названия кнопок меню без
+        # значка: человек ищет в профиле то же слово, что нажимал. Раньше
+        # здесь стояли «разборы» — внутреннее имя раздела документов, и
+        # заказчик его не узнал.
+        " · ".join(left),
         f"Друзей позвал: {friends}",
     ]
     if user_number is not None:
         lines.append(f"Твой номер: {user_number}")
     return Screen(text="\n".join(lines), buttons=(MENU_TARIFFS, BUTTON_MY_LINK))
+
+
+def _button_name(menu_label: str) -> str:
+    """Название кнопки меню без ведущего значка: «🎨 Картинки» → «Картинки»."""
+    return menu_label.split(" ", 1)[1]
 
 
 # --- Рефералка (§2.7) ----------------------------------------------------
@@ -1448,6 +1465,7 @@ def _all_screens() -> tuple[Screen, ...]:
             messages_limit=20,
             images_left=2,
             documents_left=2,
+            presentations_left=1,
             friends=3,
             user_number=1234,
         ),

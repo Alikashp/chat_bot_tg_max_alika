@@ -943,3 +943,17 @@ async def test_inventing_with_nothing_left_shows_the_paywall(
     await handle(enabled, incoming(action=Action.PRESENTATION_SUGGEST))
 
     assert messenger.last_text.text == texts.paywall_presentations(1).text
+
+
+# --- Профиль (Д5) --------------------------------------------------------
+
+
+async def test_the_profile_shows_presentations_left(
+    enabled: Deps, owner: User, messenger: FakeMessenger
+) -> None:
+    """Профиль показывает остаток презентаций — подписью кнопки меню."""
+    await handle(enabled, incoming(action=Action.MENU_PROFILE))
+
+    assert "Презентации: 1" in messenger.last_text.text
+    assert "разбор" not in messenger.last_text.text.lower()
+    assert len(messenger.last_text.text.splitlines()) <= 5

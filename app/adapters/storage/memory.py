@@ -33,7 +33,7 @@ from app.core.models import (
     User,
     UserId,
 )
-from app.ports.payments import PaymentStatus, SubscriptionStatus
+from app.ports.payments import PaymentMethod, PaymentStatus, SubscriptionStatus
 from app.ports.storage import GrantOutcome
 
 
@@ -324,6 +324,19 @@ class InMemoryStorage:
         if subscription is not None:
             self._subscriptions[subscription.user_id] = subscription
         return GrantOutcome.GRANTED
+
+    async def payments_to_reconcile(
+        self, *, created_before: datetime, created_after: datetime, limit: int
+    ) -> list[Payment]:
+        due = [
+            payment
+            for payment in self._payments.values()
+            if payment.status == PaymentStatus.PENDING.value
+            and payment.external_id is not None
+            and payment.method == PaymentMethod.CARD.value
+            and created_after <= payment.created_at <= created_before
+        ]
+        return sorted(due, key=lambda payment: payment.created_at)[:limit]
 
     async def mark_paid(self, payment_id: str) -> bool:
         payment = self._payments.get(payment_id)

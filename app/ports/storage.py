@@ -322,6 +322,18 @@ class Storage(Protocol):
         """
         ...
 
+    async def payments_to_reconcile(
+        self, *, created_before: datetime, created_after: datetime, limit: int
+    ) -> list[Payment]:
+        """Заказы картой, которые ждут подтверждения дольше обычного (П5).
+
+        Только pending, только с платежом у провайдера (``external_id``) и
+        только заказанные между ``created_after`` и ``created_before``:
+        свежие ещё дождутся уведомления, совсем старые давно протухли у
+        провайдера. Старшие — первыми.
+        """
+        ...
+
     async def mark_paid(self, payment_id: str) -> bool:
         """Атомарно переводит заказ в «оплачен».
 

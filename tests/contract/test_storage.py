@@ -1343,3 +1343,44 @@ async def test_a_stale_view_of_the_tariff_grants_nothing(storage: Storage) -> No
     assert pending is not None and pending.status == PaymentStatus.PENDING.value
     fresh = await storage.get_user_by_id(user.id)
     assert fresh is not None and fresh.tariff is TariffId.FREE
+
+
+# --- Сверка зависших заказов (фаза 11, П5) -------------------------------
+
+
+async def test_reconciliation_picks_pending_card_orders_of_the_right_age(
+    storage: Storage,
+) -> None:
+    """Только pending, только с платежом у провайдера, только картой и в окне."""
+    user = await _make_user(storage, "rec-1")
+    due = await _payment(storage, user)
+    assert await storage.attach_external_id(due.id, "ext-due")
+    no_external = await _payment(storage, user)
+    paid = await _payment(storage, user)
+    assert await storage.attach_external_id(paid.id, "ext-paid")
+    assert await storage.mark_paid(paid.id)
+    stars = await storage.create_payment(
+        user_id=user.id,
+        tariff=TariffId.PRO,
+        method="stars",
+        amount=524,
+        currency="XTR",
+        docs_version="2026-08-31",
+    )
+    assert await storage.attach_external_id(stars.id, "charge-stars")
+
+    now = datetime.now(UTC)
+    found = await storage.payments_to_reconcile(
+        created_before=now + timedelta(minutes=1),
+        created_after=now - timedelta(days=3),
+        limit=10,
+    )
+    too_old = await storage.payments_to_reconcile(
+        created_before=now - timedelta(days=4),
+        created_after=now - timedelta(days=5),
+        limit=10,
+    )
+
+    assert [order.id for order in found] == [due.id]
+    assert no_external.id not in [order.id for order in found]
+    assert too_old == []

@@ -12,7 +12,7 @@ import contextlib
 import signal
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
@@ -52,6 +52,7 @@ from app.core.billing import Billing
 from app.core.channel import channel_username
 from app.core.models import MessengerKind
 from app.core.receipts import FiscalSettings
+from app.core.reconcile import Reconciler
 from app.core.referral import MAX_HOST, TELEGRAM_HOST
 from app.core.scenarios import keyboards as core_keyboards
 from app.core.scenarios import payments
@@ -131,6 +132,8 @@ class Wiring:
     settlement: Settlement | None
     #: Обход подписок: напоминания и списания по расписанию.
     billing: Billing
+    #: Сверка зависших заказов картой: доводит то, что не довело уведомление.
+    reconciler: Reconciler
 
 
 def _payment_notice_key(notification: dict[str, Any]) -> str | None:
@@ -510,6 +513,11 @@ async def build_wiring(settings: Settings) -> Wiring:
             else None
         ),
         billing=Billing(by_messenger=by_messenger, batch=settings.billing_batch),
+        reconciler=Reconciler(
+            by_messenger=by_messenger,
+            after=timedelta(seconds=settings.reconcile_after_seconds),
+            window=timedelta(hours=settings.reconcile_window_hours),
+        ),
     )
 
 
@@ -885,10 +893,18 @@ async def run() -> None:
         wiring.billing.run,
         interval_seconds=settings.billing_interval_seconds,
     )
+    # Сверка зависших заказов (П5): своё расписание, чаще обхода подписок —
+    # человек ждёт оплаченный тариф минуты, а не часы.
+    reconcile = Periodic(
+        "reconcile",
+        wiring.reconciler.run,
+        interval_seconds=settings.reconcile_interval_seconds,
+    )
 
     for each in queues:
         each.start()
     billing.start()
+    reconcile.start()
     runner = web.AppRunner(app, access_log=None)
     await runner.setup()
     site = web.TCPSite(runner, host="0.0.0.0", port=settings.port)  # noqa: S104
@@ -932,6 +948,7 @@ async def run() -> None:
         # очередь. Текущий проход при этом дорабатывает — прерывать его между
         # списанием и выдачей тарифа нельзя.
         await billing.stop()
+        await reconcile.stop()
         await site.stop()
         abandoned = 0
         for each in queues:

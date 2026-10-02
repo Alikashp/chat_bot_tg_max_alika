@@ -48,7 +48,7 @@ from app.core.models import (
     User,
     UserId,
 )
-from app.ports.payments import PaymentStatus, SubscriptionStatus
+from app.ports.payments import PaymentMethod, PaymentStatus, SubscriptionStatus
 from app.ports.storage import GrantOutcome
 
 
@@ -527,6 +527,25 @@ class PostgresStorage:
         except _RollbackError as rollback:
             return rollback.outcome
         return GrantOutcome.GRANTED
+
+    async def payments_to_reconcile(
+        self, *, created_before: datetime, created_after: datetime, limit: int
+    ) -> list[Payment]:
+        query = (
+            select(payments)
+            .where(
+                payments.c.status == PaymentStatus.PENDING.value,
+                payments.c.external_id.is_not(None),
+                payments.c.method == PaymentMethod.CARD.value,
+                payments.c.created_at >= created_after,
+                payments.c.created_at <= created_before,
+            )
+            .order_by(payments.c.created_at)
+            .limit(limit)
+        )
+        async with self._session() as session:
+            rows = (await session.execute(query)).all()
+        return [_to_payment(row) for row in rows]
 
     async def mark_paid(self, payment_id: str) -> bool:
         """Переход в «оплачен» ровно один раз.

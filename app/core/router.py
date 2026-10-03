@@ -20,6 +20,7 @@ from app.core.actions import (
     TRIAL_TARGET,
     Action,
     parse_buy_action,
+    parse_deck_action,
     parse_document_action,
     parse_email_action,
     parse_method_action,
@@ -198,6 +199,11 @@ async def _route_action(deps: Deps, session: Session, action: str) -> None:
     document_action_id = parse_document_action(action)
     if document_action_id is not None:
         await _pick_document_action(deps, session, document_action_id)
+        return
+
+    deck = parse_deck_action(action)
+    if deck is not None:
+        await presentations.act(deps, session, deck)
         return
 
     theme_id = parse_theme_action(action)
@@ -406,6 +412,17 @@ async def _handle_document(
     deps: Deps, session: Session, document_ref: str, filename: str
 ) -> None:
     """Пришёл файл."""
+    if pending.is_awaiting_presentation_topic(
+        session.user.pending
+    ) or pending.parse_await_deck_file(session.user.pending):
+        # Файл вместо темы презентации или как её материал (В3). Скачивание
+        # — долгая работа, под тем же ключом, что и разбор файлов.
+        async def take_material(d: Deps, s: Session) -> None:
+            await presentations.receive_file(d, s, document_ref, filename)
+
+        await _guarded(deps, session, _image_key(session), take_material)
+        return
+
     action_id = pending.parse_await_document(session.user.pending)
     action = document_registry.action_of(action_id) if action_id else None
     if action is None:
@@ -534,14 +551,11 @@ async def _handle_text(deps: Deps, session: Session, text: str) -> None:
             await _say(deps, session, action.invitation)
             return
 
-    if (
-        pending.is_awaiting_presentation_topic(session.user.pending)
-        or pending.parse_await_presentation_theme(session.user.pending)
-        or pending.parse_await_presentation_source(session.user.pending)
-    ):
-        # Тема презентации — и тогда, когда ждём оформление: написанное
-        # вместо нажатия на оформление значит «хочу другую тему», а не
-        # вопрос в чат.
+    if pending.is_awaiting_presentation_topic(
+        session.user.pending
+    ) or pending.parse_await_deck_topic(session.user.pending):
+        # Тема презентации: новая колода или новая тема для экрана
+        # параметров. Написанное здесь — не вопрос в чат.
         await presentations.receive_topic(deps, session, text)
         return
 

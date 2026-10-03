@@ -15,12 +15,16 @@ import hashlib
 from app.core import texts
 from app.core.actions import (
     Action,
+    DeckField,
     buy_action,
+    deck_back_action,
+    deck_go_action,
+    deck_pick_action,
+    deck_set_action,
     document_action,
     presentation_from_action,
     preset_action,
     report_from_action,
-    theme_action,
 )
 from app.core.models import Button, Keyboard
 from app.core.tariffs import PAID_TARIFFS
@@ -347,26 +351,21 @@ def documents_menu(actions: tuple[tuple[str, str], ...]) -> Keyboard:
     )
 
 
-def document_result(
-    actions: tuple[tuple[str, str], ...], presentation_token: str | None = None
-) -> Keyboard:
-    """Кнопки под готовыми файлами — те же действия.
-
-    Отдельной кнопки «ещё раз» здесь нет намеренно: файл уже обработан, и
-    повторять ровно то же незачем, а вот сделать по нему же конспект после
-    доклада — обычное желание. Для этого нужно то же меню.
+def document_result(presentation_token: str | None = None) -> Keyboard:
+    """Под итогом доклада: презентация по нему и «В меню» (сессия 7, В1).
 
     ``presentation_token`` — жетон доклада для «Сделать презентацию по
-    докладу». Есть только при включённых презентациях.
+    докладу». Есть только при включённых презентациях; без него остаётся
+    одно «В меню».
     """
-    menu = documents_menu(actions)
+    menu = (Button(text=texts.BUTTON_SHOW_MENU, action=Action.MENU_SHOW),)
     if presentation_token is None:
-        return menu
+        return Keyboard(rows=(menu,))
     link = Button(
         text=texts.BUTTON_PRESENTATION_FROM_REPORT,
         action=presentation_from_action(presentation_token),
     )
-    return Keyboard(rows=(*menu.rows, (link,)))
+    return Keyboard(rows=((link,), menu))
 
 
 def menu_labels(*, presentations: bool = False) -> tuple[str, ...]:
@@ -394,17 +393,78 @@ def presentation_cancel() -> Keyboard:
     return Keyboard.row(Button(text=texts.BUTTON_CANCEL, action=Action.MENU_SHOW))
 
 
-def presentation_themes(themes: tuple[tuple[str, str], ...]) -> Keyboard:
-    """Оформления из API, каждое своей строкой, и «Отмена» под ними.
+def deck_screen(token: str) -> Keyboard:
+    """Под экраном параметров: собрать — первой, ниже — что можно поменять."""
 
-    Пары «подпись, идентификатор». Своей строкой — потому что названия
-    приходят от провайдера и их длину задаём не мы.
+    def pick(label: str, field: DeckField) -> Button:
+        return Button(text=label, action=deck_pick_action(token, field))
+
+    return Keyboard(
+        rows=(
+            (Button(text=texts.BUTTON_DECK_BUILD, action=deck_go_action(token)),),
+            (
+                pick(texts.BUTTON_DECK_TOPIC, DeckField.TOPIC),
+                pick(texts.BUTTON_DECK_MATERIAL, DeckField.MATERIAL),
+            ),
+            (
+                pick(texts.BUTTON_DECK_LANGUAGE, DeckField.LANGUAGE),
+                pick(texts.BUTTON_DECK_SLIDES, DeckField.SLIDES),
+            ),
+            (
+                pick(texts.BUTTON_DECK_AUDIENCE, DeckField.AUDIENCE),
+                pick(texts.BUTTON_DECK_DESIGN, DeckField.DESIGN),
+            ),
+            (Button(text=texts.BUTTON_CANCEL, action=Action.MENU_SHOW),),
+        )
+    )
+
+
+def deck_options(
+    token: str,
+    field: DeckField,
+    options: tuple[tuple[str, str], ...],
+    *,
+    current: str,
+    per_row: int,
+) -> Keyboard:
+    """Варианты одного параметра — пары «подпись, значение» — и «Назад».
+
+    Текущее значение отмечено: человек видит, что выбрано сейчас.
     """
-    rows = [
-        (Button(text=name, action=theme_action(theme_id)),) for name, theme_id in themes
+    buttons = [
+        Button(
+            text=f"{texts.CURRENT_MARK}{label}" if value == current else label,
+            action=deck_set_action(token, field, value),
+        )
+        for label, value in options
     ]
-    rows.append((Button(text=texts.BUTTON_CANCEL, action=Action.MENU_SHOW),))
+    rows = [
+        tuple(buttons[start : start + per_row])
+        for start in range(0, len(buttons), per_row)
+    ]
+    rows.append((Button(text=texts.BUTTON_BACK, action=deck_back_action(token)),))
     return Keyboard(rows=tuple(rows))
+
+
+#: Значение «материала нет» в кнопке «Без материала».
+NO_MATERIAL = "none"
+
+
+def deck_material(token: str, *, has_material: bool) -> Keyboard:
+    """Под просьбой прислать файл: убрать материал, если он есть, и «Назад»."""
+    back = (Button(text=texts.BUTTON_BACK, action=deck_back_action(token)),)
+    if not has_material:
+        return Keyboard(rows=(back,))
+    clear = Button(
+        text=texts.BUTTON_DECK_NO_MATERIAL,
+        action=deck_set_action(token, DeckField.MATERIAL, NO_MATERIAL),
+    )
+    return Keyboard(rows=((clear,), back))
+
+
+def deck_back(token: str) -> Keyboard:
+    """Одна «Назад» на экран — под вопросом о новой теме."""
+    return Keyboard.row(Button(text=texts.BUTTON_BACK, action=deck_back_action(token)))
 
 
 def presentation_result(report_token: str | None = None) -> Keyboard:

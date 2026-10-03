@@ -18,6 +18,61 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol
 
+from app.core.models import Document
+
+# --- Что принимает API (docs/API.md §3.1) ---------------------------------
+#
+# Значения — из документации провайдера, а не придуманы: неизвестное значение
+# он отвергает с 400. Оформления сюда не входят — их список отдаёт сам API
+# (GET /v1/themes), и он пополняется.
+
+#: Языки текста слайдов.
+LANGUAGES: tuple[str, ...] = ("ru", "en", "uz", "kk")
+DEFAULT_LANGUAGE = "ru"
+
+#: Для кого доклад: влияет на тон и подачу.
+AUDIENCES: tuple[str, ...] = (
+    "general",
+    "students",
+    "colleagues",
+    "management",
+    "clients",
+    "investors",
+)
+DEFAULT_AUDIENCE = "general"
+
+#: Слайдов всего, вместе с титульным и финальным.
+MIN_SLIDES = 4
+MAX_SLIDES = 20
+DEFAULT_SLIDES = 9
+
+#: Оформление по умолчанию у самого провайдера. Нет его в списке — первое.
+DEFAULT_THEME = "graphite_light"
+
+#: Тип презентации. Пока единственный: ``pitch_deck`` API отвергает.
+PRESENTATION_TYPE = "doklad"
+
+#: Файл-материал: расширения и предельный размер.
+MATERIAL_EXTENSIONS: tuple[str, ...] = (".pdf", ".docx", ".pptx", ".txt")
+MATERIAL_MAX_BYTES = 20 * 1024 * 1024
+
+
+@dataclass(frozen=True, slots=True)
+class DeckRequest:
+    """Всё, по чему собирается колода (docs/API.md §3.1).
+
+    ``material`` — текст (доклад, по которому собирать); ``file`` — файл,
+    присланный человеком. Вместе они не уходят: API принимает что-то одно.
+    """
+
+    topic: str
+    theme_id: str
+    language: str = DEFAULT_LANGUAGE
+    slides: int = DEFAULT_SLIDES
+    audience: str = DEFAULT_AUDIENCE
+    material: str = ""
+    file: Document | None = None
+
 
 @dataclass(frozen=True, slots=True)
 class PresentationTheme:
@@ -81,13 +136,10 @@ class Presentations(Protocol):
         """
         ...
 
-    async def build(
-        self, topic: str, *, theme_id: str, material: str = ""
-    ) -> BuiltPresentation:
+    async def build(self, request: DeckRequest) -> BuiltPresentation:
         """Собирает колоду и возвращает её файлы.
 
-        ``material`` — текст, по которому собирать (доклад для презентации
-        по нему). Пусто — колода по одной теме.
+        Без материала — колода по одной теме; с текстом или файлом — по нему.
 
         Возвращается только готовая колода с уже скачанными файлами: файлы у
         провайдера живут недолго, и держать ссылку на них вместо байтов

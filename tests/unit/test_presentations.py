@@ -15,7 +15,7 @@ import pytest
 
 from app.adapters.storage.memory import InMemoryStorage
 from app.core import pending, retry_context, texts
-from app.core.actions import Action, theme_action
+from app.core.actions import Action
 from app.core.generations import GenerationKind, GenerationStatus
 from app.core.models import Chat, IncomingMessage, MessengerKind, User
 from app.core.router import handle
@@ -73,8 +73,20 @@ async def left(storage: InMemoryStorage, user: User) -> int:
     return fresh.bonus_presentations
 
 
+def build_action(messenger: FakeMessenger) -> str:
+    """«Собрать презентацию» с последнего экрана параметров."""
+    for sent in reversed(messenger.texts):
+        if sent.keyboard is None:
+            continue
+        for row in sent.keyboard.rows:
+            for button in row:
+                if button.text == texts.BUTTON_DECK_BUILD and button.action:
+                    return button.action
+    raise AssertionError("экрана параметров не было")
+
+
 async def up_to_themes(deps: Deps) -> None:
-    """Кнопка меню и тема — до выбора оформления."""
+    """Кнопка меню и тема — до экрана параметров."""
     await handle(deps, incoming(action=Action.MENU_PRESENTATIONS))
     await handle(deps, incoming(text=TOPIC))
 
@@ -154,14 +166,14 @@ async def test_the_whole_path_from_button_to_files(
     assert messenger.last_text.text == texts.PRESENTATION_ASK
 
     await handle(enabled, incoming(text=TOPIC))
-    assert messenger.last_text.text == texts.PRESENTATION_PICK_THEME
-    # Оформления — те, что прислал провайдер, а не зашитые у нас.
-    assert labels_of(messenger)[:2] == ["Графит светлая", "Лазурь"]
+    # Экран параметров, а на нём — оформление провайдера по умолчанию.
+    assert messenger.last_text.text.startswith("📋 Проверь параметры")
+    assert "🎨 Дизайн: Графит светлая" in messenger.last_text.text
 
-    await handle(enabled, incoming(action=theme_action("azure_coral")))
+    await handle(enabled, incoming(action=build_action(messenger)))
 
     assert texts.PRESENTATION_WORKING in messenger.texts_said()
-    assert presentations.built == [(TOPIC, "azure_coral")]
+    assert presentations.built == [(TOPIC, "graphite_light")]
     assert [d.data for d in messenger.documents_sent] == [PDF_BYTES, PPTX_BYTES]
     assert [d.filename for d in messenger.documents_sent] == [
         f"{TOPIC}.pdf",
@@ -175,7 +187,7 @@ async def test_the_result_message_comes_after_the_files(
 ) -> None:
     """Д1: сначала оба файла, потом сообщение — дословно и с кнопками."""
     await up_to_themes(enabled)
-    await handle(enabled, incoming(action=theme_action("azure_coral")))
+    await handle(enabled, incoming(action=build_action(messenger)))
 
     assert messenger.timeline[-3:] == [
         ("document", f"{TOPIC}.pdf"),
@@ -201,7 +213,7 @@ async def test_one_more_starts_over(
     """«Ещё одну» начинает с темы, а не повторяет прошлую колоду."""
     await storage.add_bonus(owner.id, presentations=1)
     await up_to_themes(enabled)
-    await handle(enabled, incoming(action=theme_action("azure_coral")))
+    await handle(enabled, incoming(action=build_action(messenger)))
 
     await handle(enabled, incoming(action=Action.PRESENTATION_AGAIN))
 
@@ -261,7 +273,7 @@ async def test_a_failed_build_spends_nothing_and_offers_retry(
     presentations.errors = [error]
     await up_to_themes(enabled)
 
-    await handle(enabled, incoming(action=theme_action("azure_coral")))
+    await handle(enabled, incoming(action=build_action(messenger)))
 
     assert messenger.documents_sent == []
     assert messenger.text_edits[-1].text == texts.PRESENTATION_ERROR
@@ -281,11 +293,11 @@ async def test_retry_builds_the_same_topic_and_theme(
     """«Повторить» не заставляет писать тему заново."""
     presentations.errors = [PresentationError("INTERNAL")]
     await up_to_themes(enabled)
-    await handle(enabled, incoming(action=theme_action("azure_coral")))
+    await handle(enabled, incoming(action=build_action(messenger)))
 
     await handle(enabled, incoming(action=Action.PRESENTATION_RETRY))
 
-    assert presentations.built == [(TOPIC, "azure_coral")] * 2
+    assert presentations.built == [(TOPIC, "graphite_light")] * 2
     assert len(messenger.documents_sent) == 2
     assert await left(storage, owner) == 0
 
@@ -297,7 +309,7 @@ async def test_a_failed_delivery_spends_nothing(
     messenger.fail_send_document = RuntimeError("мессенджер не принял файл")
     await up_to_themes(enabled)
 
-    await handle(enabled, incoming(action=theme_action("azure_coral")))
+    await handle(enabled, incoming(action=build_action(messenger)))
 
     assert messenger.text_edits[-1].text == texts.PRESENTATION_ERROR
     assert last_edit_buttons(messenger) == [
@@ -317,7 +329,7 @@ async def test_a_missing_pdf_still_delivers_the_pptx(
     presentations.pdf = None
     await up_to_themes(enabled)
 
-    await handle(enabled, incoming(action=theme_action("azure_coral")))
+    await handle(enabled, incoming(action=build_action(messenger)))
 
     assert [d.data for d in messenger.documents_sent] == [PPTX_BYTES]
     assert messenger.timeline[-1] == ("text", texts.PRESENTATION_RESULT_PPTX_ONLY)
@@ -362,16 +374,17 @@ async def test_a_double_press_builds_one_deck(
     await storage.add_bonus(owner.id, presentations=1)
     await up_to_themes(enabled)
 
-    press = incoming(action=theme_action("azure_coral"))
+    press = incoming(action=build_action(messenger))
     await asyncio.gather(handle(enabled, press), handle(enabled, press))
 
-    assert presentations.built == [(TOPIC, "azure_coral")]
+    assert presentations.built == [(TOPIC, "graphite_light")]
     assert await left(storage, owner) == 1
     assert texts.PRESENTATION_IN_PROGRESS in messenger.texts_said()
 
 
 async def test_a_late_second_press_builds_nothing(
     enabled: Deps,
+    messenger: FakeMessenger,
     owner: User,
     storage: InMemoryStorage,
     presentations: FakePresentations,
@@ -379,12 +392,12 @@ async def test_a_late_second_press_builds_nothing(
     """Второе нажатие после готовой колоды не собирает её заново."""
     await storage.add_bonus(owner.id, presentations=1)
     await up_to_themes(enabled)
-    press = incoming(action=theme_action("azure_coral"))
+    press = incoming(action=build_action(messenger))
 
     await handle(enabled, press)
     await handle(enabled, press)
 
-    assert presentations.built == [(TOPIC, "azure_coral")]
+    assert presentations.built == [(TOPIC, "graphite_light")]
     assert await left(storage, owner) == 1
 
 
@@ -399,7 +412,7 @@ async def test_one_person_has_one_build_at_a_time(
     await storage.add_bonus(owner.id, presentations=5)
     presentations.errors = [PresentationError("INTERNAL")]
     await up_to_themes(enabled)
-    await handle(enabled, incoming(action=theme_action("azure_coral")))
+    await handle(enabled, incoming(action=build_action(messenger)))
 
     await asyncio.gather(
         handle(enabled, incoming(action=Action.PRESENTATION_RETRY)),
@@ -412,6 +425,7 @@ async def test_one_person_has_one_build_at_a_time(
 
 async def test_a_build_left_hanging_does_not_lock_forever(
     enabled: Deps,
+    messenger: FakeMessenger,
     owner: User,
     storage: InMemoryStorage,
     clock: FrozenClock,
@@ -424,9 +438,9 @@ async def test_a_build_left_hanging_does_not_lock_forever(
     await up_to_themes(enabled)
 
     clock.advance(minutes=11)
-    await handle(enabled, incoming(action=theme_action("azure_coral")))
+    await handle(enabled, incoming(action=build_action(messenger)))
 
-    assert presentations.built == [(TOPIC, "azure_coral")]
+    assert presentations.built == [(TOPIC, "graphite_light")]
 
 
 # --- К8: перегрузка ------------------------------------------------------
@@ -445,7 +459,7 @@ async def test_busy_says_so_and_spends_nothing(
     presentations.errors = [PresentationBusyError(reached_api=reached_api)]
     await up_to_themes(enabled)
 
-    await handle(enabled, incoming(action=theme_action("azure_coral")))
+    await handle(enabled, incoming(action=build_action(messenger)))
 
     assert messenger.text_edits[-1].text == texts.PRESENTATION_BUSY
     assert last_edit_buttons(messenger) == [
@@ -461,6 +475,7 @@ async def test_busy_says_so_and_spends_nothing(
 
 async def test_every_build_is_recorded_without_the_topic(
     enabled: Deps,
+    messenger: FakeMessenger,
     owner: User,
     storage: InMemoryStorage,
     logger: FakeLogger,
@@ -470,13 +485,13 @@ async def test_every_build_is_recorded_without_the_topic(
     await storage.add_bonus(owner.id, presentations=1)
     presentations.errors = [PresentationError("RENDER_FAILED")]
     await up_to_themes(enabled)
-    await handle(enabled, incoming(action=theme_action("azure_coral")))
+    await handle(enabled, incoming(action=build_action(messenger)))
     await handle(enabled, incoming(action=Action.PRESENTATION_RETRY))
 
     rows = [(g.kind, g.status, g.preset_id) for g in storage.generations]
     assert rows == [
-        (GenerationKind.PRESENTATION, GenerationStatus.FAILED, "azure_coral"),
-        (GenerationKind.PRESENTATION, GenerationStatus.SUCCESS, "azure_coral"),
+        (GenerationKind.PRESENTATION, GenerationStatus.FAILED, "graphite_light"),
+        (GenerationKind.PRESENTATION, GenerationStatus.SUCCESS, "graphite_light"),
     ]
     assert TOPIC not in repr(storage.generations)
     assert TOPIC not in repr(logger.events)
@@ -498,7 +513,8 @@ async def test_a_failed_theme_list_offers_retry(
     presentations.themes_error = None
     await handle(enabled, incoming(action=Action.PRESENTATION_RETRY))
 
-    assert messenger.last_text.text == texts.PRESENTATION_PICK_THEME
+    assert messenger.last_text.text.startswith("📋 Проверь параметры")
+    assert f"📝 Тема: {TOPIC}" in messenger.last_text.text
 
 
 # --- К6, К7: разовая выдача и награда за друга ---------------------------
@@ -571,7 +587,9 @@ def result_buttons(messenger: FakeMessenger) -> list[tuple[str, str | None]]:
 async def deck_ready(enabled: Deps) -> None:
     """Готовая презентация по TOPIC: итог с кнопками — последнее сообщение."""
     await up_to_themes(enabled)
-    await handle(enabled, incoming(action=theme_action("azure_coral")))
+    messenger = enabled.messenger
+    assert isinstance(messenger, FakeMessenger)
+    await handle(enabled, incoming(action=build_action(messenger)))
 
 
 def report_button(messenger: FakeMessenger) -> str:
@@ -735,12 +753,12 @@ async def test_every_report_offers_a_presentation_when_they_are_on(
 
     await report_ready(enabled, storage, user)
     labels = [text for text, _ in edit_buttons(messenger)]
-    assert labels[-1] == texts.BUTTON_PRESENTATION_FROM_REPORT
+    assert labels[0] == texts.BUTTON_PRESENTATION_FROM_REPORT
 
 
 def edit_buttons(messenger: FakeMessenger) -> list[tuple[str, str | None]]:
-    """Кнопки под последним правленым сообщением — под готовым докладом."""
-    keyboard = messenger.text_edits[-1].keyboard
+    """Кнопки под итогом доклада — последним сообщением после файлов."""
+    keyboard = messenger.last_text.keyboard
     assert keyboard is not None
     return [(b.text, b.action) for row in keyboard.rows for b in row]
 
@@ -767,11 +785,11 @@ async def test_a_presentation_from_the_report(
     button = presentation_action(messenger)
 
     await handle(enabled, incoming(action=button))
-    assert messenger.last_text.text == texts.PRESENTATION_PICK_THEME
+    assert "📎 Материал: доклад — соберём по нему" in messenger.last_text.text
 
-    await handle(enabled, incoming(action=theme_action("azure_coral")))
+    await handle(enabled, incoming(action=build_action(messenger)))
 
-    assert presentations.built == [("Фотосинтез у растений", "azure_coral")]
+    assert presentations.built == [("Фотосинтез у растений", "graphite_light")]
     assert presentations.materials == [REPORT]
     assert await left(storage, owner) == 0
     assert messenger.timeline[-1] == ("text", texts.PRESENTATION_RESULT)
@@ -790,7 +808,7 @@ async def test_the_report_text_never_reaches_the_database(
     await report_ready(enabled, storage, owner)
     await handle(enabled, incoming(action=presentation_action(messenger)))
     presentations.errors = [PresentationError("INTERNAL")]
-    await handle(enabled, incoming(action=theme_action("azure_coral")))
+    await handle(enabled, incoming(action=build_action(messenger)))
 
     fresh = await storage.get_user_by_id(owner.id)
     assert fresh is not None
@@ -816,7 +834,7 @@ async def test_a_failed_presentation_from_the_report_can_be_retried(
     await report_ready(enabled, storage, owner)
     await handle(enabled, incoming(action=presentation_action(messenger)))
     presentations.errors = [PresentationError("INTERNAL")]
-    await handle(enabled, incoming(action=theme_action("azure_coral")))
+    await handle(enabled, incoming(action=build_action(messenger)))
     assert await left(storage, owner) == 1
 
     await handle(enabled, incoming(action=Action.PRESENTATION_RETRY))
@@ -876,7 +894,7 @@ async def test_a_second_press_makes_no_second_deck_from_the_report(
     await storage.add_bonus(owner.id, presentations=1)
     await report_ready(enabled, storage, owner)
     await handle(enabled, incoming(action=presentation_action(messenger)))
-    press = incoming(action=theme_action("azure_coral"))
+    press = incoming(action=build_action(messenger))
 
     await asyncio.gather(handle(enabled, press), handle(enabled, press))
     await handle(enabled, press)
@@ -912,8 +930,8 @@ async def test_an_invented_topic_comes_from_the_list_without_any_provider(
 ) -> None:
     """Д4: тема — из config/, ни к ИИ, ни к картинкам, ни к сборке не ходим.
 
-    Человек видит тему и сразу выбирает оформление; список оформлений — тот
-    же шаг, что и после темы, написанной руками.
+    Человек видит тему на экране параметров — том же, что и после темы,
+    написанной руками.
     """
     await handle(enabled, incoming(action=Action.MENU_PRESENTATIONS))
     await handle(enabled, incoming(action=Action.PRESENTATION_SUGGEST))
@@ -923,13 +941,10 @@ async def test_an_invented_topic_comes_from_the_list_without_any_provider(
     assert presentations.built == []
     shown = messenger.last_text.text
     topic = next(t for t in SUGGESTED_TOPICS if t in shown)
-    assert (
-        shown == texts.presentation_suggested(topic, ("Графит светлая", "Лазурь")).text
-    )
-    assert labels_of(messenger)[:2] == ["Графит светлая", "Лазурь"]
+    assert f"📝 Тема: {topic}" in shown.split("\n")
 
-    await handle(enabled, incoming(action=theme_action("azure_coral")))
-    assert presentations.built == [(topic, "azure_coral")]
+    await handle(enabled, incoming(action=build_action(messenger)))
+    assert presentations.built == [(topic, "graphite_light")]
 
 
 def test_the_topic_list_is_ready_to_use() -> None:

@@ -18,13 +18,15 @@ import pytest
 from docx import Document as DocxDocument
 
 from app.adapters.storage.memory import InMemoryStorage
+from app.core import texts
+from app.core.actions import Action
 from app.core.limits import LimitKind
 from app.core.models import Document
 from app.core.pending import await_document, parse_await_document
 from app.core.scenarios import documents, spending
 from app.core.scenarios.deps import Deps, Session
 from config.documents import DOCUMENT_ACTIONS
-from tests.fakes import FakeLLM, FakeMessenger
+from tests.fakes import FakeLLM, FakeMessenger, FakePresentations
 
 REPORT = DOCUMENT_ACTIONS["report"]
 ABSTRACT = DOCUMENT_ACTIONS["abstract"]
@@ -282,6 +284,58 @@ async def test_a_rejected_file_keeps_the_chosen_action(
 # --- Документ по теме ----------------------------------------------------
 
 
+# --- Итог под докладом (сессия 7, В1) -----------------------------------
+
+
+async def test_the_result_text_comes_after_the_files(
+    deps: Deps, session: Session, storage: InMemoryStorage, messenger: FakeMessenger
+) -> None:
+    """Сначала файлы, потом «Готово! Файлы выше» — иначе «выше» указывает в пустоту."""
+    ready = await _with_documents(storage, session, 1)
+
+    await documents.apply_topic(deps, ready, TOPIC, "Влияние климата на урожай")
+
+    kinds = [kind for kind, _ in messenger.timeline]
+    assert kinds[-3:] == ["document", "document", "text"]
+    assert messenger.timeline[-1] == ("text", texts.DOCUMENT_READY)
+    said = [entry for entry in messenger.timeline if entry[1] == texts.DOCUMENT_READY]
+    assert len(said) == 1, "итог приходит один раз — после файлов"
+    assert texts.DOCUMENT_READY not in [edit.text for edit in messenger.text_edits]
+
+
+def _result_buttons(messenger: FakeMessenger) -> list[tuple[str, str | None]]:
+    keyboard = messenger.last_text.keyboard
+    assert keyboard is not None
+    return [(b.text, b.action) for row in keyboard.rows for b in row]
+
+
+async def test_under_the_result_there_are_exactly_two_buttons(
+    deps: Deps, session: Session, storage: InMemoryStorage, messenger: FakeMessenger
+) -> None:
+    """В1: «Сделать презентацию по докладу» и «В меню» — и ничего больше."""
+    enabled = replace(deps, presentations=FakePresentations())
+    ready = await _with_documents(storage, session, 1)
+
+    await documents.apply_topic(enabled, ready, TOPIC, "Влияние климата на урожай")
+
+    buttons = _result_buttons(messenger)
+    assert [text for text, _ in buttons] == [
+        texts.BUTTON_PRESENTATION_FROM_REPORT,
+        texts.BUTTON_SHOW_MENU,
+    ]
+    assert buttons[1][1] == Action.MENU_SHOW
+
+
+async def test_without_presentations_only_the_menu_stays(
+    deps: Deps, session: Session, storage: InMemoryStorage, messenger: FakeMessenger
+) -> None:
+    ready = await _with_documents(storage, session, 1)
+
+    await documents.apply_topic(deps, ready, TOPIC, "Влияние климата на урожай")
+
+    assert _result_buttons(messenger) == [(texts.BUTTON_SHOW_MENU, Action.MENU_SHOW)]
+
+
 async def test_a_topic_action_needs_no_file() -> None:
     """Иначе человек искал бы, что прикрепить, к «напиши тему»."""
     assert TOPIC.needs_file is False
@@ -396,4 +450,4 @@ async def test_a_cut_off_document_says_so(
 
     await documents.apply(deps, ready, REPORT, _docx())
 
-    assert "оборвал" in messenger.text_edits[-1].text
+    assert "оборвал" in messenger.last_text.text

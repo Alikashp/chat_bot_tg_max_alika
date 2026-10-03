@@ -330,3 +330,59 @@ async def test_a_failure_inside_the_grant_leaves_nothing_half_done(
     fresh = await storage.get_user_by_id(user.id)
     assert fresh is not None and fresh.tariff is TariffId.FREE
     assert await storage.get_subscription(user.id) is None
+
+
+def _forget_topics() -> object:
+    """Миграция, стирающая темы презентаций из базы (сессия 7, В6)."""
+    path = (
+        Path(__file__).resolve().parents[2]
+        / "migrations"
+        / "versions"
+        / "e0a5b7c9d248_forget_presentation_topics.py"
+    )
+    spec = importlib.util.spec_from_file_location("forget_topics", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+async def test_old_presentation_topics_leave_the_database(
+    engine: AsyncEngine,
+) -> None:
+    """В6: темы, записанные прежней версией, стираются — и только они."""
+    migration = _forget_topics()
+    statements = (
+        migration.CLEAR_PENDING_SQL,  # type: ignore[attr-defined]
+        migration.CLEAR_RETRY_SQL,  # type: ignore[attr-defined]
+    )
+    ids = await _make_users(engine, 4)
+    rows = [
+        ("await:pres:theme:Секретная тема", '{"kind":"presentation","prompt":"Тема"}'),
+        ("await:pres:from:abc123", None),
+        ("await:image", '{"kind":"image","prompt":"кот"}'),
+        ("await:pres", '{"kind":"chat","prompt":"привет"}'),
+    ]
+    async with engine.begin() as connection:
+        for user_id, (pending_value, context) in zip(ids, rows, strict=True):
+            await connection.execute(
+                text(
+                    "UPDATE users SET pending = :p, retry_context = :r WHERE id = :id"
+                ),
+                {"p": pending_value, "r": context, "id": user_id},
+            )
+        for _ in range(2):
+            for statement in statements:
+                await connection.execute(text(statement))
+        result = await connection.execute(
+            text("SELECT pending, retry_context FROM users ORDER BY id")
+        )
+        found = [tuple(row) for row in result.all()]
+
+    assert found == [
+        (None, None),
+        (None, None),
+        ("await:image", '{"kind":"image","prompt":"кот"}'),
+        ("await:pres", '{"kind":"chat","prompt":"привет"}'),
+    ]
+    assert "Секретная" not in repr(found)

@@ -1,6 +1,7 @@
 """Раздел «Презентации» (фаза 10).
 
-Путь человека: кнопка → тема словами → оформление из списка провайдера →
+Путь человека: кнопка → тема словами (или «Придумай сам», или кнопка под
+докладом) → экран параметров, уже заполненный → «Собрать презентацию» →
 «Готовлю презентацию, около минуты» → PDF и PPTX → итог с кнопками.
 
 Три правила, ради которых файл написан так, а не короче.
@@ -16,14 +17,12 @@
 Повторно доставленное обновление и двойное нажатие упираются в занятый слот
 и вторую колоду не создают.
 
-**Темы нет в логах и в учёте.** Она лежит только там, где без неё нельзя:
-в ожидании выбора оформления и в контексте «Повторить» — в базе, рядом с
-описаниями картинок, которые там хранятся по той же причине.
-
-Презентация по докладу собирается по тексту доклада, а он в базу не
-кладётся вовсе: ни в ожидание, ни в «Повторить». Там лежит только жетон, а
-сам текст — в памяти процесса несколько часов (порт Handoff). Устарел
-жетон — кнопка честно говорит, что данных уже нет, и даёт выход.
+**Темы нет ни в базе, ни в логах, ни в учёте (сессия 7, В6).** Всё, что
+показывает экран параметров, — тема, текст доклада, параметры — лежит в
+черновике в памяти процесса несколько часов (``core/decks.py``, порт
+Tokens). В базе — только жетон черновика: в ожидании новой темы и в
+контексте «Повторить». Устарел жетон — кнопка честно говорит, что данных
+уже нет, и даёт выход.
 """
 
 from __future__ import annotations
@@ -32,8 +31,10 @@ import re
 from dataclasses import replace
 from datetime import datetime, timedelta
 
-from app.core import pending, retry_context, texts
-from app.core.actions import Action
+from app.core import decks, pending, retry_context, texts
+from app.core.actions import Action, DeckAction, DeckField
+from app.core.decks import MAX_TOPIC, MIN_TOPIC, Draft, with_theme
+from app.core.documents import DocumentTooLargeError
 from app.core.generations import GenerationKind, error_code
 from app.core.limits import LimitKind
 from app.core.models import Document
@@ -41,12 +42,17 @@ from app.core.retry_context import RetryContext, RetryKind
 from app.core.scenarios import keyboards, paywall, spending, telemetry
 from app.core.scenarios.deps import Deps, Session
 from app.ports.handoff import Carried
-from app.ports.presentations import BuiltPresentation, PresentationBusyError
+from app.ports.presentations import (
+    AUDIENCES,
+    LANGUAGES,
+    MATERIAL_MAX_BYTES,
+    MAX_SLIDES,
+    MIN_SLIDES,
+    BuiltPresentation,
+    PresentationBusyError,
+    PresentationTheme,
+)
 from config.presentation_topics import SUGGESTED_TOPICS
-
-#: Границы темы — те же, что у провайдера (docs/API.md §3.1).
-MIN_TOPIC = 3
-MAX_TOPIC = 200
 
 #: Через сколько сборка считается брошенной. Пять минут ждём колоду (§8),
 #: по минуте на каждый из двух файлов и запас на отправку: живая сборка
@@ -78,13 +84,7 @@ async def start(deps: Deps, session: Session) -> None:
     Остаток проверяется здесь, до темы: иначе человек написал бы тему,
     выбрал оформление и только тогда узнал, что презентаций у него нет.
     """
-    if deps.presentations is None:
-        await _unavailable(deps, session)
-        return
-
-    allowance = await spending.current_allowance(deps, session, LimitKind.PRESENTATIONS)
-    if allowance.exhausted:
-        await paywall.show(deps, session, LimitKind.PRESENTATIONS)
+    if not await _ready(deps, session):
         return
 
     await deps.storage.set_pending(session.user.id, pending.AWAIT_PRESENTATION_TOPIC)
@@ -96,150 +96,258 @@ async def start(deps: Deps, session: Session) -> None:
 
 
 async def suggest(deps: Deps, session: Session) -> None:
-    """«Придумай сам»: тема из готового списка, и сразу выбор оформления.
+    """«Придумай сам»: тема из готового списка — и сразу экран параметров.
 
     Ни к какому провайдеру за темой не ходим: список лежит в config/, и
     выбор из него бесплатный и мгновенный. Остаток проверяется заново —
     кнопка могла прийти из старого сообщения.
     """
-    if deps.presentations is None:
-        await _unavailable(deps, session)
+    if not await _ready(deps, session):
         return
-
-    allowance = await spending.current_allowance(deps, session, LimitKind.PRESENTATIONS)
-    if allowance.exhausted:
-        await paywall.show(deps, session, LimitKind.PRESENTATIONS)
-        return
-
-    topic = _pick(deps)
-    await _offer_themes(
-        deps,
-        session,
-        awaiting=pending.await_presentation_theme(topic),
-        remember=RetryContext(kind=RetryKind.PRESENTATION, prompt=topic),
-        shown_topic=topic,
-    )
+    await _open_screen(deps, session, Draft(topic=_pick(deps)))
 
 
 async def receive_topic(deps: Deps, session: Session, written: str) -> None:
-    """Пришла тема словами — проверяем её и предлагаем оформления.
+    """Пришла тема словами: новая колода или новая тема для экрана.
 
     Тема вне границ отклоняется до всякого обращения к провайдеру (К3).
-    Ожидание темы при этом остаётся: человек просто напишет её ещё раз.
+    Ожидание при этом остаётся: человек просто напишет её ещё раз.
     """
-    if deps.presentations is None:
+    if deps.presentations is None or deps.drafts is None:
         await _unavailable(deps, session)
         return
 
+    token = pending.parse_await_deck_topic(session.user.pending)
     topic = normalise_topic(written)
     if topic is None:
-        await deps.storage.set_pending(
-            session.user.id, pending.AWAIT_PRESENTATION_TOPIC
-        )
         await deps.messenger.send_text(
             session.chat,
             texts.presentation_topic_bad().text,
+            keyboard=(
+                keyboards.deck_back(token)
+                if token is not None
+                else keyboards.presentation_cancel()
+            ),
+        )
+        return
+
+    if token is None:
+        await _open_screen(deps, session, Draft(topic=topic))
+        return
+
+    draft = deps.drafts.peek(token)
+    if draft is None:
+        await deps.storage.set_pending(session.user.id, None)
+        await _gone(deps, session)
+        return
+    deps.drafts.update(token, replace(draft, topic=topic))
+    await show_screen(deps, session, token)
+
+
+async def receive_file(
+    deps: Deps, session: Session, document_ref: str, filename: str
+) -> None:
+    """Пришёл файл-материал: вместо темы или по кнопке «Материал» (В3).
+
+    Тип проверяется по имени ещё до скачивания — чужое не тянем вовсе, —
+    размер мессенджер сообщает до загрузки байтов, содержимое сверяется с
+    расширением после. Отказ оставляет ожидание файла: можно прислать
+    другой, презентация не тратится. Байты живут только в черновике в
+    памяти — ни в базе, ни в логе их нет (В6).
+    """
+    if deps.presentations is None or deps.drafts is None:
+        await _unavailable(deps, session)
+        return
+
+    token = pending.parse_await_deck_file(session.user.pending)
+    document = await _download_material(deps, session, document_ref, filename, token)
+    if document is None:
+        return
+
+    if token is None:
+        # Тема по имени файла; не вышла — экран сам её спросит, а файл
+        # подождёт в черновике.
+        topic = decks.topic_from_filename(filename) or ""
+        await _open_screen(deps, session, Draft(topic=topic, file=document))
+        return
+
+    current = deps.drafts.peek(token)
+    if current is None:
+        await deps.storage.set_pending(session.user.id, None)
+        await _gone(deps, session)
+        return
+    # API берёт материал одним видом: файл вытесняет доклад.
+    deps.drafts.update(
+        token, replace(current, file=document, material="", report_token=None)
+    )
+    await show_screen(deps, session, token)
+
+
+async def _download_material(
+    deps: Deps,
+    session: Session,
+    document_ref: str,
+    filename: str,
+    token: str | None,
+) -> Document | None:
+    """Скачивает файл-материал, если он годится; иначе — отказ с выходом."""
+    too_big = False
+    document: Document | None = None
+    if decks.material_extension(filename) is not None:
+        try:
+            downloaded = await deps.messenger.download_document(
+                document_ref, max_bytes=MATERIAL_MAX_BYTES
+            )
+        except DocumentTooLargeError:
+            too_big = True
+        else:
+            # Имя — из сообщения: Telegram отдаёт своё служебное, а человеку
+            # на экране нужно его собственное, и тип API берёт по нему же.
+            document = replace(downloaded, filename=filename)
+            if not decks.material_ok(document):
+                document = None
+    if document is not None:
+        return document
+
+    deps.logger.info(
+        "presentation_file_refused", user_id=int(session.user.id), too_big=too_big
+    )
+    screen = texts.deck_file_refused(too_big=too_big, from_screen=token is not None)
+    await deps.messenger.send_text(
+        session.chat,
+        screen.text,
+        keyboard=(
+            keyboards.deck_back(token)
+            if token is not None
+            else keyboards.presentation_cancel()
+        ),
+    )
+    return None
+
+
+async def from_report(deps: Deps, session: Session, token: str) -> None:
+    """«Сделать презентацию по докладу»: экран параметров с докладом-материалом.
+
+    Жетон доклада здесь только читается, а забирается, когда колода
+    доставлена: до сборки дело может и не дойти, и сжигать кнопку раньше
+    времени незачем. Остаток — до жетона: при пустом пейволл.
+    """
+    if not await _ready(deps, session):
+        return
+
+    carried = deps.handoff.peek(token) if deps.handoff is not None else None
+    if carried is None:
+        await _link_gone(deps, session, token)
+        return
+
+    await _open_screen(
+        deps,
+        session,
+        Draft(topic=carried.topic, material=carried.material, report_token=token),
+    )
+
+
+async def show_screen(deps: Deps, session: Session, token: str) -> None:
+    """Экран параметров по черновику: заполнен, собирает одной кнопкой (В2)."""
+    assert deps.drafts is not None
+    draft = deps.drafts.peek(token)
+    if draft is None:
+        await _gone(deps, session)
+        return
+    if not draft.topic:
+        # Файл пришёл, а из его имени тема не вышла: «Итоги» на титульном
+        # слайде нужны настоящие, а не «a». «Назад» сюда же и приводит.
+        await deps.storage.set_pending(session.user.id, pending.await_deck_topic(token))
+        await deps.messenger.send_text(
+            session.chat,
+            texts.deck_file_topic().text,
             keyboard=keyboards.presentation_cancel(),
         )
         return
 
-    await _offer_themes(
-        deps,
-        session,
-        awaiting=pending.await_presentation_theme(topic),
-        remember=RetryContext(kind=RetryKind.PRESENTATION, prompt=topic),
+    themes = await _themes(deps, session, token)
+    if themes is None:
+        return
+    draft = with_theme(draft, themes)
+    deps.drafts.update(token, draft)
+    await deps.storage.set_pending(session.user.id, None)
+
+    names = {theme.id: theme.name for theme in themes}
+    screen = texts.deck_screen(
+        topic=draft.topic,
+        language=draft.language,
+        slides=draft.slides,
+        audience=draft.audience,
+        design=names[draft.theme_id],
+        file_name=draft.file.filename if draft.file is not None else None,
+        from_report=bool(draft.material),
+    )
+    await deps.messenger.send_text(
+        session.chat, screen.text, keyboard=keyboards.deck_screen(token)
     )
 
 
-async def from_report(deps: Deps, session: Session, token: str) -> None:
-    """«Сделать презентацию по докладу»: сразу к выбору оформления.
-
-    Жетон здесь только проверяется, а забирается при нажатии на оформление:
-    до сборки дело может и не дойти, и сжигать кнопку раньше времени
-    незачем. Остаток — до жетона: при пустом пейволл, кнопка не сгорает.
-    """
-    if deps.presentations is None:
+async def act(deps: Deps, session: Session, action: DeckAction) -> None:
+    """Кнопка экрана параметров: собрать, выбрать, задать, вернуться."""
+    if deps.presentations is None or deps.drafts is None:
         await _unavailable(deps, session)
         return
 
-    allowance = await spending.current_allowance(deps, session, LimitKind.PRESENTATIONS)
-    if allowance.exhausted:
-        await paywall.show(deps, session, LimitKind.PRESENTATIONS)
+    draft = deps.drafts.peek(action.token)
+    if draft is None:
+        if action.kind == "go" and deps.drafts.was_taken(action.token):
+            await _say(deps, session, texts.deck_already_built())
+            return
+        await _gone(deps, session)
         return
 
-    if deps.handoff is None or deps.handoff.peek(token) is None:
-        await _link_gone(deps, session, token)
+    if action.kind == "go":
+        await _build_draft(deps, session, action.token, draft)
         return
-
-    await _offer_themes(
-        deps,
-        session,
-        awaiting=pending.await_presentation_source(token),
-        remember=RetryContext(kind=RetryKind.PRESENTATION, source=token),
-    )
+    if action.kind == "back" or action.field is None:
+        await show_screen(deps, session, action.token)
+        return
+    if action.kind == "pick":
+        await _pick_value(deps, session, action.token, draft, action.field)
+        return
+    await _set_value(deps, session, action.token, draft, action.field, action.value)
 
 
 async def choose_theme(deps: Deps, session: Session, theme_id: str) -> None:
-    """Нажато оформление — собираем.
+    """Кнопка оформления из версии до экрана параметров (В5).
 
-    Ожидание берётся из базы заново, а не из снимка сессии. Второе нажатие
-    той же кнопки после готовой колоды найдёт его уже снятым — и колоду не
-    соберёт, а спросит новую тему.
+    Тему такие кнопки брали из ожидания в базе, а там её больше нет.
+    Отвечаем честно и ведём начать заново.
     """
-    if deps.presentations is None:
-        await _unavailable(deps, session)
-        return
-
-    fresh = await deps.storage.get_user_by_id(session.user.id) or session.user
-    source = pending.parse_await_presentation_source(fresh.pending)
-    if source is not None:
-        await _build_from(deps, session, source, theme_id)
-        return
-
-    topic = pending.parse_await_presentation_theme(fresh.pending)
-    if topic is None:
-        if _building(deps, fresh.presentation_started_at):
-            # Второе нажатие, пока первая колода собирается: ожидание она уже
-            # сняла. Спросить тему заново значило бы сбить человека с толку.
-            await _say_in_progress(deps, session)
-            return
-        await start(deps, session)
-        return
-
-    await _build(deps, session, topic, theme_id)
+    await _gone(deps, session)
 
 
 async def retry(deps: Deps, session: Session) -> None:
-    """«Повторить» под сбоем: та же тема (или тот же доклад) и оформление."""
-    if deps.presentations is None:
+    """«Повторить» под сбоем: тот же черновик — экран или сборка."""
+    if deps.presentations is None or deps.drafts is None:
         await _unavailable(deps, session)
         return
 
     context = retry_context.decode(session.user.retry_context)
-    if context is None or context.kind is not RetryKind.PRESENTATION:
+    if (
+        context is None
+        or context.kind is not RetryKind.PRESENTATION
+        or context.source is None
+    ):
         await deps.messenger.send_text(
             session.chat, texts.nothing_to_repeat().text, show_menu=True
         )
         return
 
-    if context.source is not None:
-        if context.theme_id is None:
-            await from_report(deps, session, context.source)
-        else:
-            await _build_from(deps, session, context.source, context.theme_id)
+    draft = deps.drafts.peek(context.source)
+    if draft is None:
+        await _gone(deps, session)
         return
-
     if context.theme_id is None:
-        # Упал список оформлений, а не сборка: показываем его снова.
-        await _offer_themes(
-            deps,
-            session,
-            awaiting=pending.await_presentation_theme(context.prompt),
-            remember=context,
-        )
+        # Упал список оформлений, а не сборка: показываем экран снова.
+        await show_screen(deps, session, context.source)
         return
-
-    await _build(deps, session, context.prompt, context.theme_id)
+    await _build_draft(deps, session, context.source, draft)
 
 
 def normalise_topic(written: str) -> str | None:
@@ -299,19 +407,29 @@ def _pick(deps: Deps) -> str:
     return SUGGESTED_TOPICS[moment % len(SUGGESTED_TOPICS)]
 
 
-async def _offer_themes(
-    deps: Deps,
-    session: Session,
-    *,
-    awaiting: str,
-    remember: RetryContext,
-    shown_topic: str | None = None,
-) -> None:
-    """Список оформлений — из API, не зашитый у нас.
+async def _ready(deps: Deps, session: Session) -> bool:
+    """Раздел включён и презентации у человека есть; иначе — ответ и False."""
+    if deps.presentations is None or deps.drafts is None:
+        await _unavailable(deps, session)
+        return False
+    allowance = await spending.current_allowance(deps, session, LimitKind.PRESENTATIONS)
+    if allowance.exhausted:
+        await paywall.show(deps, session, LimitKind.PRESENTATIONS)
+        return False
+    return True
 
-    ``awaiting`` — ожидание, которое встанет на время выбора; ``remember`` —
-    что повторить, если сам список не загрузился.
-    """
+
+async def _open_screen(deps: Deps, session: Session, draft: Draft) -> None:
+    """Заводит черновик в памяти и показывает по нему экран."""
+    assert deps.drafts is not None
+    token = deps.drafts.put(draft)
+    await show_screen(deps, session, token)
+
+
+async def _themes(
+    deps: Deps, session: Session, token: str
+) -> tuple[PresentationTheme, ...] | None:
+    """Оформления из API; None — не загрузились, человеку сказано и дан повтор."""
     assert deps.presentations is not None
     try:
         themes = await deps.presentations.themes()
@@ -322,69 +440,151 @@ async def _offer_themes(
             error=error_code(error),
         )
         themes = ()
+    if themes:
+        return themes
 
-    if not themes:
-        await deps.storage.set_retry_context(
-            session.user.id, replace(remember, theme_id=None).encode()
-        )
-        await deps.storage.set_pending(session.user.id, None)
+    await deps.storage.set_retry_context(
+        session.user.id,
+        RetryContext(kind=RetryKind.PRESENTATION, source=token).encode(),
+    )
+    await deps.storage.set_pending(session.user.id, None)
+    await deps.messenger.send_text(
+        session.chat,
+        texts.presentation_error().text,
+        keyboard=keyboards.presentation_retry(),
+    )
+    return None
+
+
+async def _pick_value(
+    deps: Deps, session: Session, token: str, draft: Draft, field: DeckField
+) -> None:
+    """Показывает варианты одного параметра — или спрашивает новую тему."""
+    if field is DeckField.TOPIC:
+        await deps.storage.set_pending(session.user.id, pending.await_deck_topic(token))
         await deps.messenger.send_text(
             session.chat,
-            texts.presentation_error().text,
-            keyboard=keyboards.presentation_retry(),
+            texts.deck_new_topic().text,
+            keyboard=keyboards.deck_back(token),
         )
         return
 
-    await deps.storage.set_pending(session.user.id, awaiting)
-    choices = tuple((theme.name, theme.id) for theme in themes)
-    names = tuple(name for name, _ in choices)
-    screen = (
-        texts.presentation_suggested(shown_topic, names)
-        if shown_topic is not None
-        else texts.presentation_pick_theme(names)
-    )
-    await deps.messenger.send_text(
-        session.chat, screen.text, keyboard=keyboards.presentation_themes(choices)
-    )
+    if field is DeckField.MATERIAL:
+        has_material = draft.file is not None or bool(draft.material)
+        await deps.storage.set_pending(session.user.id, pending.await_deck_file(token))
+        await deps.messenger.send_text(
+            session.chat,
+            texts.deck_ask_file(has_material=has_material).text,
+            keyboard=keyboards.deck_material(token, has_material=has_material),
+        )
+        return
 
-
-async def _build_from(deps: Deps, session: Session, token: str, theme_id: str) -> None:
-    """Презентация по докладу: жетон забирается, не вышло — возвращается."""
-    handoff = deps.handoff
-    carried = handoff.take(token) if handoff is not None else None
-    if carried is None:
-        fresh = await deps.storage.get_user_by_id(session.user.id) or session.user
-        if _building(deps, fresh.presentation_started_at):
-            await _say_in_progress(deps, session)
+    if field is DeckField.DESIGN:
+        themes = await _themes(deps, session, token)
+        if themes is None:
             return
-        await _link_gone(deps, session, token)
+        question = texts.DECK_ASK_DESIGN
+        options = tuple((theme.name, theme.id) for theme in themes)
+        current, per_row = draft.theme_id, 1
+    elif field is DeckField.LANGUAGE:
+        question = texts.DECK_ASK_LANGUAGE
+        options = tuple((texts.LANGUAGE_LABELS[code], code) for code in LANGUAGES)
+        current, per_row = draft.language, 2
+    elif field is DeckField.AUDIENCE:
+        question = texts.DECK_ASK_AUDIENCE
+        options = tuple((texts.AUDIENCE_LABELS[code], code) for code in AUDIENCES)
+        current, per_row = draft.audience, 2
+    elif field is DeckField.SLIDES:
+        question = texts.DECK_ASK_SLIDES
+        options = tuple(
+            (str(count), str(count)) for count in range(MIN_SLIDES, MAX_SLIDES + 1)
+        )
+        current, per_row = str(draft.slides), 6
+    else:
+        await show_screen(deps, session, token)
         return
 
-    assert handoff is not None
-    delivered = False
-    try:
-        delivered = await _build(
-            deps,
-            session,
-            carried.topic,
-            theme_id,
-            material=carried.material,
-            source=token,
-        )
-    finally:
-        if not delivered:
-            handoff.give_back(token, carried)
+    screen = texts.deck_pick(question, tuple(label for label, _ in options))
+    await deps.messenger.send_text(
+        session.chat,
+        screen.text,
+        keyboard=keyboards.deck_options(
+            token, field, options, current=current, per_row=per_row
+        ),
+    )
 
 
-async def _build(
+async def _set_value(
     deps: Deps,
     session: Session,
-    topic: str,
-    theme_id: str,
-    *,
-    material: str = "",
-    source: str | None = None,
-) -> bool:
+    token: str,
+    draft: Draft,
+    field: DeckField,
+    value: str,
+) -> None:
+    """Задаёт значение и возвращает на экран. Чужое значение — не меняет ничего.
+
+    Значение приходит из данных кнопки, то есть снаружи: проверяется по
+    спискам API, а оформление — по списку от самого провайдера.
+    """
+    changed: Draft | None = None
+    if field is DeckField.MATERIAL and value == keyboards.NO_MATERIAL:
+        # Без материала — по одной теме. Жетон доклада больше не нужен
+        # этой колоде, но и не сжигается: кнопка под докладом остаётся живой.
+        changed = replace(draft, file=None, material="", report_token=None)
+    elif field is DeckField.LANGUAGE:
+        changed = decks.with_language(draft, value)
+    elif field is DeckField.AUDIENCE:
+        changed = decks.with_audience(draft, value)
+    elif field is DeckField.SLIDES:
+        changed = decks.with_slides(draft, value)
+    elif field is DeckField.DESIGN:
+        themes = await _themes(deps, session, token)
+        if themes is None:
+            return
+        changed = decks.with_design(draft, value, themes)
+    if changed is not None:
+        assert deps.drafts is not None
+        deps.drafts.update(token, changed)
+    await show_screen(deps, session, token)
+
+
+async def _build_draft(deps: Deps, session: Session, token: str, draft: Draft) -> None:
+    """Собирает по черновику. Доставлено — черновик и жетон доклада забираются.
+
+    Забираются только после доставки: упавшая сборка оставляет черновик
+    на месте, и «Повторить» соберёт по нему же. Второе нажатие «Собрать»
+    после готовой колоды найдёт черновик взятым и скажет, что всё уже
+    собрано.
+    """
+    if not draft.theme_id:
+        # Черновик ни разу не показывался с оформлением — показываем.
+        await show_screen(deps, session, token)
+        return
+    if await _build(deps, session, token, draft):
+        assert deps.drafts is not None
+        deps.drafts.take(token)
+        if draft.report_token is not None and deps.handoff is not None:
+            deps.handoff.take(draft.report_token)
+
+
+async def _gone(deps: Deps, session: Session) -> None:
+    """Под кнопкой экрана параметров данных нет: устарела или перезапуск (В5)."""
+    await _say(deps, session, texts.deck_gone())
+
+
+async def _say(deps: Deps, session: Session, screen: texts.Screen) -> None:
+    """Короткий ответ с выходом «Презентации»."""
+    await deps.messenger.send_text(
+        session.chat,
+        screen.text,
+        keyboard=keyboards.link_exit(
+            texts.MENU_PRESENTATIONS, Action.MENU_PRESENTATIONS
+        ),
+    )
+
+
+async def _build(deps: Deps, session: Session, token: str, draft: Draft) -> bool:
     """Проверка остатка, захват слота — и сборка под ним. True — доставлено."""
     allowance = await spending.current_allowance(deps, session, LimitKind.PRESENTATIONS)
     if allowance.exhausted:
@@ -398,21 +598,13 @@ async def _build(
         return False
 
     try:
-        return await _build_claimed(
-            deps, session, topic, theme_id, material=material, source=source
-        )
+        return await _build_claimed(deps, session, token, draft)
     finally:
         await deps.storage.release_presentation(session.user.id)
 
 
 async def _build_claimed(
-    deps: Deps,
-    session: Session,
-    topic: str,
-    theme_id: str,
-    *,
-    material: str,
-    source: str | None,
+    deps: Deps, session: Session, token: str, draft: Draft
 ) -> bool:
     """Собрать, доставить, списать — в этом порядке и только в нём."""
     assert deps.presentations is not None
@@ -420,15 +612,13 @@ async def _build_claimed(
     # следующее сообщение не должно приклеиться к прошлой теме. Повтор от
     # этого не страдает — что повторить, уже в контексте «Повторить».
     await deps.storage.set_pending(session.user.id, None)
-    # Тему по докладу в базу не кладём: она из его текста. Повтор найдёт её
-    # по жетону.
+    # Темы в базе нет (В6): «Повторить» найдёт черновик по жетону. Отметка
+    # оформления говорит, что повторять надо сборку, а не показ экрана.
+    theme_id = draft.theme_id
     await deps.storage.set_retry_context(
         session.user.id,
         RetryContext(
-            kind=RetryKind.PRESENTATION,
-            prompt=topic if source is None else "",
-            theme_id=theme_id,
-            source=source,
+            kind=RetryKind.PRESENTATION, theme_id=theme_id, source=token
         ).encode(),
     )
 
@@ -439,14 +629,16 @@ async def _build_claimed(
         "presentation_started",
         user_id=int(session.user.id),
         theme=theme_id,
-        from_report=source is not None,
+        from_report=bool(draft.material),
+        with_file=draft.file is not None,
+        language=draft.language,
+        slides=draft.slides,
+        audience=draft.audience,
     )
 
     started = deps.now()
     try:
-        built = await deps.presentations.build(
-            topic, theme_id=theme_id, material=material
-        )
+        built = await deps.presentations.build(draft.request())
     except PresentationBusyError as busy:
         if busy.reached_api:
             await _record(deps, session, theme_id, started=started, error=busy)
@@ -479,7 +671,7 @@ async def _build_claimed(
     await _record(deps, session, theme_id, started=started)
 
     try:
-        for document in _documents(topic, built):
+        for document in _documents(draft.topic, built):
             await deps.messenger.send_document(session.chat, document)
     except Exception as error:
         # Колода собрана, но до человека не доехала. Он её не получил —
@@ -508,7 +700,9 @@ async def _build_claimed(
     # Итог — отдельным сообщением после файлов, а не правкой «готовлю»: то
     # стоит над файлами, а кнопки «что дальше» нужны под ними.
     report_token = (
-        deps.handoff.put(Carried(topic=topic)) if deps.handoff is not None else None
+        deps.handoff.put(Carried(topic=draft.topic))
+        if deps.handoff is not None
+        else None
     )
     await deps.messenger.send_text(
         session.chat,

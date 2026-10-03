@@ -48,8 +48,10 @@ from app.adapters.telegram.intake import dedup_key, is_pre_checkout
 from app.adapters.telegram.messenger import TelegramMessenger
 from app.adapters.telegram.stars import TelegramStars
 from app.config import Settings, get_settings
+from app.core import decks
 from app.core.billing import Billing
 from app.core.channel import channel_username
+from app.core.decks import Draft
 from app.core.models import MessengerKind
 from app.core.receipts import FiscalSettings
 from app.core.reconcile import Reconciler
@@ -75,6 +77,7 @@ from app.infra.server import (
 )
 from app.ports.ai import ImageQuality
 from app.ports.channel import Channel
+from app.ports.handoff import Carried
 from app.ports.payments import CardPayments, StarsPayments
 from config.presets import PRESETS
 
@@ -219,6 +222,12 @@ def build_intake(
 #: быстрые — одно чтение заказа, — но два обработчика не дают одному
 #: зависшему запросу к базе остановить все оплаты.
 _PAYMENT_QUESTION_WORKERS = 2
+
+#: Сколько памяти могут занять черновики экрана презентации. Под черновиком
+#: бывает присланный файл до 20 МБ; десяток таких одновременно — обычное
+#: дело, сотня — уже повод вытеснять старшие: их кнопки честно скажут, что
+#: данных нет.
+DRAFTS_MAX_BYTES = 200 * 1024 * 1024
 
 
 def build_telegram_intake(
@@ -488,7 +497,13 @@ async def build_wiring(settings: Settings) -> Wiring:
     presentations, presentations_client = build_presentations(settings)
     # Жетоны кнопок-связок «доклад ↔ презентация». Общие на оба мессенджера:
     # жетон выдаётся в одном процессе, и забрать его надо там же.
-    handoff = MemoryHandoff()
+    handoff: MemoryHandoff[Carried] = MemoryHandoff()
+    # Черновики экрана параметров презентации: тема, материал, параметры — в
+    # памяти, под жетоном (сессия 7, В6). Предел по объёму — под присланные
+    # файлы: двадцать мегабайт каждый.
+    drafts: MemoryHandoff[Draft] = MemoryHandoff(
+        weigh=decks.weight, max_weight=DRAFTS_MAX_BYTES
+    )
     if presentations_client is not None:
         http_clients = (*http_clients, presentations_client)
 
@@ -528,6 +543,7 @@ async def build_wiring(settings: Settings) -> Wiring:
             examples=examples,
             presentations=presentations,
             handoff=handoff,
+            drafts=drafts,
         )
 
     deps = build_deps(

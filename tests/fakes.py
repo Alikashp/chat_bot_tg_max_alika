@@ -25,7 +25,11 @@ from app.core.models import (
 from app.core.receipts import Receipt
 from app.ports.ai import Answer, ImageQuality
 from app.ports.payments import ChargeResult, ChargeStatus, PaymentIntent
-from app.ports.presentations import BuiltPresentation, PresentationTheme
+from app.ports.presentations import (
+    BuiltPresentation,
+    DeckRequest,
+    PresentationTheme,
+)
 
 if TYPE_CHECKING:
     from app.core.limits import LimitKind
@@ -99,6 +103,8 @@ class FakeMessenger:
         #: Что вернуть на скачивание присланного файла.
         self.incoming_document: Document | None = None
         self.fail_download_document: Exception | None = None
+        #: С каким пределом размера просили скачать каждый файл.
+        self.downloads_limited_to: list[int] = []
         self.fail_send_document: Exception | None = None
         #: Если задано, отправка текста падает. Нужно для проверки инварианта:
         #: лимит не списывается, когда результат до пользователя не доехал.
@@ -196,6 +202,7 @@ class FakeMessenger:
         self.timeline.append(("document", document.filename))
 
     async def download_document(self, document_ref: str, *, max_bytes: int) -> Document:
+        self.downloads_limited_to.append(max_bytes)
         if self.fail_download_document is not None:
             raise self.fail_download_document
         return self.incoming_document or Document(
@@ -604,6 +611,8 @@ class FakePresentations:
         self.built: list[tuple[str, str]] = []
         #: Текст-материал каждой сборки. Пусто — колода по одной теме.
         self.materials: list[str] = []
+        #: Запросы целиком — со всеми параметрами экрана.
+        self.requests: list[DeckRequest] = []
         #: Сколько сборок идёт прямо сейчас и сколько шло одновременно максимум.
         self.running = 0
         self.max_running = 0
@@ -614,11 +623,10 @@ class FakePresentations:
             raise self.themes_error
         return self.available
 
-    async def build(
-        self, topic: str, *, theme_id: str, material: str = ""
-    ) -> BuiltPresentation:
-        self.built.append((topic, theme_id))
-        self.materials.append(material)
+    async def build(self, request: DeckRequest) -> BuiltPresentation:
+        self.requests.append(request)
+        self.built.append((request.topic, request.theme_id))
+        self.materials.append(request.material)
         self.running += 1
         self.max_running = max(self.max_running, self.running)
         try:

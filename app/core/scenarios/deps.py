@@ -11,6 +11,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import date, datetime
 
+from app.core.decks import Draft
 from app.core.limits import current_day
 from app.core.models import Chat, Photo, User
 from app.core.settings import CoreSettings
@@ -19,7 +20,7 @@ from app.ports.ai import ImageProvider, LLMProvider
 from app.ports.channel import Channel
 from app.ports.concurrency import Concurrency
 from app.ports.documents import DocumentReader, DocumentWriter
-from app.ports.handoff import Handoff
+from app.ports.handoff import Handoff, Tokens
 from app.ports.messenger import Messenger
 from app.ports.observability import Logger
 from app.ports.payments import CardPayments, StarsPayments
@@ -65,6 +66,9 @@ class Deps:
     #: Жетоны кнопок-связок «доклад по презентации» и «презентация по
     #: докладу». None — связок нет: кнопки не показываются.
     handoff: Handoff | None = None
+    #: Черновики экрана параметров презентации (сессия 7): тема, материал,
+    #: параметры — в памяти, под жетоном. None — раздела презентаций нет.
+    drafts: Tokens[Draft] | None = None
 
     @property
     def presentations_on(self) -> bool:

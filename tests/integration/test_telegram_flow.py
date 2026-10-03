@@ -28,6 +28,7 @@ from aiogram.methods import (
     DeleteMessage,
     EditMessageText,
     GetFile,
+    SendDocument,
     SendMessage,
     SendPhoto,
     TelegramMethod,
@@ -50,7 +51,13 @@ from app.adapters.telegram import router as telegram_router
 from app.adapters.telegram.messenger import TelegramMessenger
 from app.adapters.telegram.stars import TelegramStars
 from app.core import support, texts
-from app.core.actions import Action, buy_action, method_action, preset_action
+from app.core.actions import (
+    Action,
+    buy_action,
+    document_action,
+    method_action,
+    preset_action,
+)
 from app.core.limits import norm_period
 from app.core.models import MessengerKind, TariffId
 from app.core.scenarios.deps import Deps
@@ -535,6 +542,27 @@ async def test_drawing_replaces_the_waiting_message(started: Harness) -> None:
     photos = started.photos()
     assert len(photos) == 1
     assert isinstance(photos[0].reply_markup, InlineKeyboardMarkup)
+
+
+async def test_the_report_result_comes_after_its_files(started: Harness) -> None:
+    """В1 в Telegram: файлы доклада, потом итог с одной кнопкой «В меню» (без ключа)."""
+    await started.press(document_action("topic_report"))
+    started.forget()
+
+    await started.send_text("Влияние климата на урожай")
+
+    order = [
+        type(call).__name__
+        for call in started.session.calls
+        if isinstance(call, SendDocument | SendMessage)
+    ]
+    assert order[-3:] == ["SendDocument", "SendDocument", "SendMessage"]
+    result = started.messages()[-1]
+    assert result.text == texts.DOCUMENT_READY
+    markup = result.reply_markup
+    assert isinstance(markup, InlineKeyboardMarkup)
+    labels = [button.text for row in markup.inline_keyboard for button in row]
+    assert labels == [texts.BUTTON_SHOW_MENU]
 
 
 async def test_the_image_limit_is_spent_only_after_delivery(started: Harness) -> None:

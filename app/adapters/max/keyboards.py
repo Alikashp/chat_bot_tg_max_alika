@@ -34,7 +34,7 @@ def build(keyboard: Keyboard | None, *, show_menu: bool) -> AttachmentButton | N
     rows: list[list[InlineButton]] = []
     if keyboard is not None:
         rows.extend(_row(row) for row in keyboard.rows)
-    if show_menu:
+    if show_menu and not _leads_to_menu(keyboard):
         rows.append(
             [CallbackButton(text=texts.BUTTON_SHOW_MENU, payload=Action.MENU_SHOW)]
         )
@@ -44,6 +44,15 @@ def build(keyboard: Keyboard | None, *, show_menu: bool) -> AttachmentButton | N
         type=AttachmentType.INLINE_KEYBOARD,
         payload=ButtonsPayload(buttons=rows),
         bot=None,
+    )
+
+
+def _leads_to_menu(keyboard: Keyboard | None) -> bool:
+    """Есть ли у экрана своя кнопка «В меню» — тогда вторую не добавляем."""
+    if keyboard is None:
+        return False
+    return any(
+        button.action == Action.MENU_SHOW for row in keyboard.rows for button in row
     )
 
 

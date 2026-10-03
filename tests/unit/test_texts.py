@@ -399,17 +399,21 @@ def test_no_screen_is_longer_than_five_lines() -> None:
     assert too_long == []
 
 
-def test_only_the_tariff_screen_raises_the_line_limit() -> None:
-    """Исключение из правила §2.9 должно оставаться ровно одним.
+def test_only_the_tariff_and_deck_screens_raise_the_line_limit() -> None:
+    """Исключение из правила §2.9 — ровно два экрана, и оба названы здесь.
 
     Потолок в пять строк легко обойти, подняв max_lines «на этот раз».
     Тест делает такое обход видимым: список исключений один и лежит здесь.
+    Экран тарифов — сравнение трёх карточек; экран параметров презентации —
+    всё, что соберётся, одним взглядом (разрешено заказчиком, сессия 7).
     """
     exceptions = [screen for screen in texts.SCREENS if screen.max_lines != 5]
 
-    # Экран тарифов в двух редакциях — с презентациями и без них.
-    assert len(exceptions) == 2
-    assert {screen.buttons for screen in exceptions} == {("Лайт", "Про", "Макс")}
+    tariffs = [s for s in exceptions if s.buttons == ("Лайт", "Про", "Макс")]
+    deck = [s for s in exceptions if s.buttons[:1] == (texts.BUTTON_DECK_BUILD,)]
+    assert len(tariffs) + len(deck) == len(exceptions)
+    assert tariffs and deck
+    assert all(s.max_lines == 8 for s in deck)
 
 
 def test_only_the_consent_screen_may_say_you() -> None:

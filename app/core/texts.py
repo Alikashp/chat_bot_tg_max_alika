@@ -442,12 +442,28 @@ def document_working() -> Screen:
     )
 
 
-def document_ready(
-    action_buttons: tuple[str, ...], *, truncated: bool = False
-) -> Screen:
+#: Чем становится «Читаю файл…», когда файлы отправлены: оно стоит над ними.
+DOCUMENT_FILES = "Вот файлы 👇"
+
+
+def document_files() -> Screen:
+    return Screen(text=DOCUMENT_FILES, next_step="файлы и итог — ниже")
+
+
+def document_ready(*, with_presentation: bool, truncated: bool = False) -> Screen:
+    """Итог под файлами доклада (сессия 7).
+
+    Приходит после файлов, а не над ними: «файлы выше» должно указывать на
+    файлы. Кнопок две — презентация по этому докладу и меню; без ключа API
+    презентаций остаётся одно меню. Кнопок действий («Доклад», «Реферат»…)
+    здесь больше нет: их место — в меню раздела.
+    """
+    buttons: tuple[str, ...] = (BUTTON_SHOW_MENU,)
+    if with_presentation:
+        buttons = (BUTTON_PRESENTATION_FROM_REPORT, BUTTON_SHOW_MENU)
     return Screen(
         text=DOCUMENT_READY_CUT if truncated else DOCUMENT_READY,
-        buttons=action_buttons,
+        buttons=buttons,
     )
 
 
@@ -467,14 +483,15 @@ def document_rejected(reason: str, action_buttons: tuple[str, ...]) -> Screen:
 
 # --- Презентации (фаза 10) -----------------------------------------------
 
-PRESENTATION_ASK = "О чём презентация? Напиши тему, например: Как работает фотосинтез"
+PRESENTATION_ASK = (
+    "О чём презентация? Напиши тему, например: Как работает фотосинтез\n"
+    "Или пришли файл — pdf, docx, pptx или txt до 20 МБ, соберу по нему"
+)
 
 #: Границы — те же, что у провайдера (docs/API.md §3.1). Отсекаем до
 #: обращения: ответ провайдера на неверную тему человеку мы всё равно не
 #: показываем, а свой отказ быстрее и понятнее.
 PRESENTATION_TOPIC_BAD = "Тема нужна от 3 до 200 знаков. Напиши её ещё раз 🙏"
-
-PRESENTATION_PICK_THEME = "Выбери оформление 👇"
 
 #: Под вопросом о теме. Дословно из поручения.
 BUTTON_SUGGEST_TOPIC = "Придумай сам"
@@ -549,20 +566,161 @@ def presentation_topic_bad() -> Screen:
     return Screen(text=PRESENTATION_TOPIC_BAD, next_step="ждём тему ещё раз")
 
 
-def presentation_suggested(topic: str, theme_buttons: tuple[str, ...]) -> Screen:
-    """Тема из «Придумай сам» — и сразу выбор оформления, одним сообщением.
+# --- Экран параметров презентации (сессия 7) -----------------------------
 
-    Тему показываем обязательно: человек должен видеть, о чём будет его
-    презентация, до того как она соберётся и спишется.
+BUTTON_DECK_BUILD = "🚀 Собрать презентацию"
+BUTTON_DECK_TOPIC = "📝 Тема"
+BUTTON_DECK_MATERIAL = "📎 Материал"
+BUTTON_DECK_NO_MATERIAL = "🗑 Без материала"
+BUTTON_DECK_LANGUAGE = "🌐 Язык"
+BUTTON_DECK_SLIDES = "🔢 Слайды"
+BUTTON_DECK_AUDIENCE = "👥 Аудитория"
+BUTTON_DECK_DESIGN = "🎨 Дизайн"
+BUTTON_BACK = "← Назад"
+
+#: Отметка текущего значения среди вариантов выбора.
+CURRENT_MARK = "✅ "
+
+#: Подписи языков. Сами коды — из docs/API.md (§3.1), подписи — наши.
+LANGUAGE_LABELS: dict[str, str] = {
+    "ru": "🇷🇺 Русский",
+    "en": "🇬🇧 Английский",
+    "uz": "🇺🇿 Узбекский",
+    "kk": "🇰🇿 Казахский",
+}
+
+#: Подписи аудиторий. Коды — из docs/API.md (§3.1), подписи — наши.
+AUDIENCE_LABELS: dict[str, str] = {
+    "general": "👥 Широкая",
+    "students": "🎓 Студенты",
+    "colleagues": "🤝 Коллеги",
+    "management": "👔 Руководство",
+    "clients": "🛍 Клиенты",
+    "investors": "💰 Инвесторы",
+}
+
+#: Тип у API пока один — доклад (docs/API.md §3.1, §10).
+DECK_TYPE = "Доклад"
+
+
+def deck_screen(
+    *,
+    topic: str,
+    language: str,
+    slides: int,
+    audience: str,
+    design: str,
+    file_name: str | None = None,
+    from_report: bool = False,
+) -> Screen:
+    """Экран параметров перед сборкой (образец заказчика, на «ты»).
+
+    Строки — только те, что принимает API: тип у него пока один, но он
+    параметр запроса и показан, чтобы человек знал, что получит. «Файлы»
+    из образца параметром не являются — API всегда отдаёт PPTX и PDF, — и
+    этой строки нет. Восемь строк — разрешённое исключение, как у тарифов:
+    смысл экрана в том, чтобы увидеть всё сразу перед сборкой.
+
+    ``language``, ``audience`` — коды API; ``design`` — название оформления
+    от провайдера.
     """
+    if file_name is not None:
+        material = f"файл «{file_name}» — соберём по нему"
+    elif from_report:
+        material = "доклад — соберём по нему"
+    else:
+        material = "нет — соберём по теме"
+    lines = [
+        "📋 Проверь параметры",
+        f"📝 Тема: {topic}",
+        f"📂 Тип: {DECK_TYPE}",
+        f"📎 Материал: {material}",
+        f"🌐 Язык: {LANGUAGE_LABELS[language]}",
+        f"🔢 Слайдов: {slides} (вместе с титульным и финальным)",
+        f"👥 Аудитория: {AUDIENCE_LABELS[audience]}",
+        f"🎨 Дизайн: {design}",
+    ]
     return Screen(
-        text=f"Тема: {topic}\n{PRESENTATION_PICK_THEME}",
-        buttons=(*theme_buttons, BUTTON_CANCEL),
+        text="\n".join(lines),
+        buttons=(
+            BUTTON_DECK_BUILD,
+            BUTTON_DECK_TOPIC,
+            BUTTON_DECK_MATERIAL,
+            BUTTON_DECK_LANGUAGE,
+            BUTTON_DECK_SLIDES,
+            BUTTON_DECK_AUDIENCE,
+            BUTTON_DECK_DESIGN,
+            BUTTON_CANCEL,
+        ),
+        max_lines=8,
     )
 
 
-def presentation_pick_theme(theme_buttons: tuple[str, ...]) -> Screen:
-    return Screen(text=PRESENTATION_PICK_THEME, buttons=(*theme_buttons, BUTTON_CANCEL))
+def deck_pick(field_question: str, options: tuple[str, ...]) -> Screen:
+    """Выбор значения одного параметра: варианты и «Назад» на экран."""
+    return Screen(text=field_question, buttons=(*options, BUTTON_BACK))
+
+
+DECK_ASK_LANGUAGE = "🌐 На каком языке будут слайды?"
+DECK_ASK_SLIDES = "🔢 Сколько слайдов — вместе с титульным и финальным?"
+DECK_ASK_AUDIENCE = "👥 Для кого презентация?"
+DECK_ASK_DESIGN = "🎨 Выбери дизайн 👇"
+DECK_ASK_TOPIC = "📝 Напиши новую тему — от 3 до 200 знаков"
+
+
+def deck_new_topic() -> Screen:
+    return Screen(text=DECK_ASK_TOPIC, buttons=(BUTTON_BACK,))
+
+
+#: Форматы и предел — из docs/API.md §3.1.
+DECK_ASK_FILE = (
+    "📎 Пришли файл — pdf, docx, pptx или txt до 20 МБ. Соберу презентацию по нему"
+)
+DECK_FILE_TOPIC = (
+    "📎 Файл получил. Как назвать презентацию? Напиши тему — от 3 до 200 знаков"
+)
+DECK_FILE_WRONG = (
+    "Такой файл не подойдёт 🙅 Пришли pdf, docx, pptx или txt — "
+    "презентация не потратилась"
+)
+DECK_FILE_TOO_BIG = "Файл больше 20 МБ 🙅 Пришли поменьше — презентация не потратилась"
+
+
+def deck_ask_file(*, has_material: bool) -> Screen:
+    """Просьба прислать файл-материал; убрать материал — если он есть."""
+    buttons: tuple[str, ...] = (BUTTON_BACK,)
+    if has_material:
+        buttons = (BUTTON_DECK_NO_MATERIAL, BUTTON_BACK)
+    return Screen(text=DECK_ASK_FILE, buttons=buttons)
+
+
+def deck_file_topic() -> Screen:
+    """Файл пришёл вместо темы, а из его имени тема не выходит."""
+    return Screen(text=DECK_FILE_TOPIC, buttons=(BUTTON_CANCEL,))
+
+
+def deck_file_refused(*, too_big: bool, from_screen: bool) -> Screen:
+    """Файл не подошёл (В3): почему — и куда дальше. Ожидание файла остаётся."""
+    return Screen(
+        text=DECK_FILE_TOO_BIG if too_big else DECK_FILE_WRONG,
+        buttons=(BUTTON_BACK if from_screen else BUTTON_CANCEL,),
+    )
+
+
+DECK_GONE = "Эти параметры устарели — я их уже не помню 🤷\nНачни презентацию заново 👇"
+DECK_ALREADY_BUILT = (
+    "Эта презентация уже собрана — файлы выше 👆\nНужна ещё одна — начни заново 👇"
+)
+
+
+def deck_gone() -> Screen:
+    """Кнопка экрана параметров, под которой данных уже нет (В5)."""
+    return Screen(text=DECK_GONE, buttons=(MENU_PRESENTATIONS,))
+
+
+def deck_already_built() -> Screen:
+    """Кнопка сборки нажата снова, когда колода уже доставлена."""
+    return Screen(text=DECK_ALREADY_BUILT, buttons=(MENU_PRESENTATIONS,))
 
 
 def presentation_working() -> Screen:
@@ -1748,10 +1906,41 @@ def _all_screens() -> tuple[Screen, ...]:
         ),
         presentation_ask(),
         presentation_topic_bad(),
-        presentation_pick_theme(("Графит светлая", "Лазурь", "Свежая зелёная")),
-        presentation_suggested(
-            "Искусственный интеллект: польза и риски", ("Графит светлая", "Лазурь")
+        deck_screen(
+            topic="Управление требованиями стейкхолдеров в ИТ-стартапе",
+            language="ru",
+            slides=9,
+            audience="investors",
+            design="Свежая зелёная",
         ),
+        deck_screen(
+            topic="Итоги продаж за квартал",
+            language="en",
+            slides=20,
+            audience="general",
+            design="Лазурь",
+            file_name="report_q3.docx",
+        ),
+        deck_screen(
+            topic="Фотосинтез",
+            language="kk",
+            slides=4,
+            audience="students",
+            design="Графит светлая",
+            from_report=True,
+        ),
+        deck_pick(DECK_ASK_LANGUAGE, tuple(LANGUAGE_LABELS.values())),
+        deck_pick(DECK_ASK_SLIDES, tuple(str(n) for n in range(4, 21))),
+        deck_pick(DECK_ASK_AUDIENCE, tuple(AUDIENCE_LABELS.values())),
+        deck_pick(DECK_ASK_DESIGN, ("Графит светлая", "Лазурь")),
+        deck_new_topic(),
+        deck_ask_file(has_material=False),
+        deck_ask_file(has_material=True),
+        deck_file_topic(),
+        deck_file_refused(too_big=False, from_screen=False),
+        deck_file_refused(too_big=True, from_screen=True),
+        deck_gone(),
+        deck_already_built(),
         presentation_working(),
         presentation_done(),
         presentation_result(),
@@ -1772,8 +1961,9 @@ def _all_screens() -> tuple[Screen, ...]:
         documents_menu(("📊 Доклад", "📝 Реферат", "📌 Конспект")),
         document_ask_file("Кинь файл — сделаю по нему доклад"),
         document_working(),
-        document_ready(("📊 Доклад",)),
-        document_ready(("📊 Доклад",), truncated=True),
+        document_files(),
+        document_ready(with_presentation=True),
+        document_ready(with_presentation=False, truncated=True),
         document_error(),
         document_rejected(DOCUMENT_UNREADABLE, ("📊 Доклад",)),
         document_rejected(DOCUMENT_EMPTY, ("📊 Доклад",)),

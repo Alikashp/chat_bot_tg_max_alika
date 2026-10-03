@@ -26,6 +26,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import time
 import uuid
@@ -38,7 +39,9 @@ import httpx
 from app.infra.logging import get_logger
 from app.infra.ratelimit import TokenBucket
 from app.ports.presentations import (
+    PRESENTATION_TYPE,
     BuiltPresentation,
+    DeckRequest,
     PresentationBusyError,
     PresentationError,
     PresentationTheme,
@@ -140,9 +143,7 @@ class FibonacciPresentations:
         self._themes_at = self._clock()
         return themes
 
-    async def build(
-        self, topic: str, *, theme_id: str, material: str = ""
-    ) -> BuiltPresentation:
+    async def build(self, request: DeckRequest) -> BuiltPresentation:
         """Создать, дождаться, скачать. Слот и место в минуте — до запроса."""
         if self._running >= self._max_concurrent:
             raise PresentationBusyError("TOO_MANY_BUILDS")
@@ -151,25 +152,37 @@ class FibonacciPresentations:
 
         self._running += 1
         try:
-            return await self._build(topic, theme_id, material)
+            return await self._build(request)
         finally:
             self._running -= 1
 
     # --- Сборка --------------------------------------------------------
 
-    async def _build(
-        self, topic: str, theme_id: str, material: str
-    ) -> BuiltPresentation:
+    async def _build(self, request: DeckRequest) -> BuiltPresentation:
         deadline = self._clock() + WAIT_SECONDS
-        # Материал — полем input.text (§3.1); без него колода по одной теме.
-        source: dict[str, str] = {"topic": topic}
-        if material:
-            source["text"] = material
+        params = _params(request)
+        # Файл — multipart: поле params с теми же параметрами в JSON и поле
+        # file (§2, §3.1). Без файла — обычный JSON.
+        multipart = (
+            {
+                "data": {"params": json.dumps(params, ensure_ascii=False)},
+                "files": {
+                    "file": (
+                        request.file.filename,
+                        request.file.data,
+                        request.file.mime_type,
+                    )
+                },
+            }
+            if request.file is not None
+            else None
+        )
         response = await self._request(
             "POST",
             "/v1/decks",
             read=CREATE_READ_SECONDS,
-            json={"input": source, "theme_id": theme_id},
+            json=params if multipart is None else None,
+            multipart=multipart,
             # Один ключ на колоду — для всех повторов её создания (§3.1, §8).
             headers={"Idempotency-Key": self._new_key()},
             deadline=deadline,
@@ -228,6 +241,7 @@ class FibonacciPresentations:
         *,
         read: float,
         json: dict[str, Any] | None = None,
+        multipart: dict[str, Any] | None = None,
         headers: dict[str, str] | None = None,
         deadline: float | None = None,
         creating: bool = False,
@@ -245,6 +259,7 @@ class FibonacciPresentations:
                     headers={**self._headers, **(headers or {})},
                     json=json,
                     timeout=timeout,
+                    **(multipart or {}),
                 )
             except httpx.TransportError as error:
                 if last:
@@ -311,6 +326,26 @@ class _Window:
 
 
 # --- Разбор ответов ------------------------------------------------------
+
+
+def _params(request: DeckRequest) -> dict[str, Any]:
+    """Параметры колоды в терминах API (§3.1).
+
+    Тип называется явно, хотя он и по умолчанию: пока он один, но запрос
+    должен говорить, что собирать, а не полагаться на чужие умолчания.
+    Текст-материал — полем input.text; с файлом текста не бывает.
+    """
+    source: dict[str, str] = {"topic": request.topic}
+    if request.material and request.file is None:
+        source["text"] = request.material
+    return {
+        "input": source,
+        "presentation_type": PRESENTATION_TYPE,
+        "theme_id": request.theme_id,
+        "language": request.language,
+        "slides_count": request.slides,
+        "audience": request.audience,
+    }
 
 
 def _json(response: httpx.Response) -> dict[str, Any]:

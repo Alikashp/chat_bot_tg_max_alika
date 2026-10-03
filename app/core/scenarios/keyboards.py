@@ -15,12 +15,16 @@ import hashlib
 from app.core import texts
 from app.core.actions import (
     Action,
+    DeckField,
     buy_action,
+    deck_back_action,
+    deck_go_action,
+    deck_pick_action,
+    deck_set_action,
     document_action,
     presentation_from_action,
     preset_action,
     report_from_action,
-    theme_action,
 )
 from app.core.models import Button, Keyboard
 from app.core.tariffs import PAID_TARIFFS
@@ -389,17 +393,59 @@ def presentation_cancel() -> Keyboard:
     return Keyboard.row(Button(text=texts.BUTTON_CANCEL, action=Action.MENU_SHOW))
 
 
-def presentation_themes(themes: tuple[tuple[str, str], ...]) -> Keyboard:
-    """Оформления из API, каждое своей строкой, и «Отмена» под ними.
+def deck_screen(token: str) -> Keyboard:
+    """Под экраном параметров: собрать — первой, ниже — что можно поменять."""
 
-    Пары «подпись, идентификатор». Своей строкой — потому что названия
-    приходят от провайдера и их длину задаём не мы.
+    def pick(label: str, field: DeckField) -> Button:
+        return Button(text=label, action=deck_pick_action(token, field))
+
+    return Keyboard(
+        rows=(
+            (Button(text=texts.BUTTON_DECK_BUILD, action=deck_go_action(token)),),
+            (pick(texts.BUTTON_DECK_TOPIC, DeckField.TOPIC),),
+            (
+                pick(texts.BUTTON_DECK_LANGUAGE, DeckField.LANGUAGE),
+                pick(texts.BUTTON_DECK_SLIDES, DeckField.SLIDES),
+            ),
+            (
+                pick(texts.BUTTON_DECK_AUDIENCE, DeckField.AUDIENCE),
+                pick(texts.BUTTON_DECK_DESIGN, DeckField.DESIGN),
+            ),
+            (Button(text=texts.BUTTON_CANCEL, action=Action.MENU_SHOW),),
+        )
+    )
+
+
+def deck_options(
+    token: str,
+    field: DeckField,
+    options: tuple[tuple[str, str], ...],
+    *,
+    current: str,
+    per_row: int,
+) -> Keyboard:
+    """Варианты одного параметра — пары «подпись, значение» — и «Назад».
+
+    Текущее значение отмечено: человек видит, что выбрано сейчас.
     """
-    rows = [
-        (Button(text=name, action=theme_action(theme_id)),) for name, theme_id in themes
+    buttons = [
+        Button(
+            text=f"{texts.CURRENT_MARK}{label}" if value == current else label,
+            action=deck_set_action(token, field, value),
+        )
+        for label, value in options
     ]
-    rows.append((Button(text=texts.BUTTON_CANCEL, action=Action.MENU_SHOW),))
+    rows = [
+        tuple(buttons[start : start + per_row])
+        for start in range(0, len(buttons), per_row)
+    ]
+    rows.append((Button(text=texts.BUTTON_BACK, action=deck_back_action(token)),))
     return Keyboard(rows=tuple(rows))
+
+
+def deck_back(token: str) -> Keyboard:
+    """Одна «Назад» на экран — под вопросом о новой теме."""
+    return Keyboard.row(Button(text=texts.BUTTON_BACK, action=deck_back_action(token)))
 
 
 def presentation_result(report_token: str | None = None) -> Keyboard:

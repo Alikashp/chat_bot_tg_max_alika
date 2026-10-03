@@ -490,8 +490,6 @@ PRESENTATION_ASK = "О чём презентация? Напиши тему, н�
 #: показываем, а свой отказ быстрее и понятнее.
 PRESENTATION_TOPIC_BAD = "Тема нужна от 3 до 200 знаков. Напиши её ещё раз 🙏"
 
-PRESENTATION_PICK_THEME = "Выбери оформление 👇"
-
 #: Под вопросом о теме. Дословно из поручения.
 BUTTON_SUGGEST_TOPIC = "Придумай сам"
 
@@ -565,20 +563,123 @@ def presentation_topic_bad() -> Screen:
     return Screen(text=PRESENTATION_TOPIC_BAD, next_step="ждём тему ещё раз")
 
 
-def presentation_suggested(topic: str, theme_buttons: tuple[str, ...]) -> Screen:
-    """Тема из «Придумай сам» — и сразу выбор оформления, одним сообщением.
+# --- Экран параметров презентации (сессия 7) -----------------------------
 
-    Тему показываем обязательно: человек должен видеть, о чём будет его
-    презентация, до того как она соберётся и спишется.
+BUTTON_DECK_BUILD = "🚀 Собрать презентацию"
+BUTTON_DECK_TOPIC = "📝 Тема"
+BUTTON_DECK_LANGUAGE = "🌐 Язык"
+BUTTON_DECK_SLIDES = "🔢 Слайды"
+BUTTON_DECK_AUDIENCE = "👥 Аудитория"
+BUTTON_DECK_DESIGN = "🎨 Дизайн"
+BUTTON_BACK = "← Назад"
+
+#: Отметка текущего значения среди вариантов выбора.
+CURRENT_MARK = "✅ "
+
+#: Подписи языков. Сами коды — из docs/API.md (§3.1), подписи — наши.
+LANGUAGE_LABELS: dict[str, str] = {
+    "ru": "🇷🇺 Русский",
+    "en": "🇬🇧 Английский",
+    "uz": "🇺🇿 Узбекский",
+    "kk": "🇰🇿 Казахский",
+}
+
+#: Подписи аудиторий. Коды — из docs/API.md (§3.1), подписи — наши.
+AUDIENCE_LABELS: dict[str, str] = {
+    "general": "👥 Широкая",
+    "students": "🎓 Студенты",
+    "colleagues": "🤝 Коллеги",
+    "management": "👔 Руководство",
+    "clients": "🛍 Клиенты",
+    "investors": "💰 Инвесторы",
+}
+
+#: Тип у API пока один — доклад (docs/API.md §3.1, §10).
+DECK_TYPE = "Доклад"
+
+
+def deck_screen(
+    *,
+    topic: str,
+    language: str,
+    slides: int,
+    audience: str,
+    design: str,
+    file_name: str | None = None,
+    from_report: bool = False,
+) -> Screen:
+    """Экран параметров перед сборкой (образец заказчика, на «ты»).
+
+    Строки — только те, что принимает API: тип у него пока один, но он
+    параметр запроса и показан, чтобы человек знал, что получит. «Файлы»
+    из образца параметром не являются — API всегда отдаёт PPTX и PDF, — и
+    этой строки нет. Восемь строк — разрешённое исключение, как у тарифов:
+    смысл экрана в том, чтобы увидеть всё сразу перед сборкой.
+
+    ``language``, ``audience`` — коды API; ``design`` — название оформления
+    от провайдера.
     """
+    if file_name is not None:
+        material = f"файл «{file_name}» — соберём по нему"
+    elif from_report:
+        material = "доклад — соберём по нему"
+    else:
+        material = "нет — соберём по теме"
+    lines = [
+        "📋 Проверь параметры",
+        f"📝 Тема: {topic}",
+        f"📂 Тип: {DECK_TYPE}",
+        f"📎 Материал: {material}",
+        f"🌐 Язык: {LANGUAGE_LABELS[language]}",
+        f"🔢 Слайдов: {slides} (вместе с титульным и финальным)",
+        f"👥 Аудитория: {AUDIENCE_LABELS[audience]}",
+        f"🎨 Дизайн: {design}",
+    ]
     return Screen(
-        text=f"Тема: {topic}\n{PRESENTATION_PICK_THEME}",
-        buttons=(*theme_buttons, BUTTON_CANCEL),
+        text="\n".join(lines),
+        buttons=(
+            BUTTON_DECK_BUILD,
+            BUTTON_DECK_TOPIC,
+            BUTTON_DECK_LANGUAGE,
+            BUTTON_DECK_SLIDES,
+            BUTTON_DECK_AUDIENCE,
+            BUTTON_DECK_DESIGN,
+            BUTTON_CANCEL,
+        ),
+        max_lines=8,
     )
 
 
-def presentation_pick_theme(theme_buttons: tuple[str, ...]) -> Screen:
-    return Screen(text=PRESENTATION_PICK_THEME, buttons=(*theme_buttons, BUTTON_CANCEL))
+def deck_pick(field_question: str, options: tuple[str, ...]) -> Screen:
+    """Выбор значения одного параметра: варианты и «Назад» на экран."""
+    return Screen(text=field_question, buttons=(*options, BUTTON_BACK))
+
+
+DECK_ASK_LANGUAGE = "🌐 На каком языке будут слайды?"
+DECK_ASK_SLIDES = "🔢 Сколько слайдов — вместе с титульным и финальным?"
+DECK_ASK_AUDIENCE = "👥 Для кого презентация?"
+DECK_ASK_DESIGN = "🎨 Выбери дизайн 👇"
+DECK_ASK_TOPIC = "📝 Напиши новую тему — от 3 до 200 знаков"
+
+
+def deck_new_topic() -> Screen:
+    return Screen(text=DECK_ASK_TOPIC, buttons=(BUTTON_BACK,))
+
+
+DECK_GONE = "Эти параметры устарели — я их уже не помню 🤷\nНачни презентацию заново 👇"
+DECK_ALREADY_BUILT = (
+    "Эта презентация уже собрана — файлы выше 👆\nНужна ещё одна — начни заново 👇"
+)
+
+
+def deck_gone() -> Screen:
+    """Кнопка экрана параметров, под которой данных уже нет (В5)."""
+    return Screen(text=DECK_GONE, buttons=(MENU_PRESENTATIONS,))
+
+
+def deck_already_built() -> Screen:
+    """Кнопка сборки нажата снова, когда колода уже доставлена."""
+    return Screen(text=DECK_ALREADY_BUILT, buttons=(MENU_PRESENTATIONS,))
 
 
 def presentation_working() -> Screen:
@@ -1764,10 +1865,36 @@ def _all_screens() -> tuple[Screen, ...]:
         ),
         presentation_ask(),
         presentation_topic_bad(),
-        presentation_pick_theme(("Графит светлая", "Лазурь", "Свежая зелёная")),
-        presentation_suggested(
-            "Искусственный интеллект: польза и риски", ("Графит светлая", "Лазурь")
+        deck_screen(
+            topic="Управление требованиями стейкхолдеров в ИТ-стартапе",
+            language="ru",
+            slides=9,
+            audience="investors",
+            design="Свежая зелёная",
         ),
+        deck_screen(
+            topic="Итоги продаж за квартал",
+            language="en",
+            slides=20,
+            audience="general",
+            design="Лазурь",
+            file_name="report_q3.docx",
+        ),
+        deck_screen(
+            topic="Фотосинтез",
+            language="kk",
+            slides=4,
+            audience="students",
+            design="Графит светлая",
+            from_report=True,
+        ),
+        deck_pick(DECK_ASK_LANGUAGE, tuple(LANGUAGE_LABELS.values())),
+        deck_pick(DECK_ASK_SLIDES, tuple(str(n) for n in range(4, 21))),
+        deck_pick(DECK_ASK_AUDIENCE, tuple(AUDIENCE_LABELS.values())),
+        deck_pick(DECK_ASK_DESIGN, ("Графит светлая", "Лазурь")),
+        deck_new_topic(),
+        deck_gone(),
+        deck_already_built(),
         presentation_working(),
         presentation_done(),
         presentation_result(),

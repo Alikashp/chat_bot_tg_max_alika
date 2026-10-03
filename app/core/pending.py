@@ -33,14 +33,10 @@ _AWAIT_DOCUMENT_PREFIX = "await:doc:"
 #: Ждём тему презентации (фаза 10).
 AWAIT_PRESENTATION_TOPIC = "await:pres"
 
-#: Ждём выбор оформления. За префиксом — тема, которую человек уже написал:
-#: между темой и нажатием на оформление проходит отдельное обращение, и
-#: помнить её больше негде.
-_AWAIT_PRESENTATION_THEME_PREFIX = "await:pres:theme:"
-
-#: Ждём оформление для презентации по докладу. За префиксом — жетон доклада,
-#: а не тема: тема взята из текста доклада, и ей, как и ему, в базе не место.
-_AWAIT_PRESENTATION_SOURCE_PREFIX = "await:pres:from:"
+#: Ждём новую тему для экрана параметров презентации (сессия 7). За
+#: префиксом — жетон черновика, а не тема: тема лежит в черновике в памяти,
+#: и в базе ей не место (В6).
+_AWAIT_DECK_TOPIC_PREFIX = "await:pres:topic:"
 
 #: Ждём почту для фискального чека. За префиксом — тариф, за которым человек
 #: шёл: спросив адрес, надо вернуть его туда же, а не в начало витрины.
@@ -175,29 +171,15 @@ def is_awaiting_presentation_topic(pending: str | None) -> bool:
     return pending == AWAIT_PRESENTATION_TOPIC
 
 
-def await_presentation_theme(topic: str) -> str:
-    """Состояние «тема есть, ждём выбор оформления»."""
-    if not topic:
-        raise ValueError("нужна тема презентации")
-    return f"{_AWAIT_PRESENTATION_THEME_PREFIX}{topic}"
-
-
-def parse_await_presentation_theme(pending: str | None) -> str | None:
-    """Тема, под которую ждём оформление; None — ждём не его."""
-    if pending is None or not pending.startswith(_AWAIT_PRESENTATION_THEME_PREFIX):
-        return None
-    return pending.removeprefix(_AWAIT_PRESENTATION_THEME_PREFIX) or None
-
-
-def await_presentation_source(token: str) -> str:
-    """Состояние «доклад есть, ждём оформление для презентации по нему»."""
+def await_deck_topic(token: str) -> str:
+    """Состояние «ждём новую тему для черновика под таким-то жетоном»."""
     if not token:
-        raise ValueError("нужен жетон доклада")
-    return f"{_AWAIT_PRESENTATION_SOURCE_PREFIX}{token}"
+        raise ValueError("нужен жетон черновика")
+    return f"{_AWAIT_DECK_TOPIC_PREFIX}{token}"
 
 
-def parse_await_presentation_source(pending: str | None) -> str | None:
-    """Жетон доклада, под который ждём оформление; None — ждём не его."""
-    if pending is None or not pending.startswith(_AWAIT_PRESENTATION_SOURCE_PREFIX):
+def parse_await_deck_topic(pending: str | None) -> str | None:
+    """Жетон черновика, для которого ждём тему; None — ждём не её."""
+    if pending is None or not pending.startswith(_AWAIT_DECK_TOPIC_PREFIX):
         return None
-    return pending.removeprefix(_AWAIT_PRESENTATION_SOURCE_PREFIX) or None
+    return pending.removeprefix(_AWAIT_DECK_TOPIC_PREFIX) or None

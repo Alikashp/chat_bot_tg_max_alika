@@ -17,7 +17,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Protocol, TypeVar
+
+T = TypeVar("T")
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,18 +34,28 @@ class Carried:
     material: str = ""
 
 
-class Handoff(Protocol):
-    """Хранилище жетонов для кнопок-связок."""
+class Tokens(Protocol[T]):
+    """Хранилище жетонов: что лежит за кнопкой, пока её не нажали.
 
-    def put(self, carried: Carried) -> str:
+    Одно устройство на два случая: кнопки-связки доклада и презентации
+    (``Handoff``) и экран параметров презентации, где за кнопками лежит
+    черновик будущей колоды. В обоих случаях данные — тема, текст доклада,
+    присланный файл — в базу не кладутся.
+    """
+
+    def put(self, carried: T) -> str:
         """Кладёт и возвращает жетон для данных кнопки."""
         ...
 
-    def peek(self, token: str) -> Carried | None:
+    def peek(self, token: str) -> T | None:
         """Смотрит, не забирая. None — жетона нет или он уже взят."""
         ...
 
-    def take(self, token: str) -> Carried | None:
+    def update(self, token: str, carried: T) -> bool:
+        """Заменяет лежащее под живым и не взятым жетоном. False — нечего менять."""
+        ...
+
+    def take(self, token: str) -> T | None:
         """Забирает. Повторное ``take`` того же жетона даст None."""
         ...
 
@@ -51,10 +63,14 @@ class Handoff(Protocol):
         """Брали ли этот жетон: отличает «уже сделано» от «устарело»."""
         ...
 
-    def give_back(self, token: str, carried: Carried) -> None:
+    def give_back(self, token: str, carried: T) -> None:
         """Возвращает взятое, когда работа не удалась.
 
         Без возврата упавшая сборка сожгла бы кнопку: человек нажал бы её
         снова и услышал «уже сделано», хотя не получил ничего.
         """
         ...
+
+
+#: Жетоны кнопок-связок «доклад по презентации» и «презентация по докладу».
+Handoff = Tokens[Carried]

@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from enum import StrEnum
 
 
@@ -118,13 +119,12 @@ def parse_document_action(action: str) -> str | None:
     return action.removeprefix(DOCUMENT_PREFIX) or None
 
 
-def theme_action(theme_id: str) -> str:
-    """Действие «выбрано такое-то оформление презентации»."""
-    return f"{THEME_PREFIX}{theme_id}"
-
-
 def parse_theme_action(action: str) -> str | None:
-    """Достаёт идентификатор оформления; None — если это не оно."""
+    """Кнопка оформления из версии до экрана параметров; None — не она.
+
+    Таких кнопок бот больше не рисует, но в переписках они живут вечно, и
+    ответить на них надо честно (сессия 7, В5).
+    """
     if not action.startswith(THEME_PREFIX):
         return None
     return action.removeprefix(THEME_PREFIX) or None
@@ -150,6 +150,80 @@ def parse_presentation_from_action(action: str) -> str | None:
     if not action.startswith(PRESENTATION_FROM_PREFIX):
         return None
     return action.removeprefix(PRESENTATION_FROM_PREFIX) or None
+
+
+# --- Экран параметров презентации (сессия 7) -----------------------------
+
+DECK_GO_PREFIX = "v:go:"
+DECK_PICK_PREFIX = "v:opt:"
+DECK_SET_PREFIX = "v:set:"
+DECK_BACK_PREFIX = "v:back:"
+
+
+class DeckField(StrEnum):
+    """Параметр экрана — коротко: данные кнопки Telegram ограничены 64 байтами."""
+
+    TOPIC = "t"
+    MATERIAL = "m"
+    LANGUAGE = "l"
+    SLIDES = "s"
+    AUDIENCE = "a"
+    DESIGN = "d"
+
+
+@dataclass(frozen=True, slots=True)
+class DeckAction:
+    """Разобранная кнопка экрана параметров."""
+
+    #: Что делать: собрать, выбрать параметр, задать значение, вернуться.
+    kind: str
+    token: str
+    field: DeckField | None = None
+    value: str = ""
+
+
+def deck_go_action(token: str) -> str:
+    """«Собрать презентацию» по черновику под жетоном."""
+    return f"{DECK_GO_PREFIX}{token}"
+
+
+def deck_pick_action(token: str, field: DeckField) -> str:
+    """Показать выбор значения параметра."""
+    return f"{DECK_PICK_PREFIX}{token}:{field.value}"
+
+
+def deck_set_action(token: str, field: DeckField, value: str) -> str:
+    """Задать параметру значение и вернуться на экран."""
+    return f"{DECK_SET_PREFIX}{token}:{field.value}:{value}"
+
+
+def deck_back_action(token: str) -> str:
+    """Вернуться на экран без изменений."""
+    return f"{DECK_BACK_PREFIX}{token}"
+
+
+def parse_deck_action(action: str) -> DeckAction | None:
+    """Разбирает кнопку экрана параметров; None — это не она или она испорчена."""
+    for prefix, kind in (
+        (DECK_GO_PREFIX, "go"),
+        (DECK_BACK_PREFIX, "back"),
+        (DECK_PICK_PREFIX, "pick"),
+        (DECK_SET_PREFIX, "set"),
+    ):
+        if not action.startswith(prefix):
+            continue
+        token, _, rest = action.removeprefix(prefix).partition(":")
+        if not token:
+            return None
+        if kind in ("go", "back"):
+            return DeckAction(kind=kind, token=token)
+        code, _, value = rest.partition(":")
+        try:
+            field = DeckField(code)
+        except ValueError:
+            return None
+        return DeckAction(kind=kind, token=token, field=field, value=value)
+    return None
 
 
 def method_action(method: str, tariff_id: str) -> str:

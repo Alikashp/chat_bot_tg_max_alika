@@ -20,6 +20,7 @@ from app.adapters.presentations.fibonacci import (
     FibonacciPresentations,
 )
 from app.ports.presentations import (
+    DeckRequest,
     PresentationBusyError,
     PresentationError,
     PresentationTimeoutError,
@@ -101,6 +102,11 @@ def mock_files(pdf_status: int = 200) -> None:
 # --- Путь целиком --------------------------------------------------------
 
 
+def request(topic: str) -> DeckRequest:
+    """Колода по одной теме в оформлении «Лазурь», остальное — по умолчанию."""
+    return DeckRequest(topic=topic, theme_id="azure_coral")
+
+
 @respx.mock
 async def test_create_poll_and_download(
     api: FibonacciPresentations, clock: Clock
@@ -117,7 +123,7 @@ async def test_create_poll_and_download(
     )
     mock_files()
 
-    built = await api.build("Как работает фотосинтез", theme_id="azure_coral")
+    built = await api.build(request("Как работает фотосинтез"))
 
     assert (built.pptx, built.pdf) == (b"PPTX", b"PDF")
     assert status.call_count == 2
@@ -125,10 +131,43 @@ async def test_create_poll_and_download(
     sent = create.calls.last.request
     assert json.loads(sent.content) == {
         "input": {"topic": "Как работает фотосинтез"},
+        "presentation_type": "doklad",
         "theme_id": "azure_coral",
+        "language": "ru",
+        "slides_count": 9,
+        "audience": "general",
     }
     assert sent.headers["Authorization"] == f"Bearer {KEY}"
     assert sent.headers["Idempotency-Key"] == "key-0"
+
+
+@respx.mock
+async def test_every_screen_parameter_reaches_the_api(
+    api: FibonacciPresentations,
+) -> None:
+    """Язык, число слайдов, аудитория — полями запроса под именами из §3.1."""
+    create = respx.post(f"{API}/v1/decks").mock(
+        return_value=httpx.Response(202, json=deck("done"))
+    )
+    mock_files()
+
+    await api.build(
+        DeckRequest(
+            topic="Итоги квартала",
+            theme_id="fresh_green",
+            language="kk",
+            slides=12,
+            audience="investors",
+        )
+    )
+
+    sent = json.loads(create.calls.last.request.content)
+    assert (sent["language"], sent["slides_count"], sent["audience"]) == (
+        "kk",
+        12,
+        "investors",
+    )
+    assert sent["theme_id"] == "fresh_green"
 
 
 @respx.mock
@@ -139,7 +178,11 @@ async def test_the_report_goes_as_material(api: FibonacciPresentations) -> None:
     )
     mock_files()
 
-    await api.build("Фотосинтез", theme_id="azure_coral", material="Текст доклада")
+    await api.build(
+        DeckRequest(
+            topic="Фотосинтез", theme_id="azure_coral", material="Текст доклада"
+        )
+    )
 
     sent = json.loads(create.calls.last.request.content)
     assert sent["input"] == {"topic": "Фотосинтез", "text": "Текст доклада"}
@@ -153,7 +196,7 @@ async def test_timeouts_follow_section_8(api: FibonacciPresentations) -> None:
     )
     mock_files()
 
-    await api.build("Тема доклада", theme_id="azure_coral")
+    await api.build(request("Тема доклада"))
 
     post_timeout = create.calls.last.request.extensions["timeout"]
     assert post_timeout == {"connect": 10.0, "read": 60.0, "write": 60.0, "pool": 60.0}
@@ -171,7 +214,7 @@ async def test_status_is_read_with_ten_seconds(api: FibonacciPresentations) -> N
     )
     mock_files()
 
-    await api.build("Тема доклада", theme_id="azure_coral")
+    await api.build(request("Тема доклада"))
 
     timeout = status.calls.last.request.extensions["timeout"]
     assert (timeout["connect"], timeout["read"]) == (10.0, 10.0)
@@ -187,7 +230,7 @@ async def test_files_are_fetched_from_our_api_not_from_the_links(
     respx.post(f"{API}/v1/decks").mock(return_value=httpx.Response(202, json=elsewhere))
     mock_files()
 
-    await api.build("Тема доклада", theme_id="azure_coral")
+    await api.build(request("Тема доклада"))
 
     assert all(call.request.url.host == "fibonacci-api.test" for call in respx.calls)
 
@@ -202,7 +245,7 @@ async def test_a_missing_pdf_is_not_requested(api: FibonacciPresentations) -> No
     )
     mock_files()
 
-    built = await api.build("Тема доклада", theme_id="azure_coral")
+    built = await api.build(request("Тема доклада"))
 
     assert built.pdf is None
     assert not any(c.request.url.path.endswith("/pdf") for c in respx.calls)
@@ -218,7 +261,7 @@ async def test_a_pdf_that_did_not_build_leaves_the_pptx(
     )
     mock_files(pdf_status=404)
 
-    built = await api.build("Тема доклада", theme_id="azure_coral")
+    built = await api.build(request("Тема доклада"))
 
     assert (built.pptx, built.pdf) == (b"PPTX", None)
 
@@ -241,7 +284,7 @@ async def test_a_failing_create_is_retried_with_the_same_key(
     )
     mock_files()
 
-    await api.build("Тема доклада", theme_id="azure_coral")
+    await api.build(request("Тема доклада"))
 
     assert clock.slept[:3] == [2.0, 4.0, 8.0]
     keys = {call.request.headers["Idempotency-Key"] for call in create.calls}
@@ -256,7 +299,7 @@ async def test_three_retries_and_then_a_failure(api: FibonacciPresentations) -> 
     )
 
     with pytest.raises(PresentationError) as raised:
-        await api.build("Тема доклада", theme_id="azure_coral")
+        await api.build(request("Тема доклада"))
 
     assert create.call_count == 4
     assert raised.value.code == "INTERNAL"
@@ -273,7 +316,7 @@ async def test_other_errors_are_not_retried(
     )
 
     with pytest.raises(PresentationError) as raised:
-        await api.build("Тема доклада", theme_id="azure_coral")
+        await api.build(request("Тема доклада"))
 
     assert create.call_count == 1
     assert not isinstance(raised.value, PresentationBusyError)
@@ -293,7 +336,7 @@ async def test_429_waits_retry_after(api: FibonacciPresentations, clock: Clock) 
     )
     mock_files()
 
-    await api.build("Тема доклада", theme_id="azure_coral")
+    await api.build(request("Тема доклада"))
 
     assert create.call_count == 2
     assert clock.slept[0] == 7.0
@@ -311,7 +354,7 @@ async def test_a_429_longer_than_the_wait_is_busy(api: FibonacciPresentations) -
     )
 
     with pytest.raises(PresentationBusyError) as raised:
-        await api.build("Тема доклада", theme_id="azure_coral")
+        await api.build(request("Тема доклада"))
 
     assert raised.value.reached_api is True
     assert raised.value.code == "DAILY_LIMIT_EXCEEDED"
@@ -330,7 +373,7 @@ async def test_a_failed_deck_names_its_code(api: FibonacciPresentations) -> None
     )
 
     with pytest.raises(PresentationError) as raised:
-        await api.build("Тема доклада", theme_id="azure_coral")
+        await api.build(request("Тема доклада"))
 
     assert raised.value.code == "OUTLINE_FAILED"
     # Сообщение провайдера в ошибку не попадает: человеку — свои тексты.
@@ -351,7 +394,7 @@ async def test_five_minutes_is_the_limit(
     started = clock.now
 
     with pytest.raises(PresentationTimeoutError):
-        await api.build("Тема доклада", theme_id="azure_coral")
+        await api.build(request("Тема доклада"))
 
     assert clock.now - started <= 300.0
     assert status.call_count == 74  # раз в 4 с, без последнего за чертой
@@ -391,16 +434,14 @@ async def test_over_the_concurrency_limit_nothing_is_sent(clock: Clock) -> None:
     respx.get(f"{API}/v1/decks/{DECK}").mock(side_effect=held_status)
     mock_files()
 
-    first = asyncio.create_task(api.build("Первая тема", theme_id="azure_coral"))
+    first = asyncio.create_task(api.build(request("Первая тема")))
     await asyncio.wait_for(polling.wait(), timeout=5)
     posts_before = respx.routes[0].call_count
 
     # Срок на случай поломки: без предела вторая сборка встала бы на том же
     # задержанном опросе, и тест не упал бы, а повис.
     with pytest.raises(PresentationBusyError) as raised:
-        await asyncio.wait_for(
-            api.build("Вторая тема", theme_id="azure_coral"), timeout=5
-        )
+        await asyncio.wait_for(api.build(request("Вторая тема")), timeout=5)
 
     assert raised.value.reached_api is False
     assert respx.routes[0].call_count == posts_before
@@ -419,16 +460,16 @@ async def test_no_more_than_ten_decks_a_minute(
     mock_files()
 
     for _ in range(DECKS_PER_MINUTE):
-        await api.build("Тема доклада", theme_id="azure_coral")
+        await api.build(request("Тема доклада"))
     posts = respx.routes[0].call_count
 
     with pytest.raises(PresentationBusyError) as raised:
-        await api.build("Тема доклада", theme_id="azure_coral")
+        await api.build(request("Тема доклада"))
     assert raised.value.reached_api is False
     assert respx.routes[0].call_count == posts
 
     clock.now += 60
-    await api.build("Тема доклада", theme_id="azure_coral")
+    await api.build(request("Тема доклада"))
 
 
 async def test_requests_stay_under_120_a_minute(clock: Clock) -> None:

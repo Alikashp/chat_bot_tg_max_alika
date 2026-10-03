@@ -821,51 +821,31 @@ def paywall_messages(*, invite_messages: int) -> Screen:
 # --- Профиль (§2.6) ------------------------------------------------------
 
 
-@dataclass(frozen=True, slots=True)
-class Left:
-    """Остаток одного ресурса для профиля: норма и подарки отдельно.
-
-    ``norm`` — сколько осталось от нормы тарифа; None — нормы этого вида у
-    тарифа нет вовсе (у бесплатного — доклады и презентации), и тогда
-    показываются только подарки.
-    """
-
-    norm: int | None
-    bonus: int
-
-    def __str__(self) -> str:
-        gifts = f"🎁{self.bonus}"
-        if self.norm is None:
-            return gifts if self.bonus else "0"
-        return f"{self.norm} + {gifts}" if self.bonus else str(self.norm)
-
-
 def profile(
     *,
     tariff_id: TariffId,
     messages_used: int,
     messages_limit: int,
-    images: Left,
-    documents: Left,
+    images_left: int,
+    documents_left: int,
     friends: int,
-    presentations: Left | None = None,
+    presentations_left: int | None = None,
     user_number: int | None = None,
     period_ends: str | None = None,
     tariff_continues: bool = True,
 ) -> Screen:
     """Реальные числа и два выхода.
 
-    Остаток — норма плюс подарки (Т8): «37 + 🎁2» читается как «тридцать
-    семь в этом месяце и два подарка сверху», и видно, что сгорит с концом
-    периода, а что останется. 🎁 — тот же значок, что на кнопках «Позвать
-    друга»: подарки в боте везде выглядят одинаково.
+    Остаток — одно число: норма плюс подарки (Т8, решение заказчика).
+    Человеку важно, сколько он ещё может сделать, а не из какой корзины это
+    спишется.
 
     ``period_ends`` — день, когда кончается период месячной нормы. В первой
     строке он говорит то, что на этот день правда случится: у бесплатного —
     придут новые картинки, у платного с продлением — начнётся новый месяц,
     у платного без продления — кончится тариф.
 
-    ``presentations`` — None, когда раздела презентаций нет (нет ключа API):
+    ``presentations_left`` — None, когда раздела презентаций нет (нет ключа API):
     тогда и в профиле о них ни слова.
 
     ``user_number`` — номер для поддержки. Появляется не везде: в Telegram
@@ -881,11 +861,11 @@ def profile(
         else:
             title = f"{title} · до {period_ends}"
     left = [
-        f"{_button_name(MENU_IMAGES)}: {images}",
-        f"{_button_name(MENU_DOCUMENTS)}: {documents}",
+        f"{_button_name(MENU_IMAGES)}: {images_left}",
+        f"{_button_name(MENU_DOCUMENTS)}: {documents_left}",
     ]
-    if presentations is not None:
-        left.append(f"{_button_name(MENU_PRESENTATIONS)}: {presentations}")
+    if presentations_left is not None:
+        left.append(f"{_button_name(MENU_PRESENTATIONS)}: {presentations_left}")
     lines = [
         title,
         f"Сообщений сегодня: {messages_used} из {messages_limit}",
@@ -1565,8 +1545,8 @@ def _all_screens() -> tuple[Screen, ...]:
             tariff_id=TariffId.FREE,
             messages_used=12,
             messages_limit=20,
-            images=Left(norm=2, bonus=3),
-            documents=Left(norm=None, bonus=2),
+            images_left=5,
+            documents_left=2,
             friends=3,
             period_ends="27 сентября",
         ),
@@ -1574,9 +1554,9 @@ def _all_screens() -> tuple[Screen, ...]:
             tariff_id=TariffId.MAX,
             messages_used=12,
             messages_limit=200,
-            images=Left(norm=148, bonus=12),
-            documents=Left(norm=100, bonus=0),
-            presentations=Left(norm=60, bonus=1),
+            images_left=160,
+            documents_left=100,
+            presentations_left=61,
             friends=3,
             user_number=1234,
             period_ends="27 сентября",
@@ -1585,9 +1565,9 @@ def _all_screens() -> tuple[Screen, ...]:
             tariff_id=TariffId.PRO,
             messages_used=0,
             messages_limit=100,
-            images=Left(norm=0, bonus=0),
-            documents=Left(norm=0, bonus=0),
-            presentations=Left(norm=0, bonus=0),
+            images_left=0,
+            documents_left=0,
+            presentations_left=0,
             friends=0,
             user_number=1234,
             period_ends="27 сентября",

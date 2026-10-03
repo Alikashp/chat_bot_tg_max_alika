@@ -135,9 +135,9 @@ def test_profile_shows_every_number() -> None:
         tariff_id=TariffId.FREE,
         messages_used=12,
         messages_limit=20,
-        images=texts.Left(norm=2, bonus=4),
-        documents=texts.Left(norm=None, bonus=2),
-        presentations=texts.Left(norm=None, bonus=1),
+        images_left=6,
+        documents_left=2,
+        presentations_left=1,
         friends=3,
         user_number=123456,
         period_ends="27 сентября",
@@ -146,19 +146,10 @@ def test_profile_shows_every_number() -> None:
     assert screen.lines == [
         "Твой тариф: Бесплатный · новые картинки 27 сентября",
         "Сообщений сегодня: 12 из 20",
-        "Картинки: 2 + 🎁4 · Доклад / Реферат: 🎁2 · Презентации: 🎁1",
+        "Картинки: 6 · Доклад / Реферат: 2 · Презентации: 1",
         "Друзей позвал: 3",
         "Твой номер: 123456",
     ]
-
-
-def test_a_remainder_is_the_norm_plus_the_gifts() -> None:
-    """Т8: норма и подарки видны по отдельности; пустое — ноль, а не пустота."""
-    assert str(texts.Left(norm=37, bonus=2)) == "37 + 🎁2"
-    assert str(texts.Left(norm=37, bonus=0)) == "37"
-    assert str(texts.Left(norm=0, bonus=0)) == "0"
-    assert str(texts.Left(norm=None, bonus=2)) == "🎁2"
-    assert str(texts.Left(norm=None, bonus=0)) == "0"
 
 
 def test_profile_labels_are_the_menu_buttons() -> None:
@@ -167,9 +158,9 @@ def test_profile_labels_are_the_menu_buttons() -> None:
         tariff_id=TariffId.FREE,
         messages_used=0,
         messages_limit=20,
-        images=texts.Left(norm=0, bonus=0),
-        documents=texts.Left(norm=None, bonus=0),
-        presentations=texts.Left(norm=None, bonus=0),
+        images_left=0,
+        documents_left=0,
+        presentations_left=0,
         friends=0,
     ).lines[2]
 
@@ -184,12 +175,12 @@ def test_profile_without_presentations_does_not_mention_them() -> None:
         tariff_id=TariffId.FREE,
         messages_used=0,
         messages_limit=20,
-        images=texts.Left(norm=3, bonus=0),
-        documents=texts.Left(norm=None, bonus=3),
+        images_left=3,
+        documents_left=3,
         friends=0,
     ).lines[2]
 
-    assert line == "Картинки: 3 · Доклад / Реферат: 🎁3"
+    assert line == "Картинки: 3 · Доклад / Реферат: 3"
 
 
 def test_referral_invite_is_a_ready_message_not_a_bare_link() -> None:

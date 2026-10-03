@@ -14,17 +14,65 @@ tests/unit/test_spending.py и в каждом сценарии отдельно
 
 from __future__ import annotations
 
+from datetime import date
+
 from app.core.limits import (
     Allowance,
     LimitKind,
     NormPeriod,
     Source,
     allowance,
+    current_day,
     monthly_norm,
     norm_period,
+    norm_renewal,
+    tariff_continues,
 )
 from app.core.models import User
 from app.core.scenarios.deps import Deps, Session
+from app.ports.payments import SubscriptionStatus
+
+
+async def renewing(deps: Deps, session: Session) -> bool:
+    """Ждём ли очередного списания по подписке."""
+    subscription = await deps.storage.get_subscription(session.user.id)
+    return (
+        subscription is not None
+        and subscription.status != SubscriptionStatus.CANCELLED.value
+    )
+
+
+async def renewal(
+    deps: Deps, session: Session, kind: LimitKind
+) -> tuple[date, bool] | None:
+    """Какого числа придёт новая норма и зависит ли это от продления.
+
+    None — сама не придёт: следующим периодом правит тариф без такой нормы.
+    Дата — день по часовому поясу человека: «новые будут 27 сентября» должно
+    совпадать с его календарём, а не с UTC.
+    """
+    found = norm_renewal(
+        session.user,
+        period_of(deps, session),
+        session.tariff,
+        kind,
+        renewing=await renewing(deps, session),
+    )
+    if found is None:
+        return None
+    return current_day(found.at, deps.settings.timezone), found.by_charge
+
+
+async def period_end(deps: Deps, session: Session) -> tuple[date, bool]:
+    """Конец текущего периода и продолжится ли после него нынешний тариф."""
+    period = period_of(deps, session)
+    continues = tariff_continues(
+        session.user,
+        period,
+        session.tariff,
+        renewing=await renewing(deps, session),
+    )
+    return current_day(period.end, deps.settings.timezone), continues
 
 
 def period_of(deps: Deps, session: Session) -> NormPeriod:

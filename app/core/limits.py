@@ -31,7 +31,7 @@ from enum import StrEnum
 from zoneinfo import ZoneInfo
 
 from app.core.models import PeriodUsage, TariffId, Usage, User
-from app.core.tariffs import Tariff, active_tariff
+from app.core.tariffs import Tariff, active_tariff, tariff_of
 
 
 class LimitKind(StrEnum):
@@ -165,6 +165,60 @@ def _window(
     if until is not None and until < end:
         end = until
     return NormPeriod(start=start, end=end)
+
+
+@dataclass(frozen=True, slots=True)
+class NormRenewal:
+    """Когда придёт новая норма — и зависит ли это от списания по подписке."""
+
+    at: datetime
+    #: Новая норма придёт только с очередным списанием: без него тариф
+    #: кончится, а у бесплатного такой нормы нет. Пейволл говорит об этом
+    #: прямо, чтобы не обещать того, что зависит от банка.
+    by_charge: bool
+
+
+def tariff_continues(
+    user: User, period: NormPeriod, tariff: Tariff, *, renewing: bool
+) -> bool:
+    """Продолжится ли нынешний тариф после конца периода.
+
+    Бесплатный — всегда. Платный — если период кончается раньше оплаченного
+    срока или если подписка будет продлеваться. Иначе с концом периода
+    кончается и тариф: дальше действуют бесплатные нормы (Т5).
+    """
+    if tariff.is_free or renewing:
+        return True
+    return user.tariff_expires_at is not None and period.end < user.tariff_expires_at
+
+
+def norm_renewal(
+    user: User,
+    period: NormPeriod,
+    tariff: Tariff,
+    kind: LimitKind,
+    *,
+    renewing: bool,
+) -> NormRenewal | None:
+    """Когда у человека появится новая норма этого вида; None — сама не появится.
+
+    Не появится, если следующим периодом правит тариф без такой нормы: у
+    бесплатного нет докладов и презентаций в месяц. Обещать их на пейволле
+    значило бы отправить человека ждать того, чего не будет (Т7).
+    """
+    free = tariff_of(TariffId.FREE)
+    prepaid = (
+        not tariff.is_free
+        and user.tariff_expires_at is not None
+        and period.end < user.tariff_expires_at
+    )
+    following = (
+        tariff if tariff_continues(user, period, tariff, renewing=renewing) else free
+    )
+    if monthly_norm(following, kind) <= 0:
+        return None
+    by_charge = not tariff.is_free and not prepaid and monthly_norm(free, kind) <= 0
+    return NormRenewal(at=period.end, by_charge=by_charge)
 
 
 def allowance(

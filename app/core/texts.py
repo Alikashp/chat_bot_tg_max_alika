@@ -609,20 +609,42 @@ def presentation_in_progress() -> Screen:
     )
 
 
-def paywall_presentations(invite_presentations: int) -> Screen:
-    """Презентации кончились.
+def paywall_presentations(
+    invite_presentations: int, *, renews_on: str | None, by_charge: bool = False
+) -> Screen:
+    """Презентации кончились (фаза 11: они вошли в тарифы).
 
-    Кнопки тарифов здесь нет, и это не забывчивость: презентаций нет ни в
-    одном тарифе, они приходят только разово. Звать платить за то, чего
-    тариф не даст, — обещание, которое экран не выполнит.
+    Выходов два: тарифы и друг — за друга презентацию дают сразу. Когда
+    придёт новая норма, сказано, только если она правда придёт: у
+    бесплатного тарифа презентаций в месяц нет.
     """
+    if renews_on is None:
+        text = "Презентации закончились 😔\nЕщё будут с тарифом или за друга:"
+    else:
+        text = _monthly_paywall("Презентации", renews_on, by_charge=by_charge)
     return Screen(
-        text=(
-            "Презентации закончились 😔\n"
-            "За каждого друга, который запустит бота, — ещё одна:"
+        text=text,
+        buttons=(
+            BUTTON_OPEN_TARIFFS,
+            button_invite_for_presentations(invite_presentations),
         ),
-        buttons=(button_invite_for_presentations(invite_presentations),),
     )
+
+
+def _monthly_paywall(what: str, renews_on: str, *, by_charge: bool) -> str:
+    """Две строки пейволла месячной нормы: что кончилось и когда будет новое.
+
+    «Новые придут с продлением» — там, где новая норма зависит от списания
+    по подписке: не пройдёт оно — тариф кончится, а с ним и эта норма.
+    «А можно не ждать» правдиво на любом тарифе: любая оплата начинает
+    период заново, с полной нормой.
+    """
+    when = (
+        f"Новые придут с продлением {renews_on}"
+        if by_charge
+        else f"Новые будут {renews_on}"
+    )
+    return f"{what} на этот месяц закончились 😔\n{when}, а можно не ждать:"
 
 
 # --- Пресеты (§2.4) ------------------------------------------------------
@@ -728,7 +750,7 @@ def preset_refused(preset_buttons: tuple[str, ...]) -> Screen:
 # --- Пейволл (§2.5) ------------------------------------------------------
 
 
-def paywall_documents(*, renews_tomorrow: bool) -> Screen:
+def paywall_documents(*, renews_on: str | None, by_charge: bool = False) -> Screen:
     """Доклады кончились.
 
     Ни канала, ни награды за друга здесь нет, и это не забывчивость: разовые
@@ -736,54 +758,47 @@ def paywall_documents(*, renews_tomorrow: bool) -> Screen:
     доклады значило бы сказать неправду на экране, который человек читает
     ровно в тот момент, когда решает, платить ли.
 
-    «Доклады», а не «разборы»: человек нажимал «Доклад / Реферат», и
-    «разбор» — внутреннее имя этой нормы — ему ничего не говорит.
+    ``renews_on`` — когда придёт новая норма. None — сама она не придёт:
+    у бесплатного тарифа докладов в месяц нет, только разовые, и обещать
+    «новые будут» там нельзя.
     """
-    first = (
-        "Доклады на сегодня кончились — завтра будут ещё"
-        if renews_tomorrow
-        else "Бесплатные доклады кончились"
-    )
-    return Screen(
-        text=f"{first}\nНа платном тарифе их больше 👇",
-        buttons=(MENU_TARIFFS,),
-    )
+    if renews_on is None:
+        text = "Доклады закончились 😔\nЕщё будут с тарифом — выбери подходящий 👇"
+    else:
+        text = _monthly_paywall("Доклады", renews_on, by_charge=by_charge)
+    return Screen(text=text, buttons=(BUTTON_OPEN_TARIFFS,))
 
 
 def paywall_images(
     *,
-    renews_tomorrow: bool,
+    renews_on: str | None,
     invite_images: int,
     channel_images: int = 0,
+    by_charge: bool = False,
 ) -> Screen:
     """Показывается только при исчерпании и всегда даёт выход.
 
-    Первая строка зависит от тарифа, и это не украшательство. На платном
-    тарифе завтра действительно наступит новая дневная норма. На бесплатном
-    картинки не восстанавливаются вовсе — их выдают разово, — и «завтра будет
-    ещё одна» было бы там прямым обманом: человек прождал бы сутки впустую.
+    Первая строка говорит, когда придут новые картинки: у них месячная
+    норма на любом тарифе, и «завтра будут ещё» было бы обманом — человек
+    прождал бы сутки впустую. ``renews_on`` в None — новая норма сама не
+    придёт; при нынешних тарифах такого не бывает (у бесплатного три
+    картинки в месяц), но экран к этому готов.
 
     ``channel_images`` в нуле означает, что бонус за канал предлагать нечего:
     канал не настроен, человек его уже получил или пришёл из мессенджера, где
     канала у нас нет.
     """
-    if renews_tomorrow:
-        lines = [
-            "Картинки на сегодня закончились 😔",
-            "Завтра будут ещё, а можно не ждать:",
-        ]
+    if renews_on is None:
+        text = "Картинки закончились 😔\nМожно взять ещё бесплатно или открыть тарифы:"
     else:
-        lines = [
-            "Картинки закончились 😔",
-            "Можно взять ещё бесплатно или открыть тарифы:",
-        ]
+        text = _monthly_paywall("Картинки", renews_on, by_charge=by_charge)
     buttons: tuple[str, ...] = (
         BUTTON_OPEN_TARIFFS,
         button_invite_for_images(invite_images),
     )
     if channel_images:
         buttons = (*buttons, button_channel_bonus(channel_images))
-    return Screen(text="\n".join(lines), buttons=buttons)
+    return Screen(text=text, buttons=buttons)
 
 
 def paywall_messages(*, invite_messages: int) -> Screen:
@@ -806,34 +821,73 @@ def paywall_messages(*, invite_messages: int) -> Screen:
 # --- Профиль (§2.6) ------------------------------------------------------
 
 
+@dataclass(frozen=True, slots=True)
+class Left:
+    """Остаток одного ресурса для профиля: норма и подарки отдельно.
+
+    ``norm`` — сколько осталось от нормы тарифа; None — нормы этого вида у
+    тарифа нет вовсе (у бесплатного — доклады и презентации), и тогда
+    показываются только подарки.
+    """
+
+    norm: int | None
+    bonus: int
+
+    def __str__(self) -> str:
+        gifts = f"🎁{self.bonus}"
+        if self.norm is None:
+            return gifts if self.bonus else "0"
+        return f"{self.norm} + {gifts}" if self.bonus else str(self.norm)
+
+
 def profile(
     *,
     tariff_id: TariffId,
     messages_used: int,
     messages_limit: int,
-    images_left: int,
-    documents_left: int,
+    images: Left,
+    documents: Left,
     friends: int,
-    presentations_left: int | None = None,
+    presentations: Left | None = None,
     user_number: int | None = None,
+    period_ends: str | None = None,
+    tariff_continues: bool = True,
 ) -> Screen:
     """Реальные числа и два выхода.
 
-    ``presentations_left`` — None, когда раздела презентаций нет (нет ключа
-    API): тогда и в профиле о них ни слова.
+    Остаток — норма плюс подарки (Т8): «37 + 🎁2» читается как «тридцать
+    семь в этом месяце и два подарка сверху», и видно, что сгорит с концом
+    периода, а что останется. 🎁 — тот же значок, что на кнопках «Позвать
+    друга»: подарки в боте везде выглядят одинаково.
+
+    ``period_ends`` — день, когда кончается период месячной нормы. В первой
+    строке он говорит то, что на этот день правда случится: у бесплатного —
+    придут новые картинки, у платного с продлением — начнётся новый месяц,
+    у платного без продления — кончится тариф.
+
+    ``presentations`` — None, когда раздела презентаций нет (нет ключа API):
+    тогда и в профиле о них ни слова.
 
     ``user_number`` — номер для поддержки. Появляется не везде: в Telegram
     человека видно по @username, а в MAX username есть не у всех, и без
     номера опознать написавшего нечем.
     """
+    title = f"Твой тариф: {TARIFF_TITLES[tariff_id]}"
+    if period_ends is not None:
+        if tariff_id is TariffId.FREE:
+            title = f"{title} · новые картинки {period_ends}"
+        elif tariff_continues:
+            title = f"{title} · новый месяц с {period_ends}"
+        else:
+            title = f"{title} · до {period_ends}"
     left = [
-        f"{_button_name(MENU_IMAGES)}: {images_left}",
-        f"{_button_name(MENU_DOCUMENTS)}: {documents_left}",
+        f"{_button_name(MENU_IMAGES)}: {images}",
+        f"{_button_name(MENU_DOCUMENTS)}: {documents}",
     ]
-    if presentations_left is not None:
-        left.append(f"{_button_name(MENU_PRESENTATIONS)}: {presentations_left}")
+    if presentations is not None:
+        left.append(f"{_button_name(MENU_PRESENTATIONS)}: {presentations}")
     lines = [
-        f"Твой тариф: {TARIFF_TITLES[tariff_id]}",
+        title,
         f"Сообщений сегодня: {messages_used} из {messages_limit}",
         # Остатки — одной строкой: экран ограничен пятью (§2.9), а номер для
         # поддержки в MAX берёт пятую. Подписи — названия кнопок меню без
@@ -1497,9 +1551,10 @@ def _all_screens() -> tuple[Screen, ...]:
         photo_rejected(PHOTO_TOO_BIG),
         photo_rejected(PHOTO_NOT_AN_IMAGE),
         preset_result(),
-        paywall_images(renews_tomorrow=True, invite_images=2),
-        paywall_images(renews_tomorrow=False, invite_images=2),
-        paywall_images(renews_tomorrow=False, invite_images=2, channel_images=2),
+        paywall_images(renews_on="27 сентября", invite_images=2),
+        paywall_images(renews_on=None, invite_images=2),
+        paywall_images(renews_on="27 сентября", invite_images=2, channel_images=2),
+        paywall_images(renews_on="27 сентября", invite_images=2, by_charge=True),
         paywall_messages(invite_messages=50),
         channel_offer(bonus_images=2),
         channel_granted(bonus_images=2),
@@ -1510,19 +1565,33 @@ def _all_screens() -> tuple[Screen, ...]:
             tariff_id=TariffId.FREE,
             messages_used=12,
             messages_limit=20,
-            images_left=2,
-            documents_left=2,
+            images=Left(norm=2, bonus=3),
+            documents=Left(norm=None, bonus=2),
             friends=3,
+            period_ends="27 сентября",
         ),
         profile(
-            tariff_id=TariffId.FREE,
+            tariff_id=TariffId.MAX,
             messages_used=12,
-            messages_limit=20,
-            images_left=2,
-            documents_left=2,
-            presentations_left=1,
+            messages_limit=200,
+            images=Left(norm=148, bonus=12),
+            documents=Left(norm=100, bonus=0),
+            presentations=Left(norm=60, bonus=1),
             friends=3,
             user_number=1234,
+            period_ends="27 сентября",
+        ),
+        profile(
+            tariff_id=TariffId.PRO,
+            messages_used=0,
+            messages_limit=100,
+            images=Left(norm=0, bonus=0),
+            documents=Left(norm=0, bonus=0),
+            presentations=Left(norm=0, bonus=0),
+            friends=0,
+            user_number=1234,
+            period_ends="27 сентября",
+            tariff_continues=False,
         ),
         referral_offer(bonus_messages=20, bonus_images=2),
         referral_offer(bonus_messages=20, bonus_images=2, bonus_presentations=1),
@@ -1636,9 +1705,12 @@ def _all_screens() -> tuple[Screen, ...]:
         presentation_error(),
         presentation_busy(),
         presentation_in_progress(),
-        paywall_presentations(1),
-        paywall_documents(renews_tomorrow=True),
-        paywall_documents(renews_tomorrow=False),
+        paywall_presentations(1, renews_on="27 сентября"),
+        paywall_presentations(1, renews_on="27 сентября", by_charge=True),
+        paywall_presentations(1, renews_on=None),
+        paywall_documents(renews_on="27 сентября"),
+        paywall_documents(renews_on="27 сентября", by_charge=True),
+        paywall_documents(renews_on=None),
         documents_menu(("📊 Доклад", "📝 Реферат", "📌 Конспект")),
         document_ask_file("Кинь файл — сделаю по нему доклад"),
         document_working(),

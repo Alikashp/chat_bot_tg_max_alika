@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from app.core import texts
 from app.core.limits import LimitKind
-from app.core.scenarios import channel, keyboards
+from app.core.scenarios import channel, keyboards, spending
 from app.core.scenarios.deps import Deps, Session
 
 
@@ -21,6 +21,9 @@ async def show(deps: Deps, session: Session, kind: LimitKind) -> None:
     Числа наград и текст первой строки собираются здесь из одних и тех же
     настроек, что и подписи кнопок: экран и клавиатура обязаны обещать одно и
     то же, иначе человек прочтёт «+2», а нажмёт «+5».
+
+    У картинок, докладов и презентаций — месячная норма, и пейволл говорит,
+    когда придёт новая, только если она правда придёт (Т7).
     """
     if kind is LimitKind.MESSAGES:
         bonus = deps.settings.referral_bonus_messages
@@ -32,24 +35,24 @@ async def show(deps: Deps, session: Session, kind: LimitKind) -> None:
         )
         return
 
+    renewal = await spending.renewal(deps, session, kind)
+    renews_on = texts.format_date(renewal[0]) if renewal is not None else None
+    by_charge = renewal is not None and renewal[1]
+
     if kind is LimitKind.PRESENTATIONS:
         bonus = deps.settings.referral_bonus_presentations
-        screen = texts.paywall_presentations(bonus)
+        screen = texts.paywall_presentations(
+            bonus, renews_on=renews_on, by_charge=by_charge
+        )
         await deps.messenger.send_text(
             session.chat,
             screen.text,
-            keyboard=keyboards.paywall_presentations(
-                texts.button_invite_for_presentations(bonus)
-            ),
+            keyboard=keyboards.paywall(texts.button_invite_for_presentations(bonus)),
         )
         return
 
     if kind is LimitKind.DOCUMENTS:
-        screen = texts.paywall_documents(
-            # Доклады по суткам не возобновляются ни на одном тарифе: у них
-            # месячная норма, и «завтра будет ещё» было бы обманом.
-            renews_tomorrow=False,
-        )
+        screen = texts.paywall_documents(renews_on=renews_on, by_charge=by_charge)
         await deps.messenger.send_text(
             session.chat,
             screen.text,
@@ -60,9 +63,8 @@ async def show(deps: Deps, session: Session, kind: LimitKind) -> None:
     bonus = deps.settings.referral_bonus_images
     for_channel = channel.available(deps, session)
     screen = texts.paywall_images(
-        # Картинки по суткам не возобновляются ни на одном тарифе: у них
-        # месячная норма, и «завтра будет ещё» было бы обманом.
-        renews_tomorrow=False,
+        renews_on=renews_on,
+        by_charge=by_charge,
         invite_images=bonus,
         channel_images=for_channel,
     )

@@ -436,8 +436,3 @@ def link_exit(label: str, action: Action) -> Keyboard:
 def presentation_retry() -> Keyboard:
     """«Повторить» под сбоем: та же тема, то же оформление."""
     return retry(Action.PRESENTATION_RETRY)
-
-
-def paywall_presentations(invite_label: str) -> Keyboard:
-    """Презентации кончились — позвать друга. Тарифов нет: в них их нет."""
-    return Keyboard.row(Button(text=invite_label, action=Action.INVITE_FRIEND))

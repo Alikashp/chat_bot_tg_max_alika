@@ -336,11 +336,14 @@ async def test_without_presentations_left_the_invite_screen_shows(
     """Закончились — экран с «Позвать друга», а не тема в пустоту."""
     await handle(enabled, incoming(action=Action.MENU_PRESENTATIONS))
 
-    assert messenger.last_text.text == texts.paywall_presentations(1).text
+    assert (
+        messenger.last_text.text == texts.paywall_presentations(1, renews_on=None).text
+    )
     keyboard = messenger.last_text.keyboard
     assert keyboard is not None
     assert [(b.text, b.action) for row in keyboard.rows for b in row] == [
-        (texts.button_invite_for_presentations(1), Action.INVITE_FRIEND)
+        (texts.BUTTON_OPEN_TARIFFS, Action.OPEN_TARIFFS),
+        (texts.button_invite_for_presentations(1), Action.INVITE_FRIEND),
     ]
     assert presentations.themes_calls == 0
 
@@ -640,9 +643,7 @@ async def test_a_report_from_the_presentation_without_reports_left(
     button = report_button(messenger)
 
     await handle(enabled, incoming(action=button))
-    assert (
-        messenger.last_text.text == texts.paywall_documents(renews_tomorrow=False).text
-    )
+    assert messenger.last_text.text == texts.paywall_documents(renews_on=None).text
     assert llm.calls == []
 
     await storage.add_bonus(owner.id, documents=1)
@@ -836,7 +837,9 @@ async def test_a_presentation_from_the_report_without_presentations_left(
 
     await handle(enabled, incoming(action=presentation_action(messenger)))
 
-    assert messenger.last_text.text == texts.paywall_presentations(1).text
+    assert (
+        messenger.last_text.text == texts.paywall_presentations(1, renews_on=None).text
+    )
     assert presentations.themes_calls == 0
 
 
@@ -942,7 +945,9 @@ async def test_inventing_with_nothing_left_shows_the_paywall(
     """Кнопка из старого сообщения при пустом остатке — пейволл, не тема."""
     await handle(enabled, incoming(action=Action.PRESENTATION_SUGGEST))
 
-    assert messenger.last_text.text == texts.paywall_presentations(1).text
+    assert (
+        messenger.last_text.text == texts.paywall_presentations(1, renews_on=None).text
+    )
 
 
 # --- Профиль (Д5) --------------------------------------------------------
@@ -954,6 +959,6 @@ async def test_the_profile_shows_presentations_left(
     """Профиль показывает остаток презентаций — подписью кнопки меню."""
     await handle(enabled, incoming(action=Action.MENU_PROFILE))
 
-    assert "Презентации: 1" in messenger.last_text.text
+    assert "Презентации: 🎁1" in messenger.last_text.text
     assert "разбор" not in messenger.last_text.text.lower()
     assert len(messenger.last_text.text.splitlines()) <= 5

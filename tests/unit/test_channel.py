@@ -236,7 +236,7 @@ async def test_the_paywall_screen_and_its_buttons_promise_the_same(
     await paywall.show(deps_with_channel, session, LimitKind.IMAGES)
 
     declared = texts.paywall_images(
-        renews_tomorrow=False, invite_images=2, channel_images=2
+        renews_on="27 сентября", invite_images=2, channel_images=2
     ).buttons
     shown = tuple(button.text for row in _rows(messenger) for button in row)
     assert declared == shown

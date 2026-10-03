@@ -79,8 +79,10 @@ def test_chat_error_promises_the_message_was_not_spent() -> None:
 def test_paywall_always_offers_two_ways_out() -> None:
     """§2.5: тупика быть не должно никогда."""
     screens = (
-        texts.paywall_images(renews_tomorrow=True, invite_images=2),
-        texts.paywall_images(renews_tomorrow=False, invite_images=2),
+        texts.paywall_images(renews_on="27 сентября", invite_images=2),
+        texts.paywall_images(renews_on=None, invite_images=2),
+        texts.paywall_presentations(1, renews_on="27 сентября"),
+        texts.paywall_presentations(1, renews_on=None),
         texts.paywall_messages(invite_messages=50),
     )
 
@@ -88,30 +90,26 @@ def test_paywall_always_offers_two_ways_out() -> None:
         assert len(screen.buttons) >= 2
 
 
-def test_paywall_images_promises_tomorrow_only_where_it_comes() -> None:
-    """На бесплатном тарифе картинки не восстанавливаются вовсе.
+def test_the_image_paywall_names_the_day_new_ones_come() -> None:
+    """Месячная норма: «завтра будут ещё» было бы обманом на любом тарифе."""
+    screen = texts.paywall_images(renews_on="27 сентября", invite_images=2)
 
-    Пообещать там «завтра будет ещё» — значит отправить человека ждать
-    сутки того, чего не будет. Это единственная причина, по которой у экрана
-    вообще две редакции.
-    """
-    paid = texts.paywall_images(renews_tomorrow=True, invite_images=2)
-    free = texts.paywall_images(renews_tomorrow=False, invite_images=2)
+    assert screen.lines == [
+        "Картинки на этот месяц закончились 😔",
+        "Новые будут 27 сентября, а можно не ждать:",
+    ]
 
-    assert paid.lines == [
-        "Картинки на сегодня закончились 😔",
-        "Завтра будут ещё, а можно не ждать:",
-    ]
-    assert free.lines == [
-        "Картинки закончились 😔",
-        "Можно взять ещё бесплатно или открыть тарифы:",
-    ]
-    assert "Завтра" not in free.text
+
+def test_a_norm_that_needs_the_renewal_says_so() -> None:
+    """Новая норма зависит от списания — экран не выдаёт её за обещанную."""
+    screen = texts.paywall_documents(renews_on="27 сентября", by_charge=True)
+
+    assert screen.lines[1] == "Новые придут с продлением 27 сентября, а можно не ждать:"
 
 
 def test_paywall_names_the_reward_it_actually_gives() -> None:
     """Число в подписи приходит из настроек: обещать надо то, что начислим."""
-    screen = texts.paywall_images(renews_tomorrow=False, invite_images=2)
+    screen = texts.paywall_images(renews_on="27 сентября", invite_images=2)
 
     assert screen.buttons == (
         "⭐ Открыть тарифы",
@@ -121,9 +119,9 @@ def test_paywall_names_the_reward_it_actually_gives() -> None:
 
 def test_the_channel_button_appears_only_when_the_bonus_is_still_owed() -> None:
     """Кнопка, ведущая на «бонус уже получен», — это тупик наоборот."""
-    without = texts.paywall_images(renews_tomorrow=False, invite_images=2)
+    without = texts.paywall_images(renews_on="27 сентября", invite_images=2)
     with_channel = texts.paywall_images(
-        renews_tomorrow=False, invite_images=2, channel_images=2
+        renews_on="27 сентября", invite_images=2, channel_images=2
     )
 
     assert len(without.buttons) == 2
@@ -137,20 +135,30 @@ def test_profile_shows_every_number() -> None:
         tariff_id=TariffId.FREE,
         messages_used=12,
         messages_limit=20,
-        images_left=2,
-        documents_left=2,
-        presentations_left=1,
+        images=texts.Left(norm=2, bonus=4),
+        documents=texts.Left(norm=None, bonus=2),
+        presentations=texts.Left(norm=None, bonus=1),
         friends=3,
         user_number=123456,
+        period_ends="27 сентября",
     )
 
     assert screen.lines == [
-        "Твой тариф: Бесплатный",
+        "Твой тариф: Бесплатный · новые картинки 27 сентября",
         "Сообщений сегодня: 12 из 20",
-        "Картинки: 2 · Доклад / Реферат: 2 · Презентации: 1",
+        "Картинки: 2 + 🎁4 · Доклад / Реферат: 🎁2 · Презентации: 🎁1",
         "Друзей позвал: 3",
         "Твой номер: 123456",
     ]
+
+
+def test_a_remainder_is_the_norm_plus_the_gifts() -> None:
+    """Т8: норма и подарки видны по отдельности; пустое — ноль, а не пустота."""
+    assert str(texts.Left(norm=37, bonus=2)) == "37 + 🎁2"
+    assert str(texts.Left(norm=37, bonus=0)) == "37"
+    assert str(texts.Left(norm=0, bonus=0)) == "0"
+    assert str(texts.Left(norm=None, bonus=2)) == "🎁2"
+    assert str(texts.Left(norm=None, bonus=0)) == "0"
 
 
 def test_profile_labels_are_the_menu_buttons() -> None:
@@ -159,9 +167,9 @@ def test_profile_labels_are_the_menu_buttons() -> None:
         tariff_id=TariffId.FREE,
         messages_used=0,
         messages_limit=20,
-        images_left=0,
-        documents_left=0,
-        presentations_left=0,
+        images=texts.Left(norm=0, bonus=0),
+        documents=texts.Left(norm=None, bonus=0),
+        presentations=texts.Left(norm=None, bonus=0),
         friends=0,
     ).lines[2]
 
@@ -176,12 +184,12 @@ def test_profile_without_presentations_does_not_mention_them() -> None:
         tariff_id=TariffId.FREE,
         messages_used=0,
         messages_limit=20,
-        images_left=3,
-        documents_left=3,
+        images=texts.Left(norm=3, bonus=0),
+        documents=texts.Left(norm=None, bonus=3),
         friends=0,
     ).lines[2]
 
-    assert line == "Картинки: 3 · Доклад / Реферат: 3"
+    assert line == "Картинки: 3 · Доклад / Реферат: 🎁3"
 
 
 def test_referral_invite_is_a_ready_message_not_a_bare_link() -> None:
@@ -522,12 +530,12 @@ def test_no_screen_says_razbor() -> None:
     said = [screen.text.lower() for screen in texts.SCREENS]
 
     assert not [text for text in said if "разбор" in text]
-    assert texts.paywall_documents(renews_tomorrow=False).text == (
-        "Бесплатные доклады кончились\nНа платном тарифе их больше 👇"
+    assert texts.paywall_documents(renews_on=None).text == (
+        "Доклады закончились 😔\nЕщё будут с тарифом — выбери подходящий 👇"
     )
-    assert texts.paywall_documents(renews_tomorrow=True).text == (
-        "Доклады на сегодня кончились — завтра будут ещё\n"
-        "На платном тарифе их больше 👇"
+    assert texts.paywall_documents(renews_on="27 сентября").text == (
+        "Доклады на этот месяц закончились 😔\n"
+        "Новые будут 27 сентября, а можно не ждать:"
     )
     assert texts.document_error().text == (
         "Что-то пошло не так, попробуй ещё раз 🤷 Доклад не потратился."

@@ -16,7 +16,8 @@ import pytest
 
 from app.adapters.storage.memory import InMemoryStorage
 from app.core import support, texts
-from app.core.models import TariffId, User
+from app.core.billing import Billing
+from app.core.models import MessengerKind, TariffId, User
 from app.core.scenarios import payments
 from app.core.scenarios.deps import Deps, Session
 from app.core.tariffs import tariff_of
@@ -492,7 +493,7 @@ async def test_a_renewal_does_not_cancel_its_own_subscription(
     assert subscription.charge_id == "charge-1"
 
 
-async def test_a_failed_cancel_still_grants_and_is_reported(
+async def test_a_failed_cancel_still_grants_and_is_queued(
     deps: Deps,
     session: Session,
     stars: FakeStars,
@@ -501,8 +502,8 @@ async def test_a_failed_cancel_still_grants_and_is_reported(
 ) -> None:
     """Деньги за новую подписку уже взяты — тариф выдаётся в любом случае.
 
-    А прежняя подписка, которую Telegram не дал отменить, — повод для
-    ручного разбора, и в логе это ошибка, а не тишина.
+    А прежняя подписка, которую Telegram не дал отменить, встаёт в очередь:
+    отмену повторит следующий проход биллинга (0а).
     """
     await payments.start_stars(deps, session, PRO)
     await payments.confirm(deps, stars.invoices[0].order_id, charge_id="charge-pro")
@@ -516,9 +517,38 @@ async def test_a_failed_cancel_still_grants_and_is_reported(
     assert granted is not None
     user = await storage.get_user_by_id(session.user.id)
     assert user is not None and user.tariff is TariffId.MAX
-    failures = [e for e in logger.events if e.event == "subscription_replace_failed"]
-    assert [e.level for e in failures] == ["error"]
-    assert failures[0].fields["charge_id"] == "charge-pro"
+    queued = await storage.star_cancels_due(limit=10)
+    assert [(c.user_id, c.charge_id) for c in queued] == [
+        (session.user.id, "charge-pro")
+    ]
+    assert "subscription_replace_failed" in logger.names()
+
+
+async def test_the_failed_cancel_is_retried_until_it_goes_through(
+    deps: Deps, session: Session, stars: FakeStars, storage: InMemoryStorage
+) -> None:
+    """0а: отмена повторяется каждым проходом, пока Telegram её не примет.
+
+    Ручной отмены у заказчика нет: если повтор не случится сам, человек
+    будет платить звёздами за две подписки.
+    """
+    await payments.start_stars(deps, session, PRO)
+    await payments.confirm(deps, stars.invoices[0].order_id, charge_id="charge-pro")
+    stars.cancel_error = RuntimeError("telegram is down")
+    await payments.start_stars(deps, session, TariffId.MAX)
+    await payments.confirm(deps, stars.invoices[1].order_id, charge_id="charge-max")
+    billing = Billing(by_messenger={MessengerKind.TELEGRAM: deps})
+
+    await billing.run()
+    assert stars.cancelled == []
+    assert len(await storage.star_cancels_due(limit=10)) == 1
+
+    stars.cancel_error = None
+    await billing.run()
+    await billing.run()
+
+    assert stars.cancelled == [(session.user.external_id, "charge-pro")]
+    assert await storage.star_cancels_due(limit=10) == []
 
 
 # --- Подтверждение -------------------------------------------------------

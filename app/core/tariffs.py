@@ -131,6 +131,24 @@ TARIFFS: Mapping[TariffId, Tariff] = MappingProxyType(
     }
 )
 
+
+@dataclass(frozen=True, slots=True)
+class Trial:
+    """Пробный период (фаза 11, часть 3): какой тариф, на сколько и за сколько.
+
+    Здесь, рядом с тарифами, а не в настройках окружения: это условия
+    договора, и они же стоят в тексте предложения. Окружением пробный
+    период только включается (``TRIAL_ENABLED``).
+    """
+
+    tariff: TariffId
+    days: int
+    price_rub: int
+
+
+#: 3 дня тарифа «Лайт» за 1 ₽, затем обычная цена Лайта каждые 30 дней.
+TRIAL = Trial(tariff=TariffId.LITE, days=3, price_rub=1)
+
 #: Порядок показа карточек на экране тарифов (§2.8). Бесплатного тут нет:
 #: экран продаёт платные, а на бесплатном пользователь уже сидит.
 PAID_TARIFFS: tuple[TariffId, ...] = (TariffId.LITE, TariffId.PRO, TariffId.MAX)

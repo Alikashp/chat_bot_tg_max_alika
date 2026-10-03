@@ -414,6 +414,7 @@ def build_core_settings(
         stars_markup=settings.stars_markup,
         rub_per_star=settings.rub_per_star,
         subscription_days=settings.subscription_days,
+        trial_enabled=settings.trial_enabled,
         offer_url=settings.offer_url,
         privacy_url=settings.privacy_url,
         docs_version=settings.docs_version,
@@ -937,7 +938,8 @@ async def run() -> None:
 
     app = create_app(webhooks=webhooks, health=health)
 
-    # Обход подписок: предупредить о списании и списать (§4.13–4.17 оферты).
+    # Обход подписок: предупредить о новой цене и о первом списании после
+    # пробного периода, списать, повторить отмену прежних звёздных подписок.
     # Задача одна на весь сервис, а не на мессенджер: подписки лежат в общей
     # базе, а отвечать в нужный мессенджер умеет сам обход.
     billing = Periodic(

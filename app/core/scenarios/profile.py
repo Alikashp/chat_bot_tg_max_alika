@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 from app.core import texts
-from app.core.limits import Allowance, LimitKind, daily_messages
+from app.core.limits import LimitKind, daily_messages
 from app.core.scenarios import keyboards, spending
 from app.core.scenarios.deps import Deps, Session
 
@@ -34,9 +34,9 @@ async def show(deps: Deps, session: Session) -> None:
         tariff_id=session.tariff.id,
         messages_used=usage.messages_used,
         messages_limit=daily_messages(session.tariff),
-        images=_left(images),
-        documents=_left(docs),
-        presentations=_left(decks) if decks is not None else None,
+        images_left=images.total_left,
+        documents_left=docs.total_left,
+        presentations_left=decks.total_left if decks is not None else None,
         friends=friends,
         user_number=(
             session.user.support_number if deps.settings.show_user_number else None
@@ -49,9 +49,3 @@ async def show(deps: Deps, session: Session) -> None:
         screen.text,
         keyboard=keyboards.profile(has_subscription=subscription is not None),
     )
-
-
-def _left(allowance: Allowance) -> texts.Left:
-    """Остаток для профиля: норма отдельно от подарков (Т8)."""
-    norm = allowance.monthly_left if allowance.monthly_limit > 0 else None
-    return texts.Left(norm=norm, bonus=allowance.bonus)

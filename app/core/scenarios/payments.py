@@ -30,7 +30,7 @@ from dataclasses import replace
 from datetime import datetime, timedelta
 
 from app.core import pending, texts
-from app.core.actions import email_action, method_action
+from app.core.actions import TRIAL_TARGET, email_action, method_action
 from app.core.emails import normalise_email
 from app.core.limits import current_day
 from app.core.models import (
@@ -45,7 +45,7 @@ from app.core.models import (
 from app.core.receipts import Receipt, receipt_for
 from app.core.scenarios import keyboards
 from app.core.scenarios.deps import Deps, Session
-from app.core.tariffs import RUB, STARS, stars_price, tariff_of
+from app.core.tariffs import RUB, STARS, TRIAL, stars_price, tariff_of
 from app.ports.payments import PaymentMethod, PaymentStatus, SubscriptionStatus
 from app.ports.storage import GrantOutcome
 
@@ -113,23 +113,121 @@ async def start_card(deps: Deps, session: Session, tariff_id: TariffId) -> None:
         amount=tariff.price_rub,
         currency=RUB,
     )
+    # Сохранять способ оплаты просим только тогда, когда собираемся им
+    # пользоваться. Иначе провайдер хранил бы карту человека без причины, а
+    # мы обещали бы продление, которого не будет.
+    url = await _card_link(deps, session, order, save_method=recurring)
+    if url is None:
+        return
 
+    await _show_order(
+        deps,
+        session,
+        tariff_id,
+        amount=tariff.price_rub,
+        currency=RUB,
+        url=url,
+        recurring=recurring,
+    )
+
+
+async def trial_offered(deps: Deps, session: Session) -> bool:
+    """Положен ли человеку пробный период «Лайта» прямо сейчас (ПП1, ПП7).
+
+    Только при включённой настройке, опубликованных документах и магазине с
+    автоплатежами: без них 299 ₽ после пробных дней списать было бы нечем,
+    а на звёздах пробного периода нет вовсе. И только тому, кто ещё ни разу
+    не платил и пробного периода не брал. Человек перечитывается: снимок в
+    сессии мог устареть на оплате, которая прошла минуту назад.
+
+    «Уже брал пробный период» отдельно не проверяется: заказ на 1 ₽ — тоже
+    оплата, и после него человек в числе плативших.
+    """
+    if not deps.settings.trial_enabled or not deps.settings.documents_ready:
+        return False
+    if deps.cards is None or not deps.cards.recurring:
+        return False
+    return not await deps.storage.ever_paid(session.user.id)
+
+
+async def start_trial(deps: Deps, session: Session) -> None:
+    """Заводит заказ на пробный период и показывает условия с кнопкой оплаты.
+
+    Кнопка предложения живёт в переписке, и нажать её можно и после оплаты,
+    и после того, как настройку выключили. Тогда — обычные тарифы, а не счёт
+    на пробный период, которого не будет.
+    """
+    if deps.cards is None or not await trial_offered(deps, session):
+        await deps.messenger.send_text(
+            session.chat,
+            texts.tariffs_screen(with_presentations=deps.presentations_on).text,
+            keyboard=keyboards.tariffs(),
+            show_menu=False,
+        )
+        return
+
+    if deps.settings.receipts_ready and session.user.email is None:
+        # Чек нужен и на 1 ₽ (ПП8) — почту спрашиваем до заказа.
+        await ask_for_email(deps, session, TRIAL.tariff, trial=True)
+        return
+
+    order = await _open_order(
+        deps,
+        session,
+        TRIAL.tariff,
+        method=PaymentMethod.CARD,
+        amount=TRIAL.price_rub,
+        currency=RUB,
+        trial=True,
+    )
+    # Карта сохраняется всегда: ради неё пробный период и затевается — через
+    # три дня по ней списывается полная цена.
+    url = await _card_link(deps, session, order, save_method=True)
+    if url is None:
+        return
+
+    receipt_to = session.user.email or "" if deps.settings.receipts_ready else ""
+    first_charge = deps.now() + timedelta(days=TRIAL.days)
+    screen = texts.trial_order(
+        first_charge=texts.format_date(
+            current_day(first_charge, deps.settings.timezone)
+        ),
+        statement=deps.settings.bank_statement_name,
+        receipt_to=receipt_to,
+    )
+    await deps.messenger.send_text(
+        session.chat,
+        screen.text,
+        keyboard=_order_keyboard(
+            deps, email_target=TRIAL_TARGET, url=url, receipt_to=receipt_to
+        ),
+        show_menu=False,
+    )
+
+
+async def _card_link(
+    deps: Deps, session: Session, order: Payment, *, save_method: bool
+) -> str | None:
+    """Создаёт платёж картой по заказу и возвращает ссылку на оплату.
+
+    None — ссылки нет, и человеку уже сказано, что оплата не открылась.
+    Сумма и тариф берутся из заказа: чек и платёж обязаны совпасть с тем,
+    что записано, — у ЮKassa расхождение суммы чека и платежа — ошибка.
+    """
+    assert deps.cards is not None
     try:
         intent = await deps.cards.create_payment(
             order_id=order.id,
-            amount_rub=tariff.price_rub,
-            description=texts.invoice(tariff_id, days=deps.settings.subscription_days)[
-                0
-            ],
-            # Сохранять способ оплаты просим только тогда, когда собираемся им
-            # пользоваться. Иначе провайдер хранил бы карту человека без
-            # причины, а мы обещали бы продление, которого не будет.
-            save_method=recurring,
+            amount_rub=order.amount,
+            description=texts.invoice(
+                order.tariff, days=deps.settings.subscription_days
+            )[0],
+            save_method=save_method,
             receipt=receipt_for_order(
                 deps,
                 email=session.user.email,
-                tariff_id=tariff_id,
-                amount_rub=tariff.price_rub,
+                tariff_id=order.tariff,
+                amount_rub=order.amount,
             ),
         )
     except Exception as error:
@@ -142,40 +240,33 @@ async def start_card(deps: Deps, session: Session, tariff_id: TariffId) -> None:
             error=repr(error),
         )
         await _say(deps, session, texts.payment_failed().text)
-        return
+        return None
 
     if not await deps.storage.attach_external_id(order.id, intent.external_id):
         # Платёж уже привязан к другому заказу. Ссылку отдавать нельзя:
         # подтвердить по ней оплату мы не сможем, а деньги человек отдаст.
         deps.logger.error("payment_id_taken", user_id=int(session.user.id))
         await _say(deps, session, texts.payment_failed().text)
-        return
+        return None
 
     if intent.confirmation_url is None:
         deps.logger.error("payment_without_url", user_id=int(session.user.id))
         await _say(deps, session, texts.payment_failed().text)
-        return
-
-    await _show_order(
-        deps,
-        session,
-        tariff_id,
-        amount=tariff.price_rub,
-        currency=RUB,
-        url=intent.confirmation_url,
-        recurring=recurring,
-    )
+        return None
+    return intent.confirmation_url
 
 
-async def ask_for_email(deps: Deps, session: Session, tariff_id: TariffId) -> None:
+async def ask_for_email(
+    deps: Deps, session: Session, tariff_id: TariffId, *, trial: bool = False
+) -> None:
     """Просит почту и запоминает, к оплате какого тарифа потом вернуться.
 
     Одна точка на оба повода: адреса ещё нет вовсе или человек нажал «Другая
-    почта», заметив опечатку на экране заказа.
+    почта», заметив опечатку на экране заказа. ``trial`` — вернуться надо к
+    пробному периоду, а не к обычной оплате тарифа.
     """
-    await deps.storage.set_pending(
-        session.user.id, pending.await_email(tariff_id.value)
-    )
+    target = TRIAL_TARGET if trial else tariff_id.value
+    await deps.storage.set_pending(session.user.id, pending.await_email(target))
     await deps.messenger.send_text(session.chat, texts.email_ask().text)
 
 
@@ -185,7 +276,8 @@ async def remember_email(deps: Deps, session: Session, written: str) -> None:
     Ожидание снимается только на годном адресе. Иначе опечатка выкидывала бы
     человека из покупки в обычный чат, и он бы даже не понял, что произошло.
     """
-    tariff_id = _tariff(pending.parse_await_email(session.user.pending))
+    target = pending.parse_await_email(session.user.pending)
+    tariff_id = TRIAL.tariff if target == TRIAL_TARGET else _tariff(target)
     if tariff_id is None:
         # Ожидание от версии, где тариф назывался иначе. Возвращаем к выбору.
         await _clear_pending(deps, session)
@@ -206,9 +298,11 @@ async def remember_email(deps: Deps, session: Session, written: str) -> None:
     # Адрес логировать нельзя, а знать, что человек его дал, полезно.
     deps.logger.info("receipt_email_saved", user_id=int(session.user.id))
 
-    await start_card(
-        deps, replace(session, user=replace(session.user, email=email)), tariff_id
-    )
+    with_email = replace(session, user=replace(session.user, email=email))
+    if target == TRIAL_TARGET:
+        await start_trial(deps, with_email)
+        return
+    await start_card(deps, with_email, tariff_id)
 
 
 def _tariff(tariff_id: str | None) -> TariffId | None:
@@ -444,17 +538,29 @@ async def confirm(
     subscription = await _subscription_for(
         deps, order, charge_id=charge_id, renewal=renewal
     )
+    if order.trial and subscription is not None:
+        # После пробных дней списывается полная цена тарифа, и перед этим
+        # первым списанием человека обязательно предупреждают (ПП4).
+        subscription = replace(
+            subscription,
+            amount=tariff_of(order.tariff).price_rub,
+            remind_before_charge=True,
+        )
 
     for _ in range(_GRANT_ATTEMPTS):
         user = await deps.storage.get_user_by_id(order.user_id)
         if user is None:
             deps.logger.error("payment_user_missing", user_id=int(order.user_id))
             return None
-        expires_at = _new_expiry(
-            deps,
-            current=user.tariff_expires_at,
-            bought=order.tariff,
-            current_tariff=user.tariff,
+        expires_at = (
+            deps.now() + timedelta(days=TRIAL.days)
+            if order.trial
+            else _new_expiry(
+                deps,
+                current=user.tariff_expires_at,
+                bought=order.tariff,
+                current_tariff=user.tariff,
+            )
         )
         outcome = await deps.storage.complete_payment(
             order.id,
@@ -470,9 +576,18 @@ async def confirm(
             # Каждая оплата и каждое продление начинают период месячной нормы
             # заново: человек заплатил — норма полная.
             norm_since=deps.now(),
+            trial=order.trial,
         )
         if outcome is GrantOutcome.GRANTED:
             break
+        if outcome is GrantOutcome.TRIAL_USED:
+            # Человек оплатил вторую ссылку на пробный период, или уже платил.
+            # Деньги взяты, заказ оплачен, но второго пробного периода нет:
+            # 1 ₽ возвращается в кабинете ЮKassa, по этому номеру заказа.
+            deps.logger.error(
+                "trial_payment_unused", user_id=int(order.user_id), payment_id=order.id
+            )
+            return None
         if outcome is GrantOutcome.ALREADY:
             deps.logger.info("payment_already_confirmed", user_id=int(order.user_id))
             return None
@@ -520,11 +635,20 @@ async def refunded(deps: Deps, order: Payment) -> None:
     Вернули за оплаченный заранее следующий месяц — текущий остаётся. Вернули
     за единственный — тариф кончается сейчас, и вместе с ним платная норма:
     дальше действуют бесплатные.
+
+    Заказ на пробный период — то же самое, только срок у него пробный. А
+    вернули лишний 1 ₽, по которому пробного периода не выдавали (вторая
+    оплаченная ссылка), — отбирать и отменять нечего.
     """
+    user = await deps.storage.get_user_by_id(order.user_id)
+    if order.trial and (user is None or user.trial_order_id != order.id):
+        deps.logger.info("trial_refund_unused", user_id=int(order.user_id))
+        return
+
     await deps.storage.cancel_subscription(order.user_id, deps.now())
 
-    user = await deps.storage.get_user_by_id(order.user_id)
-    term = timedelta(days=deps.settings.subscription_days)
+    days = TRIAL.days if order.trial else deps.settings.subscription_days
+    term = timedelta(days=days)
     now = deps.now()
     if (
         user is None
@@ -569,7 +693,11 @@ async def announce(
         and subscription.status != SubscriptionStatus.CANCELLED.value
     )
 
-    if renewal:
+    if order.trial:
+        screen = texts.trial_started(
+            until=texts.format_date(day), amount=tariff_of(order.tariff).price_rub
+        )
+    elif renewal:
         screen = texts.subscription_renewed(
             order.tariff,
             amount=order.amount,
@@ -632,13 +760,15 @@ async def _show_order(
     await deps.messenger.send_text(
         session.chat,
         screen.text,
-        keyboard=_order_keyboard(deps, tariff_id, url=url, receipt_to=receipt_to),
+        keyboard=_order_keyboard(
+            deps, email_target=tariff_id.value, url=url, receipt_to=receipt_to
+        ),
         show_menu=False,
     )
 
 
 def _order_keyboard(
-    deps: Deps, tariff_id: TariffId, *, url: str, receipt_to: str
+    deps: Deps, *, email_target: str, url: str, receipt_to: str
 ) -> Keyboard:
     """Кнопки экрана заказа: оплатить, прочитать условия, поправить почту."""
     rows: list[tuple[Button, ...]] = [
@@ -655,7 +785,7 @@ def _order_keyboard(
             (
                 Button(
                     text=texts.BUTTON_EMAIL_CHANGE,
-                    action=email_action(tariff_id.value),
+                    action=email_action(email_target),
                 ),
             )
         )
@@ -710,7 +840,9 @@ async def _end_previous(
 
     Зовётся после выдачи, а не до неё: новая оплата подтверждена, и тариф
     человек получает в любом случае — даже если Telegram отменить не дал.
-    Такой сбой — ошибка в логе для ручного разбора, а не повод не выдать.
+    Такой сбой — не повод не выдать: прежняя подписка встаёт в очередь, и
+    отмену повторяет каждый проход биллинга, пока она не пройдёт
+    (``subscriptions.cancel_replaced``).
     """
     if previous is None or previous.status == SubscriptionStatus.CANCELLED.value:
         return
@@ -721,21 +853,28 @@ async def _end_previous(
         # Карточную отменять у провайдера нечего: списываем по ней мы сами, и
         # новая запись о подписке (или отметка об отмене ниже) её остановит.
         # Звёздную списывает Telegram, и наша запись его ни к чему не обязывает.
-        try:
-            if deps.stars is None or previous.charge_id is None:
-                raise RuntimeError("отменить звёздную подписку нечем")
-            await deps.stars.cancel(
-                user_id=user.external_id, charge_id=previous.charge_id
-            )
-        except Exception as error:
-            deps.logger.error(
-                "subscription_replace_failed",
-                user_id=int(user.id),
-                charge_id=previous.charge_id,
-                error=repr(error),
-            )
+        if previous.charge_id is None:
+            # Без идентификатора первого списания Telegram отменить не даст,
+            # и повтор тут не поможет: такого быть не должно вовсе.
+            deps.logger.error("subscription_replace_impossible", user_id=int(user.id))
         else:
-            deps.logger.info("subscription_replaced", user_id=int(user.id))
+            try:
+                if deps.stars is None:
+                    raise RuntimeError("звёзды сейчас выключены")
+                await deps.stars.cancel(
+                    user_id=user.external_id, charge_id=previous.charge_id
+                )
+            except Exception as error:
+                deps.logger.warning(
+                    "subscription_replace_failed",
+                    user_id=int(user.id),
+                    error=repr(error),
+                )
+                await deps.storage.queue_star_cancel(
+                    user.id, previous.charge_id, deps.now()
+                )
+            else:
+                deps.logger.info("subscription_replaced", user_id=int(user.id))
 
     if replaced_by is None:
         # Новая оплата разовая: заменить прежнюю записью нечем, а оставить её
@@ -856,6 +995,7 @@ async def _open_order(
     method: PaymentMethod,
     amount: int,
     currency: str,
+    trial: bool = False,
 ) -> Payment:
     """Заводит заказ вместе с редакцией документов, показанных человеку.
 
@@ -871,6 +1011,7 @@ async def _open_order(
         amount=amount,
         currency=currency,
         docs_version=deps.settings.docs_version,
+        trial=trial,
     )
 
 

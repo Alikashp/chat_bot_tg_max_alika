@@ -959,6 +959,6 @@ async def test_the_profile_shows_presentations_left(
     """Профиль показывает остаток презентаций — подписью кнопки меню."""
     await handle(enabled, incoming(action=Action.MENU_PROFILE))
 
-    assert "Презентации: 🎁1" in messenger.last_text.text
+    assert "Презентации: 1" in messenger.last_text.text
     assert "разбор" not in messenger.last_text.text.lower()
     assert len(messenger.last_text.text.splitlines()) <= 5

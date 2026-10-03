@@ -3,7 +3,9 @@
 Первая оплата — это оферта, всё остальное — её исполнение, и правил здесь
 ровно столько, сколько мы на себя взяли:
 
-* предупредить о списании не позднее чем за сутки (§4.13);
+* о первом списании полной цены после пробного периода предупредить не
+  позднее чем за сутки и без доставленного предупреждения не списывать
+  (решение заказчика: перед обычными продлениями напоминаний нет);
 * дать отключить продление в любой момент, из профиля (§4.14);
 * при отключении не отбирать оплаченное — оно дорабатывает (§4.15);
 * при неудачном списании пробовать три дня и сказать об этом (§4.16);
@@ -25,7 +27,7 @@ from datetime import datetime, timedelta
 
 from app.core import texts
 from app.core.limits import current_day
-from app.core.models import Payment, Subscription, User
+from app.core.models import Payment, StarCancel, Subscription, User
 from app.core.scenarios import keyboards, payments
 from app.core.scenarios.deps import Deps, Session, session_for
 from app.core.tariffs import RUB, tariff_of
@@ -135,7 +137,11 @@ async def cancel(deps: Deps, session: Session) -> None:
 
 
 async def remind(deps: Deps, subscription: Subscription) -> None:
-    """Предупреждает о списании за сутки (§4.13 оферты).
+    """Предупреждает о списании за сутки — там, где это положено.
+
+    Положено только перед первым списанием полной цены после пробного
+    периода (``remind_before_charge``); обычные продления идут без
+    напоминаний — решение заказчика.
 
     Отметку ставим после отправки, а не до. Порядок выбран в пользу лишнего
     напоминания: пропустить обязательное предупреждение хуже, чем прислать
@@ -163,6 +169,32 @@ async def remind(deps: Deps, subscription: Subscription) -> None:
     )
     await deps.storage.mark_reminded(subscription.user_id, subscription.next_charge_at)
     deps.logger.info("subscription_reminded", user_id=int(subscription.user_id))
+
+
+async def cancel_replaced(deps: Deps, pending: StarCancel) -> None:
+    """Повторяет отмену прежней звёздной подписки, которую Telegram не принял.
+
+    Без неё человек платит звёздами за две подписки сразу: новая оплата уже
+    заменила прежнюю у нас, но списывает Telegram, а не мы. Повтор — каждый
+    проход биллинга, пока отмена не пройдёт: ручной отмены у заказчика нет.
+    С очереди подписка снимается только после принятой отмены.
+    """
+    user = await deps.storage.get_user_by_id(pending.user_id)
+    if user is None:
+        await deps.storage.star_cancel_done(pending.charge_id)
+        return
+    if deps.stars is None:
+        deps.logger.warning("subscription_replace_waiting", user_id=int(user.id))
+        return
+    try:
+        await deps.stars.cancel(user_id=user.external_id, charge_id=pending.charge_id)
+    except Exception as error:
+        deps.logger.warning(
+            "subscription_replace_failed", user_id=int(user.id), error=repr(error)
+        )
+        return
+    await deps.storage.star_cancel_done(pending.charge_id)
+    deps.logger.info("subscription_replaced", user_id=int(user.id))
 
 
 async def check_price(deps: Deps, subscription: Subscription) -> None:
@@ -268,12 +300,18 @@ async def charge(deps: Deps, subscription: Subscription) -> None:
         )
         return
 
-    if subscription.reminded_for != subscription.next_charge_at:
-        # О списании обязаны предупредить не позднее чем за сутки (§4.13
-        # оферты). Сюда мы попадаем, только если проход напоминаний это окно
-        # проспал — например, сервис лежал сутки. Списать сейчас значило бы
-        # взять деньги молча; поэтому переносим срок на сутки вперёд и
-        # предупреждаем. Сутки бесплатной работы дешевле нарушенного обещания.
+    if (
+        subscription.remind_before_charge
+        and subscription.failed_since is None
+        and subscription.reminded_for != subscription.next_charge_at
+    ):
+        # Перед этим списанием обещано предупреждение не позднее чем за сутки
+        # (первое списание полной цены после пробного периода). Сюда мы
+        # попадаем, только если проход напоминаний это окно проспал —
+        # например, сервис лежал сутки. Списать сейчас значило бы взять
+        # деньги молча; поэтому переносим срок на сутки вперёд и предупреждаем.
+        # Повтор после отказа банка сюда не попадает: о нём сказало сообщение
+        # об отказе — с суммой и датой.
         deferred = replace(
             subscription,
             next_charge_at=deps.now() + timedelta(hours=deps.settings.reminder_hours),
@@ -519,11 +557,6 @@ async def _charge_failed(deps: Deps, subscription: Subscription, user: User) -> 
         screen.text,
         keyboard=keyboards.subscription_manage(),
     )
-    # Сообщение называет сумму и дату следующей попытки — это и есть
-    # предупреждение о ней (§4.13). Отметка ставится после отправки, как и у
-    # обычного напоминания: не дошло сообщение — повтор не пройдёт молча, а
-    # перенесётся с новым предупреждением.
-    await deps.storage.mark_reminded(subscription.user_id, next_try)
 
 
 async def _await_stars(deps: Deps, subscription: Subscription, user: User) -> None:

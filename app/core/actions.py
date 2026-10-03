@@ -58,6 +58,8 @@ class Action(StrEnum):
 
     # Пейволл и тарифы (§2.5, §2.8)
     OPEN_TARIFFS = "t:open"
+    #: Взять пробный период «Лайта» (фаза 11, часть 3).
+    TRIAL = "t:trial"
     INVITE_FRIEND = "r:invite"
     MY_LINK = "r:link"
     REFERRAL_SEND = "r:send"
@@ -163,6 +165,11 @@ def parse_method_action(action: str) -> tuple[str, str] | None:
     if not method or not tariff_id:
         return None
     return method, tariff_id
+
+
+#: Чем помечается «вернуться к пробному периоду» там, где обычно стоит тариф:
+#: в ожидании почты и в кнопке «Другая почта».
+TRIAL_TARGET = "trial"
 
 
 def email_action(tariff_id: str) -> str:

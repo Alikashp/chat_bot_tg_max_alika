@@ -294,6 +294,11 @@ def tariffs() -> Keyboard:
     )
 
 
+def trial_offer() -> Keyboard:
+    """Одна кнопка под предложением пробного периода."""
+    return Keyboard.row(Button(text=texts.BUTTON_TRIAL, action=Action.TRIAL))
+
+
 def referral_offer() -> Keyboard:
     """Одна кнопка: отправить другу готовое приглашение (§2.7)."""
     return Keyboard.row(

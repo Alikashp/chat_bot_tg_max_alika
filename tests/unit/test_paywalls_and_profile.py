@@ -216,10 +216,10 @@ def test_no_monthly_paywall_promises_tomorrow() -> None:
 # --- Т8: профиль ----------------------------------------------------------
 
 
-async def test_a_new_free_profile_shows_the_norm_and_the_gifts(
+async def test_a_new_free_profile_shows_one_number_per_resource(
     deps: Deps, session: Session, storage: InMemoryStorage, messenger: FakeMessenger
 ) -> None:
-    """Картинки — норма месяца плюс подарки; доклады — только разовые."""
+    """0б: остаток — одно число, норма плюс подарки; ни «+», ни 🎁."""
     await storage.add_bonus(session.user.id, documents=2)
 
     await profile.show(deps, session)
@@ -227,7 +227,7 @@ async def test_a_new_free_profile_shows_the_norm_and_the_gifts(
     assert messenger.last_text.text == (
         f"Твой тариф: Бесплатный · новые картинки {MONTH_END}\n"
         "Сообщений сегодня: 0 из 20\n"
-        "Картинки: 3 + 🎁3 · Доклад / Реферат: 🎁2\n"
+        "Картинки: 6 · Доклад / Реферат: 2\n"
         "Друзей позвал: 0"
     )
 
@@ -250,9 +250,7 @@ async def test_a_paid_profile_counts_what_is_left_of_each_norm(
 
     lines = messenger.last_text.text.split("\n")
     assert lines[0] == f"Твой тариф: Про · новый месяц с {MONTH_END}"
-    assert lines[2] == (
-        "Картинки: 35 + 🎁3 · Доклад / Реферат: 40 · Презентации: 24 + 🎁1"
-    )
+    assert lines[2] == ("Картинки: 38 · Доклад / Реферат: 40 · Презентации: 25")
 
 
 async def test_a_profile_without_renewal_says_when_the_tariff_ends(

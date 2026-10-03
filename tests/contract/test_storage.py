@@ -414,6 +414,35 @@ async def test_bonus_cannot_be_overspent_concurrently(storage: Storage) -> None:
     assert updated.bonus_images == 0
 
 
+# --- Отмена прежней звёздной подписки (фаза 11, часть 3) ----------------
+
+
+async def test_a_star_cancel_waits_in_the_queue_until_done(storage: Storage) -> None:
+    user = await _make_user(storage)
+
+    await storage.queue_star_cancel(user.id, "charge-1", MOMENT)
+    await storage.queue_star_cancel(user.id, "charge-1", MOMENT)
+
+    due = await storage.star_cancels_due(limit=10)
+    assert [(c.user_id, c.charge_id, c.queued_at) for c in due] == [
+        (user.id, "charge-1", MOMENT)
+    ]
+    await storage.star_cancel_done("charge-1")
+    assert await storage.star_cancels_due(limit=10) == []
+
+
+async def test_star_cancels_come_oldest_first_and_up_to_the_limit(
+    storage: Storage,
+) -> None:
+    user = await _make_user(storage)
+    await storage.queue_star_cancel(user.id, "late", MOMENT + timedelta(hours=1))
+    await storage.queue_star_cancel(user.id, "early", MOMENT)
+
+    due = await storage.star_cancels_due(limit=1)
+
+    assert [c.charge_id for c in due] == ["early"]
+
+
 # --- Месячная норма (фаза 11) --------------------------------------------
 
 PERIOD = MOMENT
@@ -1001,6 +1030,7 @@ async def _make_subscription(
     next_charge_at: datetime | None = None,
     amount: int = 599,
     currency: str = "RUB",
+    remind_before_charge: bool = True,
 ) -> Subscription:
     subscription = Subscription(
         user_id=user.id,
@@ -1012,6 +1042,7 @@ async def _make_subscription(
         next_charge_at=next_charge_at or MOMENT,
         created_at=MOMENT,
         payment_method_id="card-1",
+        remind_before_charge=remind_before_charge,
     )
     await storage.save_subscription(subscription)
     return subscription
@@ -1117,6 +1148,36 @@ async def test_reminders_go_out_once_per_charge(storage: Storage) -> None:
 
     assert [each.user_id for each in first] == [user.id]
     assert second == []
+
+
+async def test_an_ordinary_renewal_gets_no_reminder(storage: Storage) -> None:
+    """0г: напоминание — только перед списанием, которому оно положено.
+
+    Обычные продления идут без «завтра спишем» (решение заказчика); иначе
+    проход напоминаний выбирал бы их каждый тик и упирался в предел выборки.
+    """
+    user = await _make_user(storage, "sub-10b")
+    charge_at = MOMENT + timedelta(hours=12)
+    await _make_subscription(
+        storage, user, next_charge_at=charge_at, remind_before_charge=False
+    )
+
+    due = await storage.subscriptions_to_remind(
+        MOMENT, MOMENT + timedelta(days=1), limit=10
+    )
+
+    assert due == []
+    found = await storage.get_subscription(user.id)
+    assert found is not None and found.remind_before_charge is False
+
+
+async def test_the_reminder_mark_is_read_back(storage: Storage) -> None:
+    user = await _make_user(storage, "sub-10c")
+    await _make_subscription(storage, user, remind_before_charge=True)
+
+    found = await storage.get_subscription(user.id)
+
+    assert found is not None and found.remind_before_charge is True
 
 
 async def test_a_new_charge_needs_a_new_reminder(storage: Storage) -> None:
@@ -1429,6 +1490,128 @@ def _new_subscription(user: User, *, amount: int = 599) -> Subscription:
         created_at=MOMENT,
         payment_method_id="card-1",
     )
+
+
+# --- Пробный период (фаза 11, часть 3) -----------------------------------
+
+
+async def _trial_order(storage: Storage, user: User) -> Payment:
+    return await storage.create_payment(
+        user_id=user.id,
+        tariff=TariffId.LITE,
+        method="card",
+        amount=1,
+        currency="RUB",
+        docs_version="2026-10-03",
+        trial=True,
+    )
+
+
+async def _grant_trial(storage: Storage, user: User, order: Payment) -> GrantOutcome:
+    return await storage.complete_payment(
+        order.id,
+        tariff=TariffId.LITE,
+        expires_at=MOMENT + timedelta(days=3),
+        seen_tariff=user.tariff,
+        seen_expiry=user.tariff_expires_at,
+        subscription=None,
+        norm_since=MOMENT,
+        trial=True,
+    )
+
+
+async def test_a_trial_order_is_read_back_as_one(storage: Storage) -> None:
+    user = await _make_user(storage, "trial-1")
+
+    order = await _trial_order(storage, user)
+
+    found = await storage.get_payment(order.id)
+    assert found is not None and found.trial is True
+    plain = await storage.get_payment((await _payment(storage, user)).id)
+    assert plain is not None and plain.trial is False
+
+
+async def test_the_trial_is_granted_once_and_remembered(storage: Storage) -> None:
+    user = await _make_user(storage, "trial-2")
+    order = await _trial_order(storage, user)
+
+    assert await _grant_trial(storage, user, order) is GrantOutcome.GRANTED
+
+    found = await storage.get_user_by_id(user.id)
+    assert found is not None
+    assert found.trial_order_id == order.id
+    assert found.tariff_expires_at == MOMENT + timedelta(days=3)
+
+
+async def test_a_second_trial_payment_is_paid_but_grants_nothing(
+    storage: Storage,
+) -> None:
+    """ПП3: вторая оплата 1 ₽ — деньги взяты, заказ оплачен, второго нет."""
+    user = await _make_user(storage, "trial-3")
+    first = await _trial_order(storage, user)
+    second = await _trial_order(storage, user)
+    await _grant_trial(storage, user, first)
+    granted = await storage.get_user_by_id(user.id)
+    assert granted is not None
+
+    outcome = await _grant_trial(storage, granted, second)
+
+    assert outcome is GrantOutcome.TRIAL_USED
+    paid = await storage.get_payment(second.id)
+    assert paid is not None and paid.status == "paid"
+    found = await storage.get_user_by_id(user.id)
+    assert found is not None and found.trial_order_id == first.id
+
+
+async def test_someone_who_paid_before_gets_no_trial(storage: Storage) -> None:
+    user = await _make_user(storage, "trial-4")
+    earlier = await _payment(storage, user)
+    assert await storage.mark_paid(earlier.id)
+    order = await _trial_order(storage, user)
+
+    assert await _grant_trial(storage, user, order) is GrantOutcome.TRIAL_USED
+    found = await storage.get_user_by_id(user.id)
+    assert found is not None and found.trial_order_id is None
+
+
+async def test_two_trial_payments_at_once_grant_one(storage: Storage) -> None:
+    """ПП3 на базе: два одновременных подтверждения — один пробный период."""
+    user = await _make_user(storage, "trial-5")
+    first = await _trial_order(storage, user)
+    second = await _trial_order(storage, user)
+
+    outcomes = list(
+        await asyncio.gather(
+            _grant_trial(storage, user, first), _grant_trial(storage, user, second)
+        )
+    )
+    # Второе может упереться в строку, изменённую первым, — тогда STALE, и
+    # вызывающий пересчитывает, как это делает payments.confirm.
+    for index, (order, outcome) in enumerate(
+        zip((first, second), outcomes, strict=True)
+    ):
+        if outcome is GrantOutcome.STALE:
+            fresh = await storage.get_user_by_id(user.id)
+            assert fresh is not None
+            outcomes[index] = await _grant_trial(storage, fresh, order)
+
+    assert sorted(outcome.value for outcome in outcomes) == sorted(
+        [GrantOutcome.GRANTED.value, GrantOutcome.TRIAL_USED.value]
+    )
+    found = await storage.get_user_by_id(user.id)
+    assert found is not None and found.trial_order_id in {first.id, second.id}
+
+
+async def test_ever_paid_counts_paid_and_refunded_orders(storage: Storage) -> None:
+    user = await _make_user(storage, "trial-6")
+    assert await storage.ever_paid(user.id) is False
+    pending = await _payment(storage, user)
+    assert await storage.ever_paid(user.id) is False
+
+    assert await storage.mark_paid(pending.id)
+    assert await storage.ever_paid(user.id) is True
+    assert await storage.mark_refunded(pending.id)
+    assert await storage.ever_paid(user.id) is True
 
 
 async def test_completing_a_payment_grants_once(storage: Storage) -> None:

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     Column,
     Date,
@@ -26,6 +27,7 @@ from sqlalchemy import (
     Table,
     Text,
     UniqueConstraint,
+    false,
     func,
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -79,6 +81,9 @@ users = Table(
     # Пишется каждой выдачей оплаченного. NULL — после появления месячных
     # норм человек ещё не платил; период тогда считается от конца срока.
     Column("norm_since", DateTime(timezone=True), nullable=True),
+    # Заказ, по которому выдан пробный период (фаза 11, часть 3). NULL —
+    # пробного периода не было. Отметка — та же, что «один раз на человека».
+    Column("trial_order_id", String(36), nullable=True),
     # Когда выдали разовый бонус за подписку на канал. NULL — не выдавали.
     # Отметка и есть защита от повторной выдачи: начисление ставит её тем же
     # UPDATE, который добавляет картинки, и условие NULL стоит в его WHERE.
@@ -123,6 +128,22 @@ usage = Table(
     # старая и новая работают рядом. Удалять — отдельной миграцией потом.
     Column("images_used", Integer, nullable=False, server_default="0"),
     Column("documents_used", Integer, nullable=False, server_default="0"),
+)
+
+star_cancels = Table(
+    "star_cancels",
+    metadata,
+    # Идентификатор первого списания звёздной подписки: по нему Telegram её
+    # отменяет. Ключ — он, а не человек: у одного человека могут застрять
+    # две прежние подписки, а одна и та же подписка встаёт в очередь один раз.
+    Column("charge_id", String(128), primary_key=True),
+    Column(
+        "user_id",
+        BigInteger,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column("queued_at", DateTime(timezone=True), nullable=False),
 )
 
 monthly_usage = Table(
@@ -189,6 +210,9 @@ subscriptions = Table(
     Column("cancelled_at", DateTime(timezone=True), nullable=True),
     # Заказ списания с неизвестным исходом: один период — один заказ.
     Column("charge_order_id", String(36), nullable=True),
+    # Предупредить перед очередным списанием и без этого не списывать. Только
+    # первое списание после пробного периода (фаза 11, часть 3).
+    Column("remind_before_charge", Boolean, nullable=False, server_default=false()),
     CheckConstraint("amount > 0", name="ck_subscriptions_amount"),
 )
 
@@ -219,6 +243,8 @@ payments = Table(
     # Хранится у платежа, а не у пользователя: документы меняются, и важно,
     # какая редакция действовала в момент конкретной оплаты.
     Column("docs_version", String(32), nullable=True),
+    # Заказ на пробный период: 1 ₽ за три дня «Лайта» с сохранением карты.
+    Column("trial", Boolean, nullable=False, server_default=false()),
     CheckConstraint("amount > 0", name="ck_payments_amount"),
 )
 

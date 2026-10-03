@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 from app.core import texts
-from app.core.scenarios import keyboards
+from app.core.scenarios import keyboards, payments
 from app.core.scenarios.deps import Deps, Session
 
 
@@ -27,6 +27,13 @@ async def show(deps: Deps, session: Session) -> None:
         keyboard=keyboards.tariffs(),
         show_menu=False,
     )
+    if await payments.trial_offered(deps, session):
+        # Отдельным сообщением под карточками: карточки — дословно от
+        # заказчика, а пробный период положен не всем (ПП1).
+        offer = texts.trial_offer()
+        await deps.messenger.send_text(
+            session.chat, offer.text, keyboard=keyboards.trial_offer(), show_menu=False
+        )
 
 
 async def payments_not_ready(deps: Deps, session: Session) -> None:

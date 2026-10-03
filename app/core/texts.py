@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from datetime import date
 
 from app.core.models import TariffId
-from app.core.tariffs import PAID_TARIFFS, RUB, STARS, TARIFFS
+from app.core.tariffs import PAID_TARIFFS, RUB, STARS, TARIFFS, TRIAL
 
 
 @dataclass(frozen=True, slots=True)
@@ -821,51 +821,31 @@ def paywall_messages(*, invite_messages: int) -> Screen:
 # --- Профиль (§2.6) ------------------------------------------------------
 
 
-@dataclass(frozen=True, slots=True)
-class Left:
-    """Остаток одного ресурса для профиля: норма и подарки отдельно.
-
-    ``norm`` — сколько осталось от нормы тарифа; None — нормы этого вида у
-    тарифа нет вовсе (у бесплатного — доклады и презентации), и тогда
-    показываются только подарки.
-    """
-
-    norm: int | None
-    bonus: int
-
-    def __str__(self) -> str:
-        gifts = f"🎁{self.bonus}"
-        if self.norm is None:
-            return gifts if self.bonus else "0"
-        return f"{self.norm} + {gifts}" if self.bonus else str(self.norm)
-
-
 def profile(
     *,
     tariff_id: TariffId,
     messages_used: int,
     messages_limit: int,
-    images: Left,
-    documents: Left,
+    images_left: int,
+    documents_left: int,
     friends: int,
-    presentations: Left | None = None,
+    presentations_left: int | None = None,
     user_number: int | None = None,
     period_ends: str | None = None,
     tariff_continues: bool = True,
 ) -> Screen:
     """Реальные числа и два выхода.
 
-    Остаток — норма плюс подарки (Т8): «37 + 🎁2» читается как «тридцать
-    семь в этом месяце и два подарка сверху», и видно, что сгорит с концом
-    периода, а что останется. 🎁 — тот же значок, что на кнопках «Позвать
-    друга»: подарки в боте везде выглядят одинаково.
+    Остаток — одно число: норма плюс подарки (Т8, решение заказчика).
+    Человеку важно, сколько он ещё может сделать, а не из какой корзины это
+    спишется.
 
     ``period_ends`` — день, когда кончается период месячной нормы. В первой
     строке он говорит то, что на этот день правда случится: у бесплатного —
     придут новые картинки, у платного с продлением — начнётся новый месяц,
     у платного без продления — кончится тариф.
 
-    ``presentations`` — None, когда раздела презентаций нет (нет ключа API):
+    ``presentations_left`` — None, когда раздела презентаций нет (нет ключа API):
     тогда и в профиле о них ни слова.
 
     ``user_number`` — номер для поддержки. Появляется не везде: в Telegram
@@ -881,11 +861,11 @@ def profile(
         else:
             title = f"{title} · до {period_ends}"
     left = [
-        f"{_button_name(MENU_IMAGES)}: {images}",
-        f"{_button_name(MENU_DOCUMENTS)}: {documents}",
+        f"{_button_name(MENU_IMAGES)}: {images_left}",
+        f"{_button_name(MENU_DOCUMENTS)}: {documents_left}",
     ]
-    if presentations is not None:
-        left.append(f"{_button_name(MENU_PRESENTATIONS)}: {presentations}")
+    if presentations_left is not None:
+        left.append(f"{_button_name(MENU_PRESENTATIONS)}: {presentations_left}")
     lines = [
         title,
         f"Сообщений сегодня: {messages_used} из {messages_limit}",
@@ -1232,6 +1212,77 @@ def payment_order(
     )
 
 
+# --- Пробный период (фаза 11, часть 3) -----------------------------------
+
+BUTTON_TRIAL = f"⚡️ Попробовать за {TRIAL.price_rub} ₽"
+
+
+def _trial_terms() -> tuple[str, str, int]:
+    """Название тарифа, срок и цена после пробного — из реестра, а не текстом."""
+    full = TARIFFS[TRIAL.tariff].price_rub
+    return TARIFF_TITLES[TRIAL.tariff], _days(TRIAL.days), full
+
+
+def trial_offer() -> Screen:
+    """Предложение пробного периода под карточками тарифов.
+
+    Отдельным сообщением, а не строкой в карточках: карточки заказчик дал
+    дословно, а предложение видят не все — только те, кто ещё ни разу не
+    платил. Главное в нём — что продление не случится молча: напомним
+    заранее, и отключить можно до денег.
+    """
+    title, days, full = _trial_terms()
+    return Screen(
+        text=(
+            f"Можно начать с пробы: «{title}» на {days} за {TRIAL.price_rub} ₽, "
+            f"дальше {_rubles(full)} ₽ в месяц.\n"
+            "Напомним заранее — успеешь отключить, если не понравится 👇"
+        ),
+        buttons=(BUTTON_TRIAL,),
+    )
+
+
+def trial_order(*, first_charge: str, statement: str, receipt_to: str = "") -> Screen:
+    """Условия пробного периода и кнопка оплаты — в одном сообщении (ПП2).
+
+    Как и у обычного заказа, здесь всё, под чем человек подписывается:
+    сколько сейчас и за что, сколько потом и как часто, когда первое полное
+    списание, что о нём предупредят, как отключить и ссылки на документы.
+    """
+    title, days, full = _trial_terms()
+    lines = [
+        f"Пробный период «{title}» — {days} за {TRIAL.price_rub} ₽.",
+        f"Дальше {_rubles(full)} ₽ каждые {_days(30)}, "
+        f"первое списание — {first_charge}.",
+        "Напомним за день до него. Отключить продление можно в профиле в любой момент.",
+    ]
+    destinations = []
+    if statement:
+        destinations.append(f"В выписке банка: {statement}")
+    if receipt_to:
+        destinations.append(f"чек на {receipt_to}")
+    if destinations:
+        lines.append(" · ".join(destinations) if statement else f"Чек на {receipt_to}")
+    lines.append(CONSENT)
+    buttons: tuple[str, ...] = (BUTTON_PAY_OPEN, BUTTON_OFFER, BUTTON_PRIVACY)
+    if receipt_to:
+        buttons = (*buttons, BUTTON_EMAIL_CHANGE)
+    return Screen(text="\n".join(lines), buttons=buttons, formal_address=True)
+
+
+def trial_started(*, until: str, amount: int) -> Screen:
+    """Пробный период включён: до какого числа и что будет потом."""
+    title, _, _ = _trial_terms()
+    return Screen(
+        text=(
+            f"Готово! Пробный «{title}» включён до {until}.\n"
+            f"Потом {_rubles(amount)} ₽ каждые {_days(30)} — напомним за день "
+            "до списания. Отключить можно в профиле 👇"
+        ),
+        buttons=_menu_buttons(),
+    )
+
+
 PAYMENT_FAILED = "Не получилось открыть оплату 🤷 Попробуй ещё раз или напиши нам."
 
 #: Что видит человек, если мессенджер спросил про заказ, которого у нас нет.
@@ -1381,15 +1432,16 @@ def subscription_other_method(*, by_stars: bool) -> Screen:
 def subscription_reminder(
     tariff_id: TariffId, *, amount: int, currency: str, on: str
 ) -> Screen:
-    """Предупреждение за сутки до списания (§4.13 оферты).
+    """Предупреждение за сутки до первого списания после пробного периода.
 
     Не реклама и не просьба: обязанность. Человек должен успеть передумать до
-    того, как деньги ушли, а не после.
+    того, как деньги ушли, а не после. Напоминание бывает только здесь —
+    перед обычными продлениями его нет (решение заказчика).
     """
     return Screen(
         text=(
-            f"Завтра, {on}, продлим тариф «{TARIFF_TITLES[tariff_id]}» — "
-            f"{_price(amount, currency)}.\n"
+            f"Завтра, {on}, пробный период кончится — спишем "
+            f"{_price(amount, currency)} за тариф «{TARIFF_TITLES[tariff_id]}».\n"
             "Не нужно? Отключи продление 👇"
         ),
         buttons=(BUTTON_SUBSCRIPTION_OFF, MENU_PROFILE),
@@ -1429,10 +1481,8 @@ def subscription_charge_failed(
 ) -> Screen:
     """Списание не прошло; следующая попытка — тогда-то (§4.16 оферты).
 
-    Это же сообщение — предупреждение о следующей попытке (§4.13): в нём
-    сумма, дата и выход. Иначе перед каждым повтором уходило бы ещё и «завтра
-    спишем», а сам повтор переносился бы на сутки, чтобы это «завтра»
-    наступило, — и три попытки растягивались бы на пять дней.
+    В нём сумма, дата следующей попытки и выход: человек успевает отключить
+    продление до неё. Отдельного «завтра спишем» перед повтором нет.
     """
     return Screen(
         text=(
@@ -1565,8 +1615,8 @@ def _all_screens() -> tuple[Screen, ...]:
             tariff_id=TariffId.FREE,
             messages_used=12,
             messages_limit=20,
-            images=Left(norm=2, bonus=3),
-            documents=Left(norm=None, bonus=2),
+            images_left=5,
+            documents_left=2,
             friends=3,
             period_ends="27 сентября",
         ),
@@ -1574,9 +1624,9 @@ def _all_screens() -> tuple[Screen, ...]:
             tariff_id=TariffId.MAX,
             messages_used=12,
             messages_limit=200,
-            images=Left(norm=148, bonus=12),
-            documents=Left(norm=100, bonus=0),
-            presentations=Left(norm=60, bonus=1),
+            images_left=160,
+            documents_left=100,
+            presentations_left=61,
             friends=3,
             user_number=1234,
             period_ends="27 сентября",
@@ -1585,9 +1635,9 @@ def _all_screens() -> tuple[Screen, ...]:
             tariff_id=TariffId.PRO,
             messages_used=0,
             messages_limit=100,
-            images=Left(norm=0, bonus=0),
-            documents=Left(norm=0, bonus=0),
-            presentations=Left(norm=0, bonus=0),
+            images_left=0,
+            documents_left=0,
+            presentations_left=0,
             friends=0,
             user_number=1234,
             period_ends="27 сентября",
@@ -1598,6 +1648,14 @@ def _all_screens() -> tuple[Screen, ...]:
         referral_invite("https://t.me/mybot?start=ref_abc123"),
         referral_reward(messages=20, images=2),
         referral_reward(messages=20, images=2, presentations=1),
+        trial_offer(),
+        trial_order(first_charge="31 августа", statement="YM*ChatAIBot"),
+        trial_order(
+            first_charge="31 августа",
+            statement="YM*ChatAIBot",
+            receipt_to="alika@mail.ru",
+        ),
+        trial_started(until="31 августа", amount=299),
         tariffs_screen(with_presentations=True),
         tariffs_screen(with_presentations=False),
         payment_methods(TariffId.PRO, price_rub=599, stars=524),

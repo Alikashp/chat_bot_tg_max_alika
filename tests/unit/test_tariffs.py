@@ -15,6 +15,39 @@ from app.core.tariffs import (
 )
 from app.ports.ai import ImageQuality
 
+#: Таблица из поручения фазы 11, часть 2 — дословно. В день — сообщения,
+#: в месяц — остальное; у бесплатного презентации и доклады разовые.
+NORMS = {
+    #             сообщения/день  картинки/мес  презентации/мес  доклады/мес
+    TariffId.FREE: (20, 3, 0, 0),
+    TariffId.LITE: (100, 20, 10, 15),
+    TariffId.PRO: (100, 40, 25, 40),
+    TariffId.MAX: (200, 150, 60, 100),
+}
+
+
+@pytest.mark.parametrize("tariff_id", list(TariffId))
+def test_norms_match_the_table(tariff_id: TariffId) -> None:
+    """Т1: все нормы — в одном реестре, и совпадают с таблицей заказчика."""
+    tariff = tariff_of(tariff_id)
+
+    assert (
+        tariff.daily_messages,
+        tariff.monthly_images,
+        tariff.monthly_presentations,
+        tariff.monthly_documents,
+    ) == NORMS[tariff_id]
+
+
+def test_the_free_one_time_grants_match_the_table() -> None:
+    """Т1: «1 презентация разово, 2 доклада разово» — там же, где нормы."""
+    free = tariff_of(TariffId.FREE)
+
+    assert (free.one_time_presentations, free.one_time_documents) == (1, 2)
+    for paid in PAID_TARIFFS:
+        assert tariff_of(paid).one_time_presentations == 0
+        assert tariff_of(paid).one_time_documents == 0
+
 
 @pytest.mark.parametrize(
     ("tariff_id", "price"),

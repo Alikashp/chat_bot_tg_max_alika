@@ -75,6 +75,10 @@ users = Table(
     # Какую версию постоянного меню человек видел последней (§4.2). NULL —
     # никакую: заведён до версий, и меню ему обновится с первым ответом.
     Column("menu_version", String(16), nullable=True),
+    # С какого момента считается месячная норма платного тарифа (фаза 11).
+    # Пишется каждой выдачей оплаченного. NULL — после появления месячных
+    # норм человек ещё не платил; период тогда считается от конца срока.
+    Column("norm_since", DateTime(timezone=True), nullable=True),
     # Когда выдали разовый бонус за подписку на канал. NULL — не выдавали.
     # Отметка и есть защита от повторной выдачи: начисление ставит её тем же
     # UPDATE, который добавляет картинки, и условие NULL стоит в его WHERE.
@@ -113,8 +117,33 @@ usage = Table(
     # часовому поясу пользователя ещё в ядре, сюда приходит уже готовый день.
     Column("day", Date, primary_key=True),
     Column("messages_used", Integer, nullable=False, server_default="0"),
+    # Картинки и документы по суткам больше не считаются (фаза 11: у них
+    # месячная норма, monthly_usage). Колонки остаются, пока жива версия
+    # бота, которая в них пишет: выкладка идёт без остановки, и пару минут
+    # старая и новая работают рядом. Удалять — отдельной миграцией потом.
     Column("images_used", Integer, nullable=False, server_default="0"),
     Column("documents_used", Integer, nullable=False, server_default="0"),
+)
+
+monthly_usage = Table(
+    "monthly_usage",
+    metadata,
+    Column(
+        "user_id",
+        BigInteger,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        primary_key=True,
+    ),
+    # Начало периода месячной нормы — ключ, а не «месяц»: период у каждого
+    # свой (от оплаты или от регистрации) и считается в ядре. Новый период —
+    # новая строка; оттого остаток и не переносится.
+    Column("period_start", DateTime(timezone=True), primary_key=True),
+    Column("images_used", Integer, nullable=False, server_default="0"),
+    Column("documents_used", Integer, nullable=False, server_default="0"),
+    Column("presentations_used", Integer, nullable=False, server_default="0"),
+    CheckConstraint("images_used >= 0", name="ck_monthly_usage_images"),
+    CheckConstraint("documents_used >= 0", name="ck_monthly_usage_documents"),
+    CheckConstraint("presentations_used >= 0", name="ck_monthly_usage_presentations"),
 )
 
 dialogs = Table(

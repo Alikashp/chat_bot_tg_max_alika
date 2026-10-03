@@ -383,6 +383,144 @@ async def test_the_same_method_can_change_the_tariff(
     assert len(cards.created) == 2
 
 
+# --- Т0: никогда две подписки сразу --------------------------------------
+
+
+async def test_a_new_star_subscription_cancels_the_old_one(
+    deps: Deps, session: Session, stars: FakeStars, storage: InMemoryStorage
+) -> None:
+    """Смена тарифа звёздами — это вторая подписка у Telegram, а не та же.
+
+    Каждая звёздная подписка списывает сама. Оставь прежнюю живой — и
+    человек платил бы звёздами за оба тарифа сразу, сколько бы мы ни
+    переписывали свою запись.
+    """
+    await payments.start_stars(deps, session, PRO)
+    await payments.confirm(deps, stars.invoices[0].order_id, charge_id="charge-pro")
+
+    await payments.start_stars(deps, session, TariffId.MAX)
+    await payments.confirm(deps, stars.invoices[1].order_id, charge_id="charge-max")
+
+    assert stars.cancelled == [(session.user.external_id, "charge-pro")]
+    subscription = await storage.get_subscription(session.user.id)
+    assert subscription is not None
+    assert subscription.tariff is TariffId.MAX
+    # Отменять в следующий раз придётся новую: по ней Telegram и списывает.
+    assert subscription.charge_id == "charge-max"
+
+
+async def test_a_card_link_paid_after_stars_cancels_the_stars(
+    deps: Deps, session: Session, stars: FakeStars, storage: InMemoryStorage
+) -> None:
+    """Ссылка на карту получена до звёзд, а оплачена после.
+
+    На входе это не поймать: когда человек брал ссылку, подписки ещё не
+    было. Ловится только при подтверждении — там, где деньги уже взяты.
+    """
+    cards = FakeCards(recurring=True)
+    both = replace(deps, cards=cards)
+    await payments.start_card(both, session, PRO)
+    await payments.start_stars(both, session, PRO)
+    await payments.confirm(both, stars.invoices[0].order_id, charge_id="charge-1")
+
+    await payments.confirm(both, cards.created[0][0])
+
+    assert stars.cancelled == [(session.user.external_id, "charge-1")]
+    subscription = await storage.get_subscription(session.user.id)
+    assert subscription is not None
+    assert subscription.method == PaymentMethod.CARD.value
+
+
+async def test_stars_paid_after_a_card_replace_the_card_subscription(
+    deps: Deps, session: Session, stars: FakeStars, storage: InMemoryStorage
+) -> None:
+    """Обратный порядок: карточную подписку списываем мы сами.
+
+    Запись о подписке у человека одна, и новая её заменяет — значит, карту
+    больше не тронет ни один проход списаний. Звёздную при этом отменять
+    нечего: она и есть новая.
+    """
+    cards = FakeCards(recurring=True)
+    both = replace(deps, cards=cards)
+    await payments.start_stars(both, session, PRO)
+    await payments.start_card(both, session, PRO)
+    await payments.confirm(both, cards.created[0][0])
+
+    await payments.confirm(both, stars.invoices[0].order_id, charge_id="charge-1")
+
+    assert stars.cancelled == []
+    subscription = await storage.get_subscription(session.user.id)
+    assert subscription is not None
+    assert subscription.method == PaymentMethod.STARS.value
+    assert subscription.payment_method_id is None
+
+
+async def test_a_one_time_card_payment_ends_a_star_subscription(
+    deps: Deps, session: Session, stars: FakeStars, storage: InMemoryStorage
+) -> None:
+    """Разовая оплата картой новой подписки не заводит — но и старую не терпит.
+
+    Иначе звёзды продолжили бы списываться за срок, уже оплаченный картой.
+    """
+    cards = FakeCards(recurring=False)
+    both = replace(deps, cards=cards)
+    await payments.start_card(both, session, PRO)
+    await payments.start_stars(both, session, PRO)
+    await payments.confirm(both, stars.invoices[0].order_id, charge_id="charge-1")
+
+    await payments.confirm(both, cards.created[0][0])
+
+    assert stars.cancelled == [(session.user.external_id, "charge-1")]
+    subscription = await storage.get_subscription(session.user.id)
+    assert subscription is not None
+    assert subscription.status == "cancelled"
+
+
+async def test_a_renewal_does_not_cancel_its_own_subscription(
+    deps: Deps, session: Session, stars: FakeStars, storage: InMemoryStorage
+) -> None:
+    """Продление — та же подписка. Отменить её значило бы прекратить оплаченное."""
+    await payments.start_stars(deps, session, PRO)
+    order_id = stars.invoices[0].order_id
+    await payments.confirm(deps, order_id, charge_id="charge-1")
+
+    await payments.confirm(deps, order_id, charge_id="charge-2", renewal=True)
+
+    assert stars.cancelled == []
+    subscription = await storage.get_subscription(session.user.id)
+    assert subscription is not None
+    assert subscription.charge_id == "charge-1"
+
+
+async def test_a_failed_cancel_still_grants_and_is_reported(
+    deps: Deps,
+    session: Session,
+    stars: FakeStars,
+    storage: InMemoryStorage,
+    logger: FakeLogger,
+) -> None:
+    """Деньги за новую подписку уже взяты — тариф выдаётся в любом случае.
+
+    А прежняя подписка, которую Telegram не дал отменить, — повод для
+    ручного разбора, и в логе это ошибка, а не тишина.
+    """
+    await payments.start_stars(deps, session, PRO)
+    await payments.confirm(deps, stars.invoices[0].order_id, charge_id="charge-pro")
+    stars.cancel_error = RuntimeError("telegram is down")
+
+    await payments.start_stars(deps, session, TariffId.MAX)
+    granted = await payments.confirm(
+        deps, stars.invoices[1].order_id, charge_id="charge-max"
+    )
+
+    assert granted is not None
+    user = await storage.get_user_by_id(session.user.id)
+    assert user is not None and user.tariff is TariffId.MAX
+    failures = [e for e in logger.events if e.event == "subscription_replace_failed"]
+    assert [e.level for e in failures] == ["error"]
+    assert failures[0].fields["charge_id"] == "charge-pro"
+
+
 # --- Подтверждение -------------------------------------------------------
 
 

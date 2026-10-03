@@ -14,11 +14,13 @@ from typing import Protocol
 
 from app.core import sources
 from app.core.generations import Generation
+from app.core.limits import LimitKind
 from app.core.models import (
     NO_USERNAME,
     DialogState,
     MessengerKind,
     Payment,
+    PeriodUsage,
     Subscription,
     TariffId,
     Usage,
@@ -157,10 +159,35 @@ class Storage(Protocol):
         day: date,
         *,
         messages: int = 0,
-        images: int = 0,
-        documents: int = 0,
     ) -> Usage:
         """Атомарно увеличивает дневной расход и возвращает новое значение."""
+        ...
+
+    async def get_period_usage(
+        self, user_id: UserId, period_start: datetime
+    ) -> PeriodUsage:
+        """Расход месячной нормы за период, начавшийся в ``period_start``.
+
+        Для периода, в котором ещё ничего не потрачено, — нулевой расход, а
+        не None: «не тратил» и «нет записи» — одно и то же.
+        """
+        ...
+
+    async def spend_norm(
+        self,
+        user_id: UserId,
+        period_start: datetime,
+        kind: LimitKind,
+        *,
+        limit: int,
+    ) -> bool:
+        """Атомарно тратит одну единицу месячной нормы, если она ещё есть.
+
+        False — норма уже исчерпана, и ничего не изменилось. Проверка и
+        списание обязаны быть одной операцией (Т3): двумя запросами два
+        одновременных обращения оба увидели бы «осталась одна» и потратили
+        бы две. Сообщений здесь нет — у них дневная норма.
+        """
         ...
 
     async def spend_bonus(
@@ -304,6 +331,7 @@ class Storage(Protocol):
         seen_tariff: TariffId,
         seen_expiry: datetime | None,
         subscription: Subscription | None,
+        norm_since: datetime,
     ) -> GrantOutcome:
         """Выдаёт оплаченное одной транзакцией: всё или ничего (П4).
 
@@ -316,6 +344,10 @@ class Storage(Protocol):
         новый срок. Если с тех пор их поменяли (второй заказ того же
         человека подтвердился раньше), ответ STALE: срок, посчитанный от
         старой даты, потерял бы оплаченный месяц.
+
+        ``norm_since`` — с какого момента считается месячная норма. Пишется
+        той же транзакцией: оплата и обновление нормы — одно событие, и
+        оплаченное без новой нормы было бы оплаченным наполовину.
 
         Обращений к провайдеру внутри нет и быть не должно: транзакция не
         ждёт чужую сеть.

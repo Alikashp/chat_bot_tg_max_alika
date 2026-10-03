@@ -47,21 +47,28 @@ class Tariff:
 
     id: TariffId
     price_rub: int
+    #: Сообщения — единственное, что считается по суткам.
     daily_messages: int
-    daily_images: int
-    #: Дневная норма разборов документов. На бесплатном тарифе ноль: разбор
-    #: длинного файла — самый дорогой запрос в сервисе, и возобновлять его
-    #: каждые сутки бесплатно нельзя. Там работает разовая выдача (bonus).
-    daily_documents: int
+    #: Картинки, доклады и презентации считаются месячной нормой: период
+    #: платного тарифа начинается с оплаты, бесплатного — с регистрации
+    #: (core/limits.py). Остаток на следующий период не переносится.
+    monthly_images: int
+    monthly_documents: int
+    monthly_presentations: int
     model_tier: ModelTier
     image_quality: ImageQuality
+    #: Разовая выдача при регистрации — бесплатному тарифу, где у докладов и
+    #: презентаций нормы нет. Ложится в бонус и не сгорает. Здесь, а не в
+    #: настройках, чтобы вся таблица норм жила в одном месте (Т1).
+    one_time_documents: int = 0
+    one_time_presentations: int = 0
 
     @property
     def is_free(self) -> bool:
         return self.id is TariffId.FREE
 
 
-#: Реестр тарифов (§2.8).
+#: Реестр тарифов (§2.8) — единственное место, где заданы нормы (Т1).
 #:
 #: Про качество картинок. Все тарифы рисуют в medium, включая бесплатный, и
 #: это решение заказчика, принятое с открытыми глазами: разница в цене между
@@ -79,22 +86,25 @@ TARIFFS: Mapping[TariffId, Tariff] = MappingProxyType(
             id=TariffId.FREE,
             price_rub=0,
             daily_messages=20,
-            # Ноль — не описка. На бесплатном тарифе картинки больше не
-            # приходят каждый день: их выдают разово — при регистрации, за
-            # приглашённого друга и за подписку на канал, — и они копятся в
-            # бонусном балансе, который не сгорает. Дневная норма осталась
-            # только у платных тарифов, где человек платит именно за неё.
-            daily_images=0,
-            daily_documents=0,
+            # Три картинки в месяц — норма, а не разовая выдача: период
+            # бесплатного тарифа идёт от регистрации, каждые тридцать дней.
+            monthly_images=3,
+            # Доклады и презентации бесплатно — только разово: это самые
+            # дорогие запросы в сервисе. Дальше — подарки за друзей и тарифы.
+            monthly_documents=0,
+            monthly_presentations=0,
             model_tier=ModelTier.ECONOMY,
             image_quality=ImageQuality.MEDIUM,
+            one_time_documents=2,
+            one_time_presentations=1,
         ),
         TariffId.LITE: Tariff(
             id=TariffId.LITE,
             price_rub=299,
             daily_messages=100,
-            daily_images=40,
-            daily_documents=15,
+            monthly_images=20,
+            monthly_documents=15,
+            monthly_presentations=10,
             model_tier=ModelTier.ECONOMY,
             image_quality=ImageQuality.MEDIUM,
         ),
@@ -102,8 +112,9 @@ TARIFFS: Mapping[TariffId, Tariff] = MappingProxyType(
             id=TariffId.PRO,
             price_rub=599,
             daily_messages=100,
-            daily_images=60,
-            daily_documents=30,
+            monthly_images=40,
+            monthly_documents=40,
+            monthly_presentations=25,
             model_tier=ModelTier.STANDARD,
             image_quality=ImageQuality.MEDIUM,
         ),
@@ -111,8 +122,9 @@ TARIFFS: Mapping[TariffId, Tariff] = MappingProxyType(
             id=TariffId.MAX,
             price_rub=1490,
             daily_messages=200,
-            daily_images=150,
-            daily_documents=60,
+            monthly_images=150,
+            monthly_documents=100,
+            monthly_presentations=60,
             model_tier=ModelTier.STANDARD,
             image_quality=ImageQuality.MEDIUM,
         ),

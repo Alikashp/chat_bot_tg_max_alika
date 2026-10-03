@@ -51,6 +51,7 @@ from app.adapters.telegram.messenger import TelegramMessenger
 from app.adapters.telegram.stars import TelegramStars
 from app.core import support, texts
 from app.core.actions import Action, buy_action, method_action, preset_action
+from app.core.limits import norm_period
 from app.core.models import MessengerKind, TariffId
 from app.core.scenarios.deps import Deps
 from app.core.settings import CoreSettings
@@ -424,9 +425,10 @@ async def test_start_creates_the_user_once(harness: Harness) -> None:
     await harness.send_text("/start")
 
     user = await harness.user()
-    # Три картинки выдаются один раз — при регистрации. Второй /start их не
-    # удваивает: иначе бесплатные картинки печатались бы кнопкой.
-    assert user.bonus_images == 3
+    # Разовое выдаётся один раз — при регистрации. Второй /start его не
+    # удваивает: иначе бесплатные доклады печатались бы кнопкой.
+    assert user.bonus_documents == 2
+    assert user.bonus_images == 0
     assert await harness.storage.get_user(MessengerKind.TELEGRAM, "999") is None
 
 
@@ -538,12 +540,16 @@ async def test_drawing_replaces_the_waiting_message(started: Harness) -> None:
 async def test_the_image_limit_is_spent_only_after_delivery(started: Harness) -> None:
     """Главный инвариант — на живом пути, а не только в юнит-тесте."""
     started.images.error = RuntimeError("провайдер лёг")
+    before = (await started.user()).bonus_images
 
     await started.send_text(texts.MENU_IMAGES)
     await started.send_text("кот-космонавт")
 
-    usage = await started.storage.get_usage((await started.user()).id, _today())
-    assert usage.images_used == 0
+    user = await started.user()
+    period = norm_period(user, datetime.now(UTC), free_days=30, paid_days=30)
+    spent = await started.storage.get_period_usage(user.id, period.start)
+    assert spent.images_used == 0
+    assert user.bonus_images == before
     assert texts.IMAGE_ERROR in [
         call.text for call in started.calls_of(EditMessageText)
     ]

@@ -15,7 +15,7 @@ from __future__ import annotations
 import pytest
 
 from app.adapters.storage.memory import InMemoryStorage
-from app.core.limits import LimitKind
+from app.core.limits import LimitKind, norm_period
 from app.core.models import Photo, User
 from app.core.scenarios import chat, images, presets, spending
 from app.core.scenarios.deps import Deps, Session
@@ -32,8 +32,11 @@ class UndeliveredError(Exception):
 
 
 async def used(storage: InMemoryStorage, session: Session) -> tuple[int, int]:
+    """Сообщения за сутки и картинки из месячной нормы за текущий период."""
     usage = await storage.get_usage(session.user.id, session.day)
-    return usage.messages_used, usage.images_used
+    period = norm_period(session.user, session.now, free_days=30, paid_days=30)
+    spent = await storage.get_period_usage(session.user.id, period.start)
+    return usage.messages_used, spent.images_used
 
 
 async def bonus(storage: InMemoryStorage, user: User) -> tuple[int, int]:
@@ -107,12 +110,11 @@ async def test_failed_chat_does_not_pollute_the_dialog(
 async def test_image_charges_after_delivery(
     deps: Deps, session: Session, storage: InMemoryStorage, user: User
 ) -> None:
-    """На бесплатном тарифе картинка списывается из бонуса: дневной нормы
-    картинок там нет, а выданное при регистрации лежит именно в нём."""
+    """Картинка списывается из месячной нормы, бонус остаётся на потом."""
     await images.draw(deps, session, "кот-космонавт")
 
-    assert await bonus(storage, user) == (0, 2)
-    assert await used(storage, session) == (0, 0)
+    assert await bonus(storage, user) == (0, 3)
+    assert await used(storage, session) == (0, 1)
 
 
 async def test_image_does_not_charge_when_the_provider_fails(
@@ -147,7 +149,7 @@ async def test_preset_charges_after_delivery(
 ) -> None:
     await presets.apply(deps, session, PRESETS["lego"], [Photo(data=PNG_BYTES)])
 
-    assert await bonus(storage, user) == (0, 2)
+    assert await bonus(storage, user) == (0, 3)
 
 
 async def test_preset_does_not_charge_when_the_provider_fails(

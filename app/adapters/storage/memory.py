@@ -22,11 +22,13 @@ from uuid import uuid4
 
 from app.core import sources
 from app.core.generations import Generation
+from app.core.limits import LimitKind
 from app.core.models import (
     NO_USERNAME,
     DialogState,
     MessengerKind,
     Payment,
+    PeriodUsage,
     Subscription,
     TariffId,
     Usage,
@@ -35,6 +37,13 @@ from app.core.models import (
 )
 from app.ports.payments import PaymentMethod, PaymentStatus, SubscriptionStatus
 from app.ports.storage import GrantOutcome
+
+#: Какое поле расхода за период отвечает за какой вид нормы.
+_PERIOD_FIELDS: dict[LimitKind, str] = {
+    LimitKind.IMAGES: "images_used",
+    LimitKind.DOCUMENTS: "documents_used",
+    LimitKind.PRESENTATIONS: "presentations_used",
+}
 
 
 class InMemoryStorage:
@@ -54,6 +63,7 @@ class InMemoryStorage:
         self._by_external: dict[tuple[MessengerKind, str], UserId] = {}
         self._by_referral_code: dict[str, UserId] = {}
         self._usage: dict[tuple[UserId, date], Usage] = {}
+        self._period_usage: dict[tuple[UserId, datetime], PeriodUsage] = {}
         self._dialogs: dict[UserId, DialogState] = {}
         #: Учёт обращений к провайдерам. Публичный намеренно: в тестах по
         #: нему проверяют, что попытка записана, — так же, как в бою по
@@ -167,19 +177,38 @@ class InMemoryStorage:
         day: date,
         *,
         messages: int = 0,
-        images: int = 0,
-        documents: int = 0,
     ) -> Usage:
         self._require_user(user_id)
         current = self._usage.get((user_id, day), Usage(day=day))
-        updated = Usage(
-            day=day,
-            messages_used=current.messages_used + messages,
-            images_used=current.images_used + images,
-            documents_used=current.documents_used + documents,
-        )
+        updated = Usage(day=day, messages_used=current.messages_used + messages)
         self._usage[(user_id, day)] = updated
         return updated
+
+    async def get_period_usage(
+        self, user_id: UserId, period_start: datetime
+    ) -> PeriodUsage:
+        self._require_user(user_id)
+        return self._period_usage.get((user_id, period_start), PeriodUsage())
+
+    async def spend_norm(
+        self,
+        user_id: UserId,
+        period_start: datetime,
+        kind: LimitKind,
+        *,
+        limit: int,
+    ) -> bool:
+        # Ни одного await между проверкой и записью: в памяти это и есть
+        # атомарность.
+        self._require_user(user_id)
+        field = _PERIOD_FIELDS[kind]
+        current = self._period_usage.get((user_id, period_start), PeriodUsage())
+        if getattr(current, field) >= limit:
+            return False
+        self._period_usage[(user_id, period_start)] = replace(
+            current, **{field: getattr(current, field) + 1}
+        )
+        return True
 
     async def spend_bonus(
         self,
@@ -307,6 +336,7 @@ class InMemoryStorage:
         seen_tariff: TariffId,
         seen_expiry: datetime | None,
         subscription: Subscription | None,
+        norm_since: datetime,
     ) -> GrantOutcome:
         # Ни одного await внутри: в памяти это и есть транзакция.
         payment = self._payments.get(payment_id)
@@ -319,7 +349,7 @@ class InMemoryStorage:
             payment, status=PaymentStatus.PAID.value, paid_at=self._now()
         )
         self._users[user.id] = replace(
-            user, tariff=tariff, tariff_expires_at=expires_at
+            user, tariff=tariff, tariff_expires_at=expires_at, norm_since=norm_since
         )
         if subscription is not None:
             self._subscriptions[subscription.user_id] = subscription

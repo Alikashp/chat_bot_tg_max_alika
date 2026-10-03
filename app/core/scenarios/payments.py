@@ -190,7 +190,9 @@ async def remember_email(deps: Deps, session: Session, written: str) -> None:
         # Ожидание от версии, где тариф назывался иначе. Возвращаем к выбору.
         await _clear_pending(deps, session)
         await deps.messenger.send_text(
-            session.chat, texts.tariffs_screen().text, keyboard=keyboards.tariffs()
+            session.chat,
+            texts.tariffs_screen(with_presentations=deps.presentations_on).text,
+            keyboard=keyboards.tariffs(),
         )
         return
 
@@ -438,7 +440,10 @@ async def confirm(
 
     # Всё, что спрашивается у провайдера, — до выдачи. Выдача — одна
     # транзакция хранилища (П4), и ждать в ней чужую сеть нельзя.
-    subscription = await _subscription_for(deps, order, charge_id=charge_id)
+    previous = await deps.storage.get_subscription(order.user_id)
+    subscription = await _subscription_for(
+        deps, order, charge_id=charge_id, renewal=renewal
+    )
 
     for _ in range(_GRANT_ATTEMPTS):
         user = await deps.storage.get_user_by_id(order.user_id)
@@ -462,6 +467,9 @@ async def confirm(
                 if subscription is not None
                 else None
             ),
+            # Каждая оплата и каждое продление начинают период месячной нормы
+            # заново: человек заплатил — норма полная.
+            norm_since=deps.now(),
         )
         if outcome is GrantOutcome.GRANTED:
             break
@@ -473,6 +481,9 @@ async def confirm(
         # Заказ остался pending — его доведёт следующее уведомление или сверка.
         deps.logger.error("payment_grant_contended", user_id=int(order.user_id))
         return None
+
+    if not renewal:
+        await _end_previous(deps, user, previous, replaced_by=subscription)
 
     deps.logger.info(
         "payment_confirmed",
@@ -495,6 +506,42 @@ async def confirm(
         method=order.method,
     )
     return replace(order, paid_at=deps.now())
+
+
+async def refunded(deps: Deps, order: Payment) -> None:
+    """Деньги по заказу вернули: оплаченный ими месяц кончается (Т5).
+
+    Продление снимается сразу: списать с того, кому только что вернули
+    деньги, — верный способ получить оспаривание платежа вместо покупателя.
+
+    Срок тарифа укорачивается на тот месяц, за который вернули деньги, — и
+    только если этот месяц ещё идёт и тариф тот же. Вернули за давно
+    прошедший месяц — отбирать нечего: текущий оплачен другим заказом.
+    Вернули за оплаченный заранее следующий месяц — текущий остаётся. Вернули
+    за единственный — тариф кончается сейчас, и вместе с ним платная норма:
+    дальше действуют бесплатные.
+    """
+    await deps.storage.cancel_subscription(order.user_id, deps.now())
+
+    user = await deps.storage.get_user_by_id(order.user_id)
+    term = timedelta(days=deps.settings.subscription_days)
+    now = deps.now()
+    if (
+        user is None
+        or order.paid_at is None
+        or order.paid_at + term <= now
+        or user.tariff is not order.tariff
+        or user.tariff_expires_at is None
+        or user.tariff_expires_at <= now
+    ):
+        return
+
+    shortened = user.tariff_expires_at - term
+    if shortened <= now:
+        await deps.storage.set_tariff(user.id, TariffId.FREE, None)
+    else:
+        await deps.storage.set_tariff(user.id, user.tariff, shortened)
+    deps.logger.info("payment_refund_revoked", user_id=int(user.id))
 
 
 async def announce(
@@ -646,8 +693,72 @@ async def _renewal_order(
     return order
 
 
+async def _end_previous(
+    deps: Deps,
+    user: User,
+    previous: Subscription | None,
+    *,
+    replaced_by: Subscription | None,
+) -> None:
+    """Прекращает прежнюю подписку, если новая оплата — не она (Т0).
+
+    Правило одно: человек никогда не платит по двум подпискам сразу. На входе
+    в оплату его не удержать целиком — ссылку на карту можно взять до звёзд, а
+    оплатить после, и звёздами на другой тариф Telegram заводит вторую
+    подписку, а не меняет первую. Поэтому решает подтверждение: деньги за
+    новую уже взяты, а прежняя отменяется у того, кто по ней списывает.
+
+    Зовётся после выдачи, а не до неё: новая оплата подтверждена, и тариф
+    человек получает в любом случае — даже если Telegram отменить не дал.
+    Такой сбой — ошибка в логе для ручного разбора, а не повод не выдать.
+    """
+    if previous is None or previous.status == SubscriptionStatus.CANCELLED.value:
+        return
+    if _same_subscription(previous, replaced_by):
+        return
+
+    if previous.method == PaymentMethod.STARS.value:
+        # Карточную отменять у провайдера нечего: списываем по ней мы сами, и
+        # новая запись о подписке (или отметка об отмене ниже) её остановит.
+        # Звёздную списывает Telegram, и наша запись его ни к чему не обязывает.
+        try:
+            if deps.stars is None or previous.charge_id is None:
+                raise RuntimeError("отменить звёздную подписку нечем")
+            await deps.stars.cancel(
+                user_id=user.external_id, charge_id=previous.charge_id
+            )
+        except Exception as error:
+            deps.logger.error(
+                "subscription_replace_failed",
+                user_id=int(user.id),
+                charge_id=previous.charge_id,
+                error=repr(error),
+            )
+        else:
+            deps.logger.info("subscription_replaced", user_id=int(user.id))
+
+    if replaced_by is None:
+        # Новая оплата разовая: заменить прежнюю записью нечем, а оставить её
+        # действующей значит списать по ней в следующем месяце.
+        await deps.storage.cancel_subscription(user.id, deps.now())
+
+
+def _same_subscription(previous: Subscription, new: Subscription | None) -> bool:
+    """Продолжает ли новая запись ту же подписку, а не заводит вторую.
+
+    Карточная подписка у человека одна по построению: списываем мы, и смена
+    тарифа картой — та же запись с другим тарифом. Звёздная — по списанию,
+    которым её завёл Telegram: другой идентификатор — другая подписка.
+    """
+    if new is None or new.method != previous.method:
+        return False
+    if previous.method == PaymentMethod.STARS.value:
+        return new.charge_id == previous.charge_id
+    return True
+
+
 async def _subscription_for(
-    deps: Deps, order: Payment, *, charge_id: str | None
+    deps: Deps, order: Payment, *, charge_id: str | None, renewal: bool = False
 ) -> Subscription | None:
     """Подписка, которую заведёт или перенесёт выдача; None — продления нет.
 
@@ -656,13 +767,23 @@ async def _subscription_for(
     способ списывать сам.
     """
     current = await deps.storage.get_subscription(order.user_id)
-    method_id = current.payment_method_id if current is not None else None
+    method_id = (
+        current.payment_method_id
+        if current is not None and current.method == PaymentMethod.CARD.value
+        else None
+    )
 
     if order.method == PaymentMethod.STARS.value:
         recurring = deps.stars is not None
-        # Отменяет подписку Telegram по первому списанию, а не по последнему,
-        # поэтому уже сохранённый идентификатор важнее нового.
-        charge_id = (current.charge_id if current is not None else None) or charge_id
+        method_id = None
+        if renewal:
+            # Отменяет подписку Telegram по первому списанию, а не по
+            # последнему, поэтому у продления важнее уже сохранённый. Новая
+            # оплата — это новая подписка у Telegram, и отменять её придётся
+            # по её собственному списанию.
+            charge_id = (
+                current.charge_id if current is not None else None
+            ) or charge_id
     elif deps.cards is not None and deps.cards.recurring:
         if method_id is None and order.external_id is not None:
             method_id = await deps.cards.saved_method_of(order.external_id)

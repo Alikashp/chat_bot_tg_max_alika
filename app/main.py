@@ -403,10 +403,7 @@ def build_core_settings(
         model_standard=settings.model_standard,
         dialog_max_turns=settings.dialog_max_turns,
         max_photo_bytes=settings.max_photo_bytes,
-        signup_images=settings.signup_images,
-        presentation_signup_images=settings.presentation_signup_images,
-        signup_documents=settings.signup_documents,
-        signup_presentations=settings.signup_presentations,
+        presentation_signup_bonus_images=settings.presentation_signup_bonus_images,
         document_max_tokens=settings.document_max_tokens,
         referral_bonus_images=settings.referral_bonus_images,
         referral_bonus_messages=settings.referral_bonus_messages,
@@ -586,10 +583,9 @@ async def _settle_refund(
     возврат сверяется у провайдера нашим ключом. Заказ ищется по
     идентификатору платежа — в объекте возврата нашего идентификатора нет.
 
-    Оплаченный период у человека не отбирается: решение «вернуть деньги и
-    оставить доступ до конца месяца» принимает продавец, а не этот код. А вот
-    продление снимается сразу: списать с того, кому мы только что вернули
-    деньги, — верный способ получить оспаривание платежа вместо покупателя.
+    Что происходит с тарифом и продлением, решает ядро
+    (``payments.refunded``): месяц, за который вернули деньги, кончается, а
+    продление снимается сразу.
     """
     any_deps = next(iter(by_messenger.values()))
     order = await any_deps.storage.get_payment_by_external_id(external_id)
@@ -619,7 +615,8 @@ async def _settle_refund(
         # Уже отмечали: уведомлений о возврате приходит несколько.
         return
 
-    await deps.storage.cancel_subscription(user.id, deps.now())
+    refunded = await deps.storage.get_payment(order.id)
+    await payments.refunded(deps, refunded or order)
     logger.info("payment_refunded", user_id=int(user.id))
 
 

@@ -24,6 +24,7 @@ from app.adapters.storage.postgres import PostgresStorage, create_engine
 from app.adapters.storage.schema import metadata
 from app.core import support
 from app.core.generations import Generation, GenerationKind, GenerationStatus
+from app.core.limits import LimitKind
 from app.core.models import (
     NO_USERNAME,
     ChatTurn,
@@ -269,7 +270,6 @@ async def test_usage_starts_at_zero(storage: Storage) -> None:
     usage = await storage.get_usage(user.id, DAY)
 
     assert usage.messages_used == 0
-    assert usage.images_used == 0
     assert usage.day == DAY
 
 
@@ -277,11 +277,10 @@ async def test_usage_accumulates(storage: Storage) -> None:
     user = await _make_user(storage)
 
     await storage.add_usage(user.id, DAY, messages=1)
-    await storage.add_usage(user.id, DAY, messages=1, images=1)
+    await storage.add_usage(user.id, DAY, messages=1)
 
     usage = await storage.get_usage(user.id, DAY)
     assert usage.messages_used == 2
-    assert usage.images_used == 1
 
 
 async def test_usage_is_isolated_per_day(storage: Storage) -> None:
@@ -400,19 +399,6 @@ async def test_a_short_document_basket_blocks_the_whole_spend(
     assert updated.bonus_images == 5
 
 
-async def test_document_usage_is_counted_apart_from_images(
-    storage: Storage,
-) -> None:
-    """В профиле человеку видно, что именно у него кончилось."""
-    user = await _make_user(storage)
-
-    await storage.add_usage(user.id, DAY, images=2)
-    usage = await storage.add_usage(user.id, DAY, documents=3)
-
-    assert usage.images_used == 2
-    assert usage.documents_used == 3
-
-
 async def test_bonus_cannot_be_overspent_concurrently(storage: Storage) -> None:
     """Десять параллельных попыток при балансе 3 дают ровно 3 успеха."""
     user = await _make_user(storage)
@@ -426,6 +412,101 @@ async def test_bonus_cannot_be_overspent_concurrently(storage: Storage) -> None:
     updated = await storage.get_user_by_id(user.id)
     assert updated is not None
     assert updated.bonus_images == 0
+
+
+# --- Месячная норма (фаза 11) --------------------------------------------
+
+PERIOD = MOMENT
+NEXT_PERIOD = MOMENT + timedelta(days=30)
+
+
+async def test_period_usage_starts_at_zero(storage: Storage) -> None:
+    user = await _make_user(storage)
+
+    usage = await storage.get_period_usage(user.id, PERIOD)
+
+    assert (usage.images_used, usage.documents_used, usage.presentations_used) == (
+        0,
+        0,
+        0,
+    )
+
+
+async def test_the_norm_is_spent_up_to_its_limit(storage: Storage) -> None:
+    user = await _make_user(storage)
+
+    spent = [
+        await storage.spend_norm(user.id, PERIOD, LimitKind.IMAGES, limit=2)
+        for _ in range(3)
+    ]
+
+    assert spent == [True, True, False]
+    assert (await storage.get_period_usage(user.id, PERIOD)).images_used == 2
+
+
+async def test_the_norm_is_counted_per_period_kind_and_person(
+    storage: Storage,
+) -> None:
+    """Новый период начинается с нуля; виды и люди друг другу не мешают."""
+    user = await _make_user(storage, "1")
+    other = await _make_user(storage, "2")
+
+    await storage.spend_norm(user.id, PERIOD, LimitKind.DOCUMENTS, limit=5)
+    await storage.spend_norm(user.id, PERIOD, LimitKind.PRESENTATIONS, limit=5)
+
+    this = await storage.get_period_usage(user.id, PERIOD)
+    assert (this.images_used, this.documents_used, this.presentations_used) == (
+        0,
+        1,
+        1,
+    )
+    assert (await storage.get_period_usage(user.id, NEXT_PERIOD)).documents_used == 0
+    assert (await storage.get_period_usage(other.id, PERIOD)).documents_used == 0
+
+
+async def test_a_zero_norm_gives_nothing(storage: Storage) -> None:
+    user = await _make_user(storage)
+
+    assert not await storage.spend_norm(user.id, PERIOD, LimitKind.IMAGES, limit=0)
+    assert (await storage.get_period_usage(user.id, PERIOD)).images_used == 0
+
+
+async def test_the_norm_cannot_be_overspent_concurrently(storage: Storage) -> None:
+    """Т3: десять одновременных списаний при норме 3 — ровно три успеха.
+
+    Проверка остатка и списание — одна операция в базе: иначе одновременные
+    запросы одного человека оба увидели бы «осталось одно» и оба списали.
+    """
+    user = await _make_user(storage)
+
+    results = await asyncio.gather(
+        *(
+            storage.spend_norm(user.id, PERIOD, LimitKind.IMAGES, limit=3)
+            for _ in range(10)
+        )
+    )
+
+    assert sum(results) == 3
+    assert (await storage.get_period_usage(user.id, PERIOD)).images_used == 3
+
+
+async def test_a_grant_records_when_the_paid_norm_starts(storage: Storage) -> None:
+    """Норма обновляется с каждой оплатой: начало периода пишется вместе с ней."""
+    user = await _make_user(storage)
+    order = await _payment(storage, user)
+
+    await storage.complete_payment(
+        order.id,
+        tariff=TariffId.PRO,
+        expires_at=MOMENT + timedelta(days=30),
+        seen_tariff=user.tariff,
+        seen_expiry=user.tariff_expires_at,
+        subscription=None,
+        norm_since=MOMENT,
+    )
+
+    found = await storage.get_user_by_id(user.id)
+    assert found is not None and found.norm_since == MOMENT
 
 
 # --- Бонус за подписку на канал ------------------------------------------
@@ -1208,6 +1289,7 @@ async def test_the_grant_releases_the_held_order(storage: Storage) -> None:
         expires_at=MOMENT + timedelta(days=30),
         seen_tariff=user.tariff,
         seen_expiry=user.tariff_expires_at,
+        norm_since=MOMENT,
         subscription=_new_subscription(user),
     )
 
@@ -1361,6 +1443,7 @@ async def test_completing_a_payment_grants_once(storage: Storage) -> None:
         expires_at=until,
         seen_tariff=user.tariff,
         seen_expiry=user.tariff_expires_at,
+        norm_since=MOMENT,
         subscription=_new_subscription(user),
     )
     second = await storage.complete_payment(
@@ -1369,6 +1452,7 @@ async def test_completing_a_payment_grants_once(storage: Storage) -> None:
         expires_at=until + timedelta(days=30),
         seen_tariff=TariffId.PRO,
         seen_expiry=until,
+        norm_since=MOMENT,
         subscription=None,
     )
 
@@ -1396,6 +1480,7 @@ async def test_two_notices_at_once_grant_once(storage: Storage) -> None:
                 expires_at=until,
                 seen_tariff=user.tariff,
                 seen_expiry=user.tariff_expires_at,
+                norm_since=MOMENT,
                 subscription=None,
             )
             for _ in range(5)
@@ -1420,6 +1505,7 @@ async def test_a_stale_view_of_the_tariff_grants_nothing(storage: Storage) -> No
         expires_at=MOMENT + timedelta(days=30),
         seen_tariff=TariffId.PRO,
         seen_expiry=MOMENT,
+        norm_since=MOMENT,
         subscription=None,
     )
 

@@ -16,6 +16,7 @@ import pytest
 from app.adapters.storage.memory import InMemoryStorage
 from app.core import pending, texts
 from app.core.actions import parse_preset_action
+from app.core.limits import LimitKind
 from app.core.models import Photo, Role, TariffId
 from app.core.scenarios import (
     chat,
@@ -23,6 +24,7 @@ from app.core.scenarios import (
     presets,
     profile,
     referral,
+    spending,
     tariffs,
 )
 from app.core.scenarios.deps import Deps, Session
@@ -30,7 +32,14 @@ from app.ports.ai import ContentRefusedError, ImageQuality
 from config import presets as registry
 from config.presets import PRESETS, Preset
 from config.prompt import CONTINUE_PROMPT
-from tests.fakes import PNG_BYTES, FakeImages, FakeLLM, FakeMessenger
+from tests.fakes import (
+    PNG_BYTES,
+    FakeImages,
+    FakeLLM,
+    FakeMessenger,
+    FakePresentations,
+    use_up_norm,
+)
 
 PHOTO = Photo(data=PNG_BYTES)
 
@@ -253,12 +262,13 @@ async def test_failed_drawing_replaces_the_waiting_message(
 async def test_image_paywall_when_pictures_run_out(
     deps: Deps, session: Session, storage: InMemoryStorage, messenger: FakeMessenger
 ) -> None:
-    """Выданное при регистрации кончилось — и завтра нового не будет."""
+    """Кончились и норма месяца, и бонус."""
     assert await storage.spend_bonus(session.user.id, images=3)
+    await use_up_norm(deps, session, LimitKind.IMAGES)
 
     await images.draw(deps, session, "кот")
 
-    expected = texts.paywall_images(renews_tomorrow=False, invite_images=2)
+    expected = texts.paywall_images(renews_on="27 сентября", invite_images=2)
     assert messenger.last_text.text == expected.text
 
 
@@ -466,9 +476,9 @@ async def test_profile_shows_real_numbers(
     await profile.show(deps, session)
 
     assert messenger.last_text.text == (
-        "Твой тариф: Бесплатный\n"
+        "Твой тариф: Бесплатный · новые картинки 27 сентября\n"
         "Сообщений сегодня: 12 из 20\n"
-        "Картинки: 2 · Доклад / Реферат: 3\n"
+        "Картинки: 3 + 🎁2 · Доклад / Реферат: 🎁3\n"
         "Друзей позвал: 0"
     )
 
@@ -481,7 +491,7 @@ async def test_profile_counts_the_bonus_in_the_pictures_left(
 
     await profile.show(deps, session)
 
-    assert "Картинки: 8" in messenger.last_text.text
+    assert "Картинки: 3 + 🎁8" in messenger.last_text.text
 
 
 async def test_profile_always_offers_two_ways_out(
@@ -508,6 +518,19 @@ async def test_tariff_screen_is_one_message_with_three_buttons(
     keyboard = messenger.last_text.keyboard
     assert keyboard is not None
     assert [button.text for button in keyboard.rows[0]] == ["Лайт", "Про", "Макс"]
+
+
+async def test_the_tariff_cards_speak_of_presentations_only_with_the_key(
+    deps: Deps, session: Session, messenger: FakeMessenger
+) -> None:
+    """Т6: строка презентаций — только там, где раздел презентаций есть."""
+    await tariffs.show(deps, session)
+    without = messenger.last_text.text
+    await tariffs.show(replace(deps, presentations=FakePresentations()), session)
+    with_key = messenger.last_text.text
+
+    assert "презентац" not in without
+    assert "· 25 презентаций в месяц" in with_key.split("\n")
 
 
 async def test_payment_stub_is_not_a_dead_end(
@@ -570,8 +593,9 @@ async def test_a_refused_drawing_costs_nothing(
 
     await images.draw(deps, session, "что-нибудь запрещённое")
 
-    usage = await storage.get_usage(session.user.id, session.day)
-    assert usage.images_used == 0
+    left = await spending.current_allowance(deps, session, LimitKind.IMAGES)
+    assert left.monthly_used == 0
+    assert left.bonus == session.user.bonus_images
 
 
 async def test_a_refused_drawing_is_not_offered_for_repeat(
@@ -953,8 +977,8 @@ async def test_the_second_photo_is_not_asked_for_without_images_left(
     two_photos: Preset,
 ) -> None:
     """Иначе человек прислал бы второй снимок впустую."""
-    await storage.add_usage(paid.user.id, paid.day, messages=0, images=40)
-    # Дневная норма тарифа кончилась — и бонус тоже, иначе рисовать ещё есть чем.
+    await use_up_norm(deps, paid, LimitKind.IMAGES)
+    # Норма тарифа кончилась — и бонус тоже, иначе рисовать ещё есть чем.
     assert await storage.spend_bonus(paid.user.id, images=3)
 
     await presets.add_photo(deps, paid, two_photos, PHOTO, "adult-ref")
@@ -1318,7 +1342,7 @@ async def test_continuing_without_messages_left_shows_the_paywall(
 ) -> None:
     llm.truncated = True
     await chat.handle_message(deps, session, "расскажи")
-    await storage.add_usage(session.user.id, session.day, messages=20, images=0)
+    await storage.add_usage(session.user.id, session.day, messages=20)
     before = len(llm.calls)
 
     await chat.continue_answer(deps, session)

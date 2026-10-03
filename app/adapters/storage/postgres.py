@@ -463,6 +463,7 @@ class PostgresStorage:
         amount: int,
         currency: str,
         docs_version: str,
+        trial: bool = False,
     ) -> Payment:
         payment = Payment(
             id=str(uuid4()),
@@ -474,6 +475,7 @@ class PostgresStorage:
             status=PaymentStatus.PENDING.value,
             created_at=self._now(),
             docs_version=docs_version,
+            trial=trial,
         )
         async with self._session() as session, session.begin():
             await session.execute(
@@ -487,9 +489,22 @@ class PostgresStorage:
                     status=payment.status,
                     created_at=payment.created_at,
                     docs_version=docs_version,
+                    trial=trial,
                 )
             )
         return payment
+
+    async def ever_paid(self, user_id: UserId) -> bool:
+        query = (
+            select(payments.c.id)
+            .where(
+                payments.c.user_id == user_id,
+                payments.c.status.in_(_MONEY_TAKEN),
+            )
+            .limit(1)
+        )
+        async with self._session() as session:
+            return (await session.execute(query)).first() is not None
 
     async def get_payment(self, payment_id: str) -> Payment | None:
         async with self._session() as session:
@@ -529,6 +544,7 @@ class PostgresStorage:
         seen_expiry: datetime | None,
         subscription: Subscription | None,
         norm_since: datetime,
+        trial: bool = False,
     ) -> GrantOutcome:
         """Заказ, тариф и подписка — одной транзакцией (П4).
 
@@ -552,6 +568,10 @@ class PostgresStorage:
                 if row is None:
                     raise _RollbackError(GrantOutcome.ALREADY)
                 user_id = row[0]
+                if trial and not await _trial_still_owed(session, user_id, payment_id):
+                    # Деньги взяты, и заказ остаётся оплаченным — но второго
+                    # пробного периода нет. Транзакция фиксируется как есть.
+                    return GrantOutcome.TRIAL_USED
                 granted = (
                     update(users)
                     .where(
@@ -563,6 +583,7 @@ class PostgresStorage:
                         tariff=tariff.value,
                         tariff_expires_at=expires_at,
                         norm_since=norm_since,
+                        **({"trial_order_id": payment_id} if trial else {}),
                     )
                     .returning(users.c.id)
                 )
@@ -972,6 +993,7 @@ def _to_payment(row: Any) -> Payment:
         external_id=row.external_id,
         paid_at=row.paid_at,
         docs_version=row.docs_version,
+        trial=row.trial,
     )
 
 
@@ -999,11 +1021,37 @@ def _to_user(row: Any) -> User:
         presentation_started_at=row["presentation_started_at"],
         menu_version=row["menu_version"],
         norm_since=row["norm_since"],
+        trial_order_id=row["trial_order_id"],
     )
 
 
 def _utc_now() -> datetime:
     return datetime.now(UTC)
+
+
+#: Статусы заказа, при которых деньги у человека были взяты.
+_MONEY_TAKEN = (PaymentStatus.PAID.value, PaymentStatus.REFUNDED.value)
+
+
+async def _trial_still_owed(session: Any, user_id: int, payment_id: str) -> bool:
+    """Положен ли ещё человеку пробный период: нет ли у него другой оплаты.
+
+    Заказ на пробный период — тоже оплата, поэтому «уже брал» и «уже
+    платил» — один и тот же вопрос. Два одновременных подтверждения
+    разводит не он, а условие на тариф и срок в выдаче ниже: второе упрётся
+    в изменённую первым строку человека, получит STALE и откатится, а на
+    повторе уже увидит оплаченный первый заказ.
+    """
+    other = (
+        select(payments.c.id)
+        .where(
+            payments.c.user_id == user_id,
+            payments.c.id != payment_id,
+            payments.c.status.in_(_MONEY_TAKEN),
+        )
+        .limit(1)
+    )
+    return (await session.execute(other)).first() is None
 
 
 class _RollbackError(Exception):

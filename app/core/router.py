@@ -17,6 +17,7 @@ from collections.abc import Awaitable, Callable
 
 from app.core import pending, texts
 from app.core.actions import (
+    TRIAL_TARGET,
     Action,
     parse_buy_action,
     parse_document_action,
@@ -49,6 +50,7 @@ from app.core.scenarios import (
     tariffs,
 )
 from app.core.scenarios.deps import Deps, Session
+from app.core.tariffs import TRIAL
 from app.ports.payments import PaymentMethod
 from config import documents as document_registry
 from config import presets as registry
@@ -298,6 +300,9 @@ async def _route_action(deps: Deps, session: Session, action: str) -> None:
         case Action.MENU_TARIFFS | Action.OPEN_TARIFFS:
             await _clear_pending(deps, session)
             await tariffs.show(deps, session)
+        case Action.TRIAL:
+            await _clear_pending(deps, session)
+            await payments.start_trial(deps, session)
         case Action.SUBSCRIPTION:
             await _clear_pending(deps, session)
             await subscriptions.show(deps, session)
@@ -360,6 +365,9 @@ def _tariff(tariff_id: str) -> TariffId | None:
 
 async def _ask_email(deps: Deps, session: Session, tariff_id: str) -> None:
     """Нажали «Другая почта» на экране заказа."""
+    if tariff_id == TRIAL_TARGET:
+        await payments.ask_for_email(deps, session, TRIAL.tariff, trial=True)
+        return
     tariff = _tariff(tariff_id)
     if tariff is None:
         # Кнопка из версии, где тариф назывался иначе.

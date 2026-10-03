@@ -300,6 +300,7 @@ class InMemoryStorage:
         amount: int,
         currency: str,
         docs_version: str,
+        trial: bool = False,
     ) -> Payment:
         payment = Payment(
             id=str(uuid4()),
@@ -311,9 +312,18 @@ class InMemoryStorage:
             status=PaymentStatus.PENDING.value,
             created_at=self._now(),
             docs_version=docs_version,
+            trial=trial,
         )
         self._payments[payment.id] = payment
         return payment
+
+    async def ever_paid(self, user_id: UserId) -> bool:
+        return any(
+            payment.user_id == user_id
+            and payment.status
+            in (PaymentStatus.PAID.value, PaymentStatus.REFUNDED.value)
+            for payment in self._payments.values()
+        )
 
     async def get_payment(self, payment_id: str) -> Payment | None:
         return self._payments.get(payment_id)
@@ -339,23 +349,42 @@ class InMemoryStorage:
         seen_expiry: datetime | None,
         subscription: Subscription | None,
         norm_since: datetime,
+        trial: bool = False,
     ) -> GrantOutcome:
         # Ни одного await внутри: в памяти это и есть транзакция.
         payment = self._payments.get(payment_id)
         if payment is None or payment.status != PaymentStatus.PENDING.value:
             return GrantOutcome.ALREADY
         user = self._require_user(payment.user_id)
+        if trial and self._paid_before(payment):
+            self._payments[payment_id] = replace(
+                payment, status=PaymentStatus.PAID.value, paid_at=self._now()
+            )
+            return GrantOutcome.TRIAL_USED
         if user.tariff is not seen_tariff or user.tariff_expires_at != seen_expiry:
             return GrantOutcome.STALE
         self._payments[payment_id] = replace(
             payment, status=PaymentStatus.PAID.value, paid_at=self._now()
         )
         self._users[user.id] = replace(
-            user, tariff=tariff, tariff_expires_at=expires_at, norm_since=norm_since
+            user,
+            tariff=tariff,
+            tariff_expires_at=expires_at,
+            norm_since=norm_since,
+            trial_order_id=payment_id if trial else user.trial_order_id,
         )
         if subscription is not None:
             self._subscriptions[subscription.user_id] = subscription
         return GrantOutcome.GRANTED
+
+    def _paid_before(self, payment: Payment) -> bool:
+        """Есть ли у человека другой оплаченный или возвращённый заказ."""
+        return any(
+            other.user_id == payment.user_id
+            and other.id != payment.id
+            and other.status in (PaymentStatus.PAID.value, PaymentStatus.REFUNDED.value)
+            for other in self._payments.values()
+        )
 
     async def payments_to_reconcile(
         self, *, created_before: datetime, created_after: datetime, limit: int

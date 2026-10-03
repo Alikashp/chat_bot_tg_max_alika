@@ -136,6 +136,10 @@ class User:
     #: платил после появления месячных норм; тогда период считается от конца
     #: оплаченного срока (см. core/limits.py).
     norm_since: datetime | None = None
+    #: Заказ, по которому выдан пробный период. Пусто — пробного периода не
+    #: было. Ставится той же транзакцией, что и выдача, и только если пусто:
+    #: это и есть «один раз на человека» (ПП3).
+    trial_order_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -160,6 +164,8 @@ class Payment:
     paid_at: datetime | None = None
     #: Редакция документов, принятая при оформлении заказа.
     docs_version: str | None = None
+    #: Заказ на пробный период: 1 ₽ за три дня «Лайта» с сохранением карты.
+    trial: bool = False
 
 
 @dataclass(frozen=True, slots=True)

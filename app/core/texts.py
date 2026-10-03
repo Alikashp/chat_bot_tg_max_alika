@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from datetime import date
 
 from app.core.models import TariffId
-from app.core.tariffs import PAID_TARIFFS, RUB, STARS, TARIFFS
+from app.core.tariffs import PAID_TARIFFS, RUB, STARS, TARIFFS, TRIAL
 
 
 @dataclass(frozen=True, slots=True)
@@ -1212,6 +1212,77 @@ def payment_order(
     )
 
 
+# --- Пробный период (фаза 11, часть 3) -----------------------------------
+
+BUTTON_TRIAL = f"⚡️ Попробовать за {TRIAL.price_rub} ₽"
+
+
+def _trial_terms() -> tuple[str, str, int]:
+    """Название тарифа, срок и цена после пробного — из реестра, а не текстом."""
+    full = TARIFFS[TRIAL.tariff].price_rub
+    return TARIFF_TITLES[TRIAL.tariff], _days(TRIAL.days), full
+
+
+def trial_offer() -> Screen:
+    """Предложение пробного периода под карточками тарифов.
+
+    Отдельным сообщением, а не строкой в карточках: карточки заказчик дал
+    дословно, а предложение видят не все — только те, кто ещё ни разу не
+    платил. Главное в нём — что продление не случится молча: напомним
+    заранее, и отключить можно до денег.
+    """
+    title, days, full = _trial_terms()
+    return Screen(
+        text=(
+            f"Можно начать с пробы: «{title}» на {days} за {TRIAL.price_rub} ₽, "
+            f"дальше {_rubles(full)} ₽ в месяц.\n"
+            "Напомним заранее — успеешь отключить, если не понравится 👇"
+        ),
+        buttons=(BUTTON_TRIAL,),
+    )
+
+
+def trial_order(*, first_charge: str, statement: str, receipt_to: str = "") -> Screen:
+    """Условия пробного периода и кнопка оплаты — в одном сообщении (ПП2).
+
+    Как и у обычного заказа, здесь всё, под чем человек подписывается:
+    сколько сейчас и за что, сколько потом и как часто, когда первое полное
+    списание, что о нём предупредят, как отключить и ссылки на документы.
+    """
+    title, days, full = _trial_terms()
+    lines = [
+        f"Пробный период «{title}» — {days} за {TRIAL.price_rub} ₽.",
+        f"Дальше {_rubles(full)} ₽ каждые {_days(30)}, "
+        f"первое списание — {first_charge}.",
+        "Напомним за день до него. Отключить продление можно в профиле в любой момент.",
+    ]
+    destinations = []
+    if statement:
+        destinations.append(f"В выписке банка: {statement}")
+    if receipt_to:
+        destinations.append(f"чек на {receipt_to}")
+    if destinations:
+        lines.append(" · ".join(destinations) if statement else f"Чек на {receipt_to}")
+    lines.append(CONSENT)
+    buttons: tuple[str, ...] = (BUTTON_PAY_OPEN, BUTTON_OFFER, BUTTON_PRIVACY)
+    if receipt_to:
+        buttons = (*buttons, BUTTON_EMAIL_CHANGE)
+    return Screen(text="\n".join(lines), buttons=buttons, formal_address=True)
+
+
+def trial_started(*, until: str, amount: int) -> Screen:
+    """Пробный период включён: до какого числа и что будет потом."""
+    title, _, _ = _trial_terms()
+    return Screen(
+        text=(
+            f"Готово! Пробный «{title}» включён до {until}.\n"
+            f"Потом {_rubles(amount)} ₽ каждые {_days(30)} — напомним за день "
+            "до списания. Отключить можно в профиле 👇"
+        ),
+        buttons=_menu_buttons(),
+    )
+
+
 PAYMENT_FAILED = "Не получилось открыть оплату 🤷 Попробуй ещё раз или напиши нам."
 
 #: Что видит человек, если мессенджер спросил про заказ, которого у нас нет.
@@ -1364,12 +1435,13 @@ def subscription_reminder(
     """Предупреждение за сутки до первого списания после пробного периода.
 
     Не реклама и не просьба: обязанность. Человек должен успеть передумать до
-    того, как деньги ушли, а не после.
+    того, как деньги ушли, а не после. Напоминание бывает только здесь —
+    перед обычными продлениями его нет (решение заказчика).
     """
     return Screen(
         text=(
-            f"Завтра, {on}, продлим тариф «{TARIFF_TITLES[tariff_id]}» — "
-            f"{_price(amount, currency)}.\n"
+            f"Завтра, {on}, пробный период кончится — спишем "
+            f"{_price(amount, currency)} за тариф «{TARIFF_TITLES[tariff_id]}».\n"
             "Не нужно? Отключи продление 👇"
         ),
         buttons=(BUTTON_SUBSCRIPTION_OFF, MENU_PROFILE),
@@ -1576,6 +1648,14 @@ def _all_screens() -> tuple[Screen, ...]:
         referral_invite("https://t.me/mybot?start=ref_abc123"),
         referral_reward(messages=20, images=2),
         referral_reward(messages=20, images=2, presentations=1),
+        trial_offer(),
+        trial_order(first_charge="31 августа", statement="YM*ChatAIBot"),
+        trial_order(
+            first_charge="31 августа",
+            statement="YM*ChatAIBot",
+            receipt_to="alika@mail.ru",
+        ),
+        trial_started(until="31 августа", amount=299),
         tariffs_screen(with_presentations=True),
         tariffs_screen(with_presentations=False),
         payment_methods(TariffId.PRO, price_rub=599, stars=524),

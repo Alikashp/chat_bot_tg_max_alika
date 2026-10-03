@@ -414,6 +414,7 @@ def build_core_settings(
         stars_markup=settings.stars_markup,
         rub_per_star=settings.rub_per_star,
         subscription_days=settings.subscription_days,
+        trial_enabled=settings.trial_enabled,
         offer_url=settings.offer_url,
         privacy_url=settings.privacy_url,
         docs_version=settings.docs_version,

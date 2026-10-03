@@ -15,7 +15,7 @@ from __future__ import annotations
 import pytest
 
 from app.adapters.storage.memory import InMemoryStorage
-from app.core.limits import LimitKind
+from app.core.limits import LimitKind, norm_period
 from app.core.models import Photo, User
 from app.core.scenarios import chat, images, presets, spending
 from app.core.scenarios.deps import Deps, Session
@@ -32,8 +32,11 @@ class UndeliveredError(Exception):
 
 
 async def used(storage: InMemoryStorage, session: Session) -> tuple[int, int]:
+    """Сообщения за сутки и картинки из месячной нормы за текущий период."""
     usage = await storage.get_usage(session.user.id, session.day)
-    return usage.messages_used, usage.images_used
+    period = norm_period(session.user, session.now, free_days=30, paid_days=30)
+    spent = await storage.get_period_usage(session.user.id, period.start)
+    return usage.messages_used, spent.images_used
 
 
 async def bonus(storage: InMemoryStorage, user: User) -> tuple[int, int]:

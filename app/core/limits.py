@@ -1,35 +1,37 @@
-"""Лимиты: две корзины и правила их расходования.
+"""Лимиты: три корзины и правила их расходования.
 
-**Дневная квота** приходит из тарифа и каждые сутки восстанавливается целиком.
-**Бонусный баланс** копится и не сгорает.
+**Дневная норма** — только у сообщений: каждые сутки восстанавливается
+целиком.
 
-Сообщения живут в дневной квоте: двадцать в день на бесплатном тарифе и
-больше на платных. Картинки на бесплатном тарифе не восстанавливаются вовсе —
-их дневная норма равна нулю, а всё бесплатное приходит разово и оседает в
-бонусе: три при регистрации, по две за каждого приглашённого друга и две за
-подписку на канал. Дальше — тарифы, и там дневная норма снова появляется.
+**Месячная норма** — у картинок, докладов и презентаций. Период платного
+тарифа начинается с оплаты и длится столько, сколько оплачено; каждая оплата
+и каждое продление начинают его заново. Период бесплатного — тридцать дней от
+регистрации, затем следующие тридцать. Остаток не переносится: прошлый
+период просто никто больше не читает.
 
-Отсюда и порядок списания: сначала дневная квота, потом бонус. Обратный
-означал бы, что подарок за друга растворяется в первый же день у платящего, —
-а он должен ощущаться как продолжение работы после того, как дневное
-кончилось. На бесплатном тарифе дневного просто нет, и весь расход идёт из
-бонуса.
+**Бонус** копится и не сгорает: подарки за друзей и за канал, разовые выдачи
+при регистрации.
+
+Порядок списания: сначала норма (дневная или месячная — у каждого ресурса
+она одна), потом бонус. Обратный означал бы, что подарок за друга
+растворяется в первом же периоде у платящего, — а он должен ощущаться как
+продолжение работы после того, как норма кончилась.
 
 Модуль чистый: ни одного обращения к хранилищу. Он отвечает на вопросы
-«сколько осталось» и «откуда списывать», а сами списания выполняют сценарии.
-Так решение о порядке списания остаётся в одном месте и не расползается по
-реализациям хранилища.
+«сколько осталось», «откуда списывать» и «какой сейчас период», а сами
+списания выполняют сценарии. Так решение о порядке списания остаётся в одном
+месте и не расползается по реализациям хранилища.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from enum import StrEnum
 from zoneinfo import ZoneInfo
 
-from app.core.models import Usage, User
-from app.core.tariffs import Tariff
+from app.core.models import PeriodUsage, TariffId, Usage, User
+from app.core.tariffs import Tariff, active_tariff
 
 
 class LimitKind(StrEnum):
@@ -45,6 +47,7 @@ class Source(StrEnum):
     """Откуда списывать очередную единицу."""
 
     DAILY = "daily"
+    MONTHLY = "monthly"
     BONUS = "bonus"
 
 
@@ -56,10 +59,12 @@ class Allowance:
     daily_limit: int
     daily_used: int
     bonus: int
+    monthly_limit: int = 0
+    monthly_used: int = 0
 
     @property
     def daily_left(self) -> int:
-        """Остаток дневной квоты.
+        """Остаток дневной нормы.
 
         Не даём уйти в минус: если лимит тарифа понизился (например, платная
         подписка кончилась), израсходованное может оказаться больше квоты.
@@ -68,9 +73,19 @@ class Allowance:
         return max(0, self.daily_limit - self.daily_used)
 
     @property
+    def monthly_left(self) -> int:
+        """Остаток месячной нормы. В минус не уходит по той же причине."""
+        return max(0, self.monthly_limit - self.monthly_used)
+
+    @property
+    def norm_left(self) -> int:
+        """Остаток нормы тарифа — без бонуса."""
+        return self.daily_left + self.monthly_left
+
+    @property
     def total_left(self) -> int:
         """Сколько всего осталось — с учётом бонуса."""
-        return self.daily_left + self.bonus
+        return self.norm_left + self.bonus
 
     @property
     def exhausted(self) -> bool:
@@ -82,9 +97,23 @@ class Allowance:
         """Откуда спишется следующая единица; None — если списывать неоткуда."""
         if self.daily_left > 0:
             return Source.DAILY
+        if self.monthly_left > 0:
+            return Source.MONTHLY
         if self.bonus > 0:
             return Source.BONUS
         return None
+
+
+@dataclass(frozen=True, slots=True)
+class NormPeriod:
+    """Период месячной нормы: с какого момента и до какого.
+
+    Начало служит ключом расхода в хранилище: новый период — новая запись,
+    и потраченное в прошлом сюда не попадает.
+    """
+
+    start: datetime
+    end: datetime
 
 
 def daily_messages(tariff: Tariff) -> int:
@@ -92,29 +121,65 @@ def daily_messages(tariff: Tariff) -> int:
     return tariff.daily_messages
 
 
-def daily_images(tariff: Tariff) -> int:
-    """Дневная норма картинок.
+def monthly_norm(tariff: Tariff, kind: LimitKind) -> int:
+    """Месячная норма тарифа по виду ресурса. У сообщений её нет."""
+    if kind is LimitKind.IMAGES:
+        return tariff.monthly_images
+    if kind is LimitKind.DOCUMENTS:
+        return tariff.monthly_documents
+    if kind is LimitKind.PRESENTATIONS:
+        return tariff.monthly_presentations
+    return 0
 
-    На бесплатном тарифе она нулевая: там картинки не восстанавливаются по
-    суткам, а выдаются разово и лежат в бонусе. Отдельной функцией, а не
-    обращением к полю, — ради симметрии с сообщениями и ради одного места,
-    где эту норму читают.
+
+def norm_period(
+    user: User, now: datetime, *, free_days: int, paid_days: int
+) -> NormPeriod:
+    """Какой период месячной нормы идёт у человека сейчас.
+
+    Платный тариф: отсчёт от последней выдачи оплаченного (``norm_since``)
+    шагами по оплаченному сроку, но не дальше его конца. Шаги нужны тому, кто
+    оплатил больше месяца вперёд: норма у него обновляется каждые тридцать
+    дней, а не один раз на всё оплаченное. Подписчик, оплативший до появления
+    месячных норм, отметки не имеет — его период отсчитывается от конца срока
+    назад: ровно то, за что он заплатил.
+
+    Бесплатный тариф — в том числе после конца оплаченного срока: отсчёт от
+    регистрации шагами по тридцать дней. Платная норма тем самым не
+    переживает свой срок: тариф кончился — и период, и норма бесплатные.
     """
-    return tariff.daily_images
+    tariff = active_tariff(user.tariff, user.tariff_expires_at, now)
+    if tariff is TariffId.FREE or user.tariff_expires_at is None:
+        return _window(user.created_at, now, timedelta(days=free_days), until=None)
+    step = timedelta(days=paid_days)
+    anchor = user.norm_since or user.tariff_expires_at - step
+    return _window(anchor, now, step, until=user.tariff_expires_at)
 
 
-def daily_documents(tariff: Tariff) -> int:
-    """Дневная норма разборов документов.
+def _window(
+    anchor: datetime, now: datetime, step: timedelta, *, until: datetime | None
+) -> NormPeriod:
+    """Отрезок длиной ``step`` от ``anchor``, внутри которого лежит ``now``."""
+    start = anchor + step * ((now - anchor) // step)
+    end = start + step
+    if until is not None and until < end:
+        end = until
+    return NormPeriod(start=start, end=end)
 
-    На бесплатном тарифе нулевая, как и у картинок: разбор длинного файла —
-    самый дорогой запрос в сервисе. Бесплатное приходит разово и лежит в
-    бонусе, дневная норма есть только там, где за неё платят.
+
+def allowance(
+    user: User,
+    usage: Usage,
+    tariff: Tariff,
+    kind: LimitKind,
+    *,
+    period_usage: PeriodUsage | None = None,
+) -> Allowance:
+    """Считает остаток по виду ресурса.
+
+    ``usage`` — расход за сутки (нужен сообщениям), ``period_usage`` — за
+    текущий период месячной нормы (нужен всему остальному).
     """
-    return tariff.daily_documents
-
-
-def allowance(user: User, usage: Usage, tariff: Tariff, kind: LimitKind) -> Allowance:
-    """Считает остаток по виду ресурса."""
     if kind is LimitKind.MESSAGES:
         return Allowance(
             kind=kind,
@@ -122,27 +187,20 @@ def allowance(user: User, usage: Usage, tariff: Tariff, kind: LimitKind) -> Allo
             daily_used=usage.messages_used,
             bonus=user.bonus_messages,
         )
+    period = period_usage if period_usage is not None else PeriodUsage()
     if kind is LimitKind.PRESENTATIONS:
-        # Дневной нормы у презентаций нет ни на одном тарифе: каждая — разовая
-        # выдача (регистрация, друг), и всё лежит в бонусе.
-        return Allowance(
-            kind=kind,
-            daily_limit=0,
-            daily_used=0,
-            bonus=user.bonus_presentations,
-        )
-    if kind is LimitKind.DOCUMENTS:
-        return Allowance(
-            kind=kind,
-            daily_limit=daily_documents(tariff),
-            daily_used=usage.documents_used,
-            bonus=user.bonus_documents,
-        )
+        used, bonus = period.presentations_used, user.bonus_presentations
+    elif kind is LimitKind.DOCUMENTS:
+        used, bonus = period.documents_used, user.bonus_documents
+    else:
+        used, bonus = period.images_used, user.bonus_images
     return Allowance(
         kind=kind,
-        daily_limit=daily_images(tariff),
-        daily_used=usage.images_used,
-        bonus=user.bonus_images,
+        daily_limit=0,
+        daily_used=0,
+        bonus=bonus,
+        monthly_limit=monthly_norm(tariff, kind),
+        monthly_used=used,
     )
 
 

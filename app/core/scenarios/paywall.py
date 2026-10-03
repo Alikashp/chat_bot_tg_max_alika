@@ -46,9 +46,9 @@ async def show(deps: Deps, session: Session, kind: LimitKind) -> None:
 
     if kind is LimitKind.DOCUMENTS:
         screen = texts.paywall_documents(
-            # На бесплатном тарифе дневной нормы разборов нет, и «завтра
-            # будет ещё» там было бы обманом.
-            renews_tomorrow=session.tariff.daily_documents > 0,
+            # Доклады по суткам не возобновляются ни на одном тарифе: у них
+            # месячная норма, и «завтра будет ещё» было бы обманом.
+            renews_tomorrow=False,
         )
         await deps.messenger.send_text(
             session.chat,
@@ -60,9 +60,9 @@ async def show(deps: Deps, session: Session, kind: LimitKind) -> None:
     bonus = deps.settings.referral_bonus_images
     for_channel = channel.available(deps, session)
     screen = texts.paywall_images(
-        # На бесплатном тарифе дневной нормы картинок нет, и «завтра будет
-        # ещё» там было бы обманом: завтра не будет ничего.
-        renews_tomorrow=session.tariff.daily_images > 0,
+        # Картинки по суткам не возобновляются ни на одном тарифе: у них
+        # месячная норма, и «завтра будет ещё» было бы обманом.
+        renews_tomorrow=False,
         invite_images=bonus,
         channel_images=for_channel,
     )

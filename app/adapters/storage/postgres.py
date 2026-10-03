@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async
 from app.adapters.storage.schema import (
     dialogs,
     generations,
+    monthly_usage,
     payments,
     referrals,
     subscriptions,
@@ -35,12 +36,14 @@ from app.adapters.storage.schema import (
 )
 from app.core import sources
 from app.core.generations import Generation
+from app.core.limits import LimitKind
 from app.core.models import (
     NO_USERNAME,
     ChatTurn,
     DialogState,
     MessengerKind,
     Payment,
+    PeriodUsage,
     Role,
     Subscription,
     TariffId,
@@ -87,6 +90,14 @@ def normalise_dsn(dsn: str) -> str:
         if dsn.startswith(prefix):
             return "postgresql+asyncpg://" + dsn.removeprefix(prefix)
     return dsn
+
+
+#: Какая колонка расхода за период отвечает за какой вид нормы.
+_PERIOD_COLUMNS: dict[LimitKind, str] = {
+    LimitKind.IMAGES: "images_used",
+    LimitKind.DOCUMENTS: "documents_used",
+    LimitKind.PRESENTATIONS: "presentations_used",
+}
 
 
 class PostgresStorage:
@@ -225,12 +236,7 @@ class PostgresStorage:
         if row is None:
             # «Не тратил» и «нет записи» — одно и то же.
             return Usage(day=day)
-        return Usage(
-            day=row["day"],
-            messages_used=row["messages_used"],
-            images_used=row["images_used"],
-            documents_used=row["documents_used"],
-        )
+        return Usage(day=row["day"], messages_used=row["messages_used"])
 
     async def add_usage(
         self,
@@ -238,8 +244,6 @@ class PostgresStorage:
         day: date,
         *,
         messages: int = 0,
-        images: int = 0,
-        documents: int = 0,
     ) -> Usage:
         """Атомарный инкремент.
 
@@ -248,29 +252,64 @@ class PostgresStorage:
         и пользователь получил бы больше, чем ему полагается.
         """
         statement = insert(usage).values(
-            user_id=user_id,
-            day=day,
-            messages_used=messages,
-            images_used=images,
-            documents_used=documents,
+            user_id=user_id, day=day, messages_used=messages
         )
         query = statement.on_conflict_do_update(
             index_elements=[usage.c.user_id, usage.c.day],
-            set_={
-                "messages_used": usage.c.messages_used + messages,
-                "images_used": usage.c.images_used + images,
-                "documents_used": usage.c.documents_used + documents,
-            },
+            set_={"messages_used": usage.c.messages_used + messages},
         ).returning(usage)
 
         async with self._session() as session, session.begin():
             row = (await session.execute(query)).mappings().one()
-        return Usage(
-            day=row["day"],
-            messages_used=row["messages_used"],
+        return Usage(day=row["day"], messages_used=row["messages_used"])
+
+    async def get_period_usage(
+        self, user_id: UserId, period_start: datetime
+    ) -> PeriodUsage:
+        query = select(monthly_usage).where(
+            monthly_usage.c.user_id == user_id,
+            monthly_usage.c.period_start == period_start,
+        )
+        async with self._session() as session:
+            row = (await session.execute(query)).mappings().one_or_none()
+        if row is None:
+            return PeriodUsage()
+        return PeriodUsage(
             images_used=row["images_used"],
             documents_used=row["documents_used"],
+            presentations_used=row["presentations_used"],
         )
+
+    async def spend_norm(
+        self,
+        user_id: UserId,
+        period_start: datetime,
+        kind: LimitKind,
+        *,
+        limit: int,
+    ) -> bool:
+        """Одна единица нормы — одним запросом, с проверкой остатка внутри (Т3).
+
+        INSERT … ON CONFLICT DO UPDATE … WHERE: первая трата в периоде
+        заводит строку, следующие увеличивают счётчик, только пока он ниже
+        нормы. Одновременные попытки упираются в блокировку строки, и
+        PostgreSQL перепроверяет условие уже на свежей версии — успешных
+        окажется ровно столько, сколько оставалось.
+        """
+        if limit <= 0:
+            return False
+        column = monthly_usage.c[_PERIOD_COLUMNS[kind]]
+        statement = insert(monthly_usage).values(
+            user_id=user_id, period_start=period_start, **{column.name: 1}
+        )
+        query = statement.on_conflict_do_update(
+            index_elements=[monthly_usage.c.user_id, monthly_usage.c.period_start],
+            set_={column.name: column + 1},
+            where=column < limit,
+        ).returning(column)
+        async with self._session() as session, session.begin():
+            row = (await session.execute(query)).one_or_none()
+        return row is not None
 
     async def spend_bonus(
         self,
@@ -487,6 +526,7 @@ class PostgresStorage:
         seen_tariff: TariffId,
         seen_expiry: datetime | None,
         subscription: Subscription | None,
+        norm_since: datetime,
     ) -> GrantOutcome:
         """Заказ, тариф и подписка — одной транзакцией (П4).
 
@@ -517,7 +557,11 @@ class PostgresStorage:
                         users.c.tariff == seen_tariff.value,
                         users.c.tariff_expires_at.is_not_distinct_from(seen_expiry),
                     )
-                    .values(tariff=tariff.value, tariff_expires_at=expires_at)
+                    .values(
+                        tariff=tariff.value,
+                        tariff_expires_at=expires_at,
+                        norm_since=norm_since,
+                    )
                     .returning(users.c.id)
                 )
                 if (await session.execute(granted)).one_or_none() is None:
@@ -921,6 +965,7 @@ def _to_user(row: Any) -> User:
         retry_context=row["retry_context"],
         presentation_started_at=row["presentation_started_at"],
         menu_version=row["menu_version"],
+        norm_since=row["norm_since"],
     )
 
 

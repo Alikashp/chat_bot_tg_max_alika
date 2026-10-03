@@ -322,6 +322,7 @@ async def test_a_failure_inside_the_grant_leaves_nothing_half_done(
             seen_tariff=user.tariff,
             seen_expiry=user.tariff_expires_at,
             subscription=broken,
+            norm_since=now,
         )
 
     pending = await storage.get_payment(order.id)

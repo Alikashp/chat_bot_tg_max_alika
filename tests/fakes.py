@@ -12,6 +12,7 @@ import asyncio
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING
 
 from app.core.models import (
     Chat,
@@ -25,6 +26,10 @@ from app.core.receipts import Receipt
 from app.ports.ai import Answer, ImageQuality
 from app.ports.payments import ChargeResult, ChargeStatus, PaymentIntent
 from app.ports.presentations import BuiltPresentation, PresentationTheme
+
+if TYPE_CHECKING:
+    from app.core.limits import LimitKind
+    from app.core.scenarios.deps import Deps, Session
 
 #: Минимальный настоящий PNG: восемь байт сигнатуры плюс немного тела.
 #: Проверка формата смотрит именно на сигнатуру, поэтому подделка обязана
@@ -624,3 +629,20 @@ class FakePresentations:
             return BuiltPresentation(pptx=PPTX_BYTES, pdf=self.pdf)
         finally:
             self.running -= 1
+
+
+async def use_up_norm(deps: Deps, session: Session, kind: LimitKind) -> None:
+    """Тратит всю месячную норму тарифа в текущем периоде — мимо сценариев.
+
+    Нужна тестам, которым важно «норма кончилась», а не то, как именно её
+    потратили. Числа берутся из тарифа: тест не должен меняться вместе с ними.
+    """
+    from app.core.limits import monthly_norm
+    from app.core.scenarios import spending
+
+    period = spending.period_of(deps, session)
+    limit = monthly_norm(session.tariff, kind)
+    for _ in range(limit):
+        assert await deps.storage.spend_norm(
+            session.user.id, period.start, kind, limit=limit
+        )

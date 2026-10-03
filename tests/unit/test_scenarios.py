@@ -16,6 +16,7 @@ import pytest
 from app.adapters.storage.memory import InMemoryStorage
 from app.core import pending, texts
 from app.core.actions import parse_preset_action
+from app.core.limits import LimitKind
 from app.core.models import Photo, Role, TariffId
 from app.core.scenarios import (
     chat,
@@ -23,6 +24,7 @@ from app.core.scenarios import (
     presets,
     profile,
     referral,
+    spending,
     tariffs,
 )
 from app.core.scenarios.deps import Deps, Session
@@ -30,7 +32,13 @@ from app.ports.ai import ContentRefusedError, ImageQuality
 from config import presets as registry
 from config.presets import PRESETS, Preset
 from config.prompt import CONTINUE_PROMPT
-from tests.fakes import PNG_BYTES, FakeImages, FakeLLM, FakeMessenger
+from tests.fakes import (
+    PNG_BYTES,
+    FakeImages,
+    FakeLLM,
+    FakeMessenger,
+    use_up_norm,
+)
 
 PHOTO = Photo(data=PNG_BYTES)
 
@@ -570,8 +578,9 @@ async def test_a_refused_drawing_costs_nothing(
 
     await images.draw(deps, session, "что-нибудь запрещённое")
 
-    usage = await storage.get_usage(session.user.id, session.day)
-    assert usage.images_used == 0
+    left = await spending.current_allowance(deps, session, LimitKind.IMAGES)
+    assert left.monthly_used == 0
+    assert left.bonus == session.user.bonus_images
 
 
 async def test_a_refused_drawing_is_not_offered_for_repeat(
@@ -953,8 +962,8 @@ async def test_the_second_photo_is_not_asked_for_without_images_left(
     two_photos: Preset,
 ) -> None:
     """Иначе человек прислал бы второй снимок впустую."""
-    await storage.add_usage(paid.user.id, paid.day, messages=0, images=40)
-    # Дневная норма тарифа кончилась — и бонус тоже, иначе рисовать ещё есть чем.
+    await use_up_norm(deps, paid, LimitKind.IMAGES)
+    # Норма тарифа кончилась — и бонус тоже, иначе рисовать ещё есть чем.
     assert await storage.spend_bonus(paid.user.id, images=3)
 
     await presets.add_photo(deps, paid, two_photos, PHOTO, "adult-ref")
@@ -1318,7 +1327,7 @@ async def test_continuing_without_messages_left_shows_the_paywall(
 ) -> None:
     llm.truncated = True
     await chat.handle_message(deps, session, "расскажи")
-    await storage.add_usage(session.user.id, session.day, messages=20, images=0)
+    await storage.add_usage(session.user.id, session.day, messages=20)
     before = len(llm.calls)
 
     await chat.continue_answer(deps, session)

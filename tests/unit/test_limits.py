@@ -13,9 +13,9 @@ from app.core.limits import (
     Source,
     allowance,
     current_day,
-    daily_images,
+    monthly_norm,
 )
-from app.core.models import MessengerKind, TariffId, Usage, User, UserId
+from app.core.models import MessengerKind, PeriodUsage, TariffId, Usage, User, UserId
 from app.core.tariffs import tariff_of
 
 DAY = date(2026, 8, 28)
@@ -54,18 +54,20 @@ def messages(user: User, used: int) -> Allowance:
 def images(user: User, used: int) -> Allowance:
     return allowance(
         user,
-        Usage(day=DAY, images_used=used),
+        Usage(day=DAY),
         tariff_of(user.tariff),
         LimitKind.IMAGES,
+        period_usage=PeriodUsage(images_used=used),
     )
 
 
 def documents(user: User, used: int) -> Allowance:
     return allowance(
         user,
-        Usage(day=DAY, documents_used=used),
+        Usage(day=DAY),
         tariff_of(user.tariff),
         LimitKind.DOCUMENTS,
+        period_usage=PeriodUsage(documents_used=used),
     )
 
 
@@ -107,16 +109,17 @@ def test_bonus_adds_to_the_total() -> None:
     assert images(user, 0).total_left == 45
 
 
-def test_daily_quota_is_spent_before_the_bonus() -> None:
+def test_the_norm_is_spent_before_the_bonus() -> None:
     """Подарок за друга должен ощущаться как продолжение работы, а не
-    растворяться в первый же день.
+    растворяться в первый же период.
 
     Проверяется на платном тарифе: только там есть чему тратиться раньше
-    бонуса. На бесплатном дневной корзины нет вовсе.
+    бонуса.
     """
     user = make_user(tariff=TariffId.LITE, bonus_images=5)
 
-    assert images(user, 0).next_source is Source.DAILY
+    assert images(user, 0).next_source is Source.MONTHLY
+    assert messages(make_user(bonus_messages=5), 0).next_source is Source.DAILY
 
 
 def test_bonus_kicks_in_when_the_daily_quota_runs_out() -> None:
@@ -152,7 +155,7 @@ def test_bonus_alone_is_enough_to_keep_working() -> None:
 
 
 def test_free_tariff_has_no_daily_images_at_all() -> None:
-    """Бесплатные картинки выдаются разово, а не каждый день.
+    """Картинки не возобновляются по суткам ни на одном тарифе.
 
     Ноль в дневной норме — не мелочь: он один отвечает за то, что три
     подаренные при регистрации картинки не превращаются в три в сутки.
@@ -160,6 +163,7 @@ def test_free_tariff_has_no_daily_images_at_all() -> None:
     user = make_user(bonus_images=3)
 
     assert images(user, 0).daily_left == 0
+    assert images(user, 0).monthly_left == 0
     assert images(user, 0).total_left == 3
 
 
@@ -182,11 +186,12 @@ def test_a_free_user_spends_the_signup_grant_and_it_does_not_come_back() -> None
 def test_tariff_limits_match_the_brief(
     tariff: TariffId, expected_messages: int, expected_images: int
 ) -> None:
-    """§2.8: числа тарифов взяты из задания. У бесплатного картинок нет."""
+    """Сообщения — дневная норма, картинки — месячная."""
     user = make_user(tariff=tariff)
 
     assert messages(user, 0).daily_left == expected_messages
-    assert daily_images(tariff_of(tariff)) == expected_images
+    assert monthly_norm(tariff_of(tariff), LimitKind.IMAGES) == expected_images
+    assert images(user, 0).daily_left == 0
 
 
 # --- Сутки ---------------------------------------------------------------
@@ -219,16 +224,18 @@ def test_naive_datetime_is_rejected() -> None:
 # --- Разбор документов ---------------------------------------------------
 
 
-def test_documents_have_no_daily_quota_on_the_free_tariff() -> None:
-    """Разбор длинного файла — самый дорогой запрос: сутками он не возобновляется."""
+def test_documents_have_no_norm_on_the_free_tariff() -> None:
+    """Разбор длинного файла — самый дорогой запрос: бесплатно он только разовый."""
+    assert documents(make_user(), 0).monthly_left == 0
     assert documents(make_user(), 0).daily_left == 0
 
 
-def test_documents_have_a_daily_quota_on_paid_tariffs() -> None:
+def test_documents_have_a_monthly_norm_on_paid_tariffs() -> None:
     """Там человек платит именно за неё."""
-    assert documents(make_user(tariff=TariffId.LITE), 0).daily_left == 15
-    assert documents(make_user(tariff=TariffId.PRO), 0).daily_left == 30
-    assert documents(make_user(tariff=TariffId.MAX), 0).daily_left == 60
+    for tariff in (TariffId.LITE, TariffId.PRO, TariffId.MAX):
+        norm = monthly_norm(tariff_of(tariff), LimitKind.DOCUMENTS)
+        assert norm > 0
+        assert documents(make_user(tariff=tariff), 0).monthly_left == norm
 
 
 def test_a_free_user_spends_documents_from_the_bonus() -> None:
@@ -250,14 +257,16 @@ def test_documents_do_not_borrow_from_the_image_basket() -> None:
 
 def test_spent_documents_do_not_touch_the_image_counter() -> None:
     """Расход у них раздельный: в профиле человеку видно, что именно кончилось."""
-    usage = Usage(day=DAY, images_used=0, documents_used=4)
+    period = PeriodUsage(images_used=0, documents_used=4)
     user = make_user(tariff=TariffId.PRO)
+    tariff = tariff_of(user.tariff)
+    day = Usage(day=DAY)
 
-    spent = allowance(user, usage, tariff_of(user.tariff), LimitKind.DOCUMENTS)
-    untouched = allowance(user, usage, tariff_of(user.tariff), LimitKind.IMAGES)
+    spent = allowance(user, day, tariff, LimitKind.DOCUMENTS, period_usage=period)
+    untouched = allowance(user, day, tariff, LimitKind.IMAGES, period_usage=period)
 
-    assert spent.daily_used == 4
-    assert untouched.daily_used == 0
+    assert spent.monthly_used == 4
+    assert untouched.monthly_used == 0
 
 
 def test_documents_run_out_and_show_the_paywall() -> None:

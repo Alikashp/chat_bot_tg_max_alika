@@ -14,8 +14,31 @@ tests/unit/test_spending.py и в каждом сценарии отдельно
 
 from __future__ import annotations
 
-from app.core.limits import Allowance, LimitKind, Source, allowance
+from app.core.limits import (
+    Allowance,
+    LimitKind,
+    NormPeriod,
+    Source,
+    allowance,
+    monthly_norm,
+    norm_period,
+)
+from app.core.models import User
 from app.core.scenarios.deps import Deps, Session
+
+
+def period_of(deps: Deps, session: Session) -> NormPeriod:
+    """Период месячной нормы, в котором идёт это обращение.
+
+    Считается по тому же снимку человека, что и ``session.tariff``: тариф и
+    его период обязаны быть об одном и том же моменте.
+    """
+    return norm_period(
+        session.user,
+        session.now,
+        free_days=deps.settings.free_period_days,
+        paid_days=deps.settings.subscription_days,
+    )
 
 
 async def current_allowance(deps: Deps, session: Session, kind: LimitKind) -> Allowance:
@@ -27,8 +50,17 @@ async def current_allowance(deps: Deps, session: Session, kind: LimitKind) -> Al
     увидел бы в профиле старые цифры, а в чате — пейволл при живом подарке.
     """
     user = await deps.storage.get_user_by_id(session.user.id) or session.user
+    return await _allowance(deps, session, user, kind)
+
+
+async def _allowance(
+    deps: Deps, session: Session, user: User, kind: LimitKind
+) -> Allowance:
     usage = await deps.storage.get_usage(user.id, session.day)
-    return allowance(user, usage, session.tariff, kind)
+    period = await deps.storage.get_period_usage(
+        user.id, period_of(deps, session).start
+    )
+    return allowance(user, usage, session.tariff, kind, period_usage=period)
 
 
 async def charge(deps: Deps, session: Session, kind: LimitKind) -> None:
@@ -37,6 +69,11 @@ async def charge(deps: Deps, session: Session, kind: LimitKind) -> None:
     Остаток перечитывается из хранилища, а не берётся из сессии: между
     проверкой и списанием прошёл вызов к провайдеру, за это время у
     пользователя могли измениться и расход, и бонусный баланс.
+
+    Месячная норма и бонус списываются условно — только если ещё есть что
+    списывать (Т3). Не вышло из нормы, потому что её параллельно доели, —
+    пробуем бонус; не вышло и из него — результат отдан сверх нормы, и знать
+    об этом надо, но счётчик за норму не уходит.
     """
     user = await deps.storage.get_user_by_id(session.user.id)
     if user is None:
@@ -45,33 +82,28 @@ async def charge(deps: Deps, session: Session, kind: LimitKind) -> None:
         deps.logger.error("charge_user_missing", user_id=int(session.user.id))
         return
 
-    usage = await deps.storage.get_usage(user.id, session.day)
-    source = allowance(user, usage, session.tariff, kind).next_source
-
-    one = _one_of(kind)
+    source = (await _allowance(deps, session, user, kind)).next_source
 
     if source is Source.DAILY:
-        await deps.storage.add_usage(user.id, session.day, **one)
+        await deps.storage.add_usage(user.id, session.day, messages=1)
         return
 
-    if source is Source.BONUS:
-        spent = await deps.storage.spend_bonus(
-            user.id,
-            presentations=1 if kind is LimitKind.PRESENTATIONS else 0,
-            **one,
-        )
-        if spent:
-            return
-        if kind is LimitKind.PRESENTATIONS:
-            # Дневного расхода у презентаций нет — записать перерасход некуда.
-            # Сборка у человека одна за раз, так что сюда в норме не попасть.
-            deps.logger.warning(
-                "charged_over_limit", user_id=int(user.id), kind=kind.value
-            )
-            return
-        # Бонус успели потратить параллельно. Результат пользователь уже
-        # получил, отбирать его поздно — записываем в дневной расход.
-        await deps.storage.add_usage(user.id, session.day, **one)
+    if source is Source.MONTHLY and await deps.storage.spend_norm(
+        user.id,
+        period_of(deps, session).start,
+        kind,
+        limit=monthly_norm(session.tariff, kind),
+    ):
+        return
+
+    if source is not None and await deps.storage.spend_bonus(user.id, **_one_of(kind)):
+        return
+
+    if kind is LimitKind.MESSAGES and source is not None:
+        # Бонус сообщений успели потратить параллельно. Результат человек уже
+        # получил, отбирать его поздно — записываем в дневной расход: у
+        # сообщений он и так переполняется только на одну единицу.
+        await deps.storage.add_usage(user.id, session.day, messages=1)
         return
 
     # Списывать неоткуда: результат отдан сверх лимита. Одновременные задачи
@@ -81,15 +113,15 @@ async def charge(deps: Deps, session: Session, kind: LimitKind) -> None:
 
 
 def _one_of(kind: LimitKind) -> dict[str, int]:
-    """Единица дневного расхода нужного вида — в терминах хранилища.
+    """Единица бонуса нужного вида — в терминах хранилища.
 
-    Одним местом, а не тройкой условий на каждый вызов: забытая ветка
+    Одним местом, а не четвёркой условий на каждый вызов: забытая ветка
     означала бы, что человек получил работу бесплатно, а мы этого даже не
-    заметили. Презентаций здесь нет: дневного расхода у них не бывает, и
-    списываются они только из бонуса (см. ``charge``).
+    заметили.
     """
     return {
         "messages": 1 if kind is LimitKind.MESSAGES else 0,
         "images": 1 if kind is LimitKind.IMAGES else 0,
         "documents": 1 if kind is LimitKind.DOCUMENTS else 0,
+        "presentations": 1 if kind is LimitKind.PRESENTATIONS else 0,
     }

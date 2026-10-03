@@ -465,6 +465,9 @@ async def confirm(
                 if subscription is not None
                 else None
             ),
+            # Каждая оплата и каждое продление начинают период месячной нормы
+            # заново: человек заплатил — норма полная.
+            norm_since=deps.now(),
         )
         if outcome is GrantOutcome.GRANTED:
             break
@@ -501,6 +504,42 @@ async def confirm(
         method=order.method,
     )
     return replace(order, paid_at=deps.now())
+
+
+async def refunded(deps: Deps, order: Payment) -> None:
+    """Деньги по заказу вернули: оплаченный ими месяц кончается (Т5).
+
+    Продление снимается сразу: списать с того, кому только что вернули
+    деньги, — верный способ получить оспаривание платежа вместо покупателя.
+
+    Срок тарифа укорачивается на тот месяц, за который вернули деньги, — и
+    только если этот месяц ещё идёт и тариф тот же. Вернули за давно
+    прошедший месяц — отбирать нечего: текущий оплачен другим заказом.
+    Вернули за оплаченный заранее следующий месяц — текущий остаётся. Вернули
+    за единственный — тариф кончается сейчас, и вместе с ним платная норма:
+    дальше действуют бесплатные.
+    """
+    await deps.storage.cancel_subscription(order.user_id, deps.now())
+
+    user = await deps.storage.get_user_by_id(order.user_id)
+    term = timedelta(days=deps.settings.subscription_days)
+    now = deps.now()
+    if (
+        user is None
+        or order.paid_at is None
+        or order.paid_at + term <= now
+        or user.tariff is not order.tariff
+        or user.tariff_expires_at is None
+        or user.tariff_expires_at <= now
+    ):
+        return
+
+    shortened = user.tariff_expires_at - term
+    if shortened <= now:
+        await deps.storage.set_tariff(user.id, TariffId.FREE, None)
+    else:
+        await deps.storage.set_tariff(user.id, user.tariff, shortened)
+    deps.logger.info("payment_refund_revoked", user_id=int(user.id))
 
 
 async def announce(

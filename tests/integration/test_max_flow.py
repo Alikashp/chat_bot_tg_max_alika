@@ -35,7 +35,7 @@ from app.adapters.max.messenger import MaxMessenger
 from app.adapters.storage.memory import InMemoryStorage
 from app.core import support, texts
 from app.core.actions import Action, preset_action
-from app.core.limits import current_day
+from app.core.limits import current_day, norm_period
 from app.core.models import MessengerKind, Payment, TariffId
 from app.core.referral import MAX_HOST
 from app.core.scenarios import payments
@@ -481,13 +481,16 @@ async def test_the_waiting_message_is_edited_into_the_picture(
 async def test_the_limit_is_spent_only_after_delivery(started: Harness) -> None:
     """Главный инвариант проекта — на живом пути MAX."""
     started.images.error = RuntimeError("провайдер лёг")
+    before = (await started.user()).bonus_images
 
     await started.press(Action.MENU_IMAGES)
     await started.send_text("кот-космонавт")
 
     user = await started.user()
-    usage = await started.storage.get_usage(user.id, _today())
-    assert usage.images_used == 0
+    period = norm_period(user, datetime.now(UTC), free_days=30, paid_days=30)
+    spent = await started.storage.get_period_usage(user.id, period.start)
+    assert spent.images_used == 0
+    assert user.bonus_images == before
 
 
 async def test_sharing_forwards_the_picture_by_token(started: Harness) -> None:

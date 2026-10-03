@@ -24,7 +24,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import timedelta
 
-from app.core.models import MessengerKind, Subscription, User
+from app.core.models import MessengerKind, Subscription, User, UserId
 from app.core.scenarios import subscriptions
 from app.core.scenarios.deps import Deps
 
@@ -58,9 +58,32 @@ class Billing:
 
     async def run(self) -> None:
         """Один полный проход. Сбой на одной подписке не роняет остальные."""
+        await self.cancel_replaced()
         await self.check_prices()
         await self.remind()
         await self.charge()
+
+    async def cancel_replaced(self) -> None:
+        """Повторяет отмену прежних звёздных подписок, которую Telegram не принял.
+
+        Первым шагом: пока прежняя подписка жива, Telegram может списать по
+        ней звёзды в любой момент, и каждый проход без повтора — это риск
+        второго платежа за тот же срок.
+        """
+        due = await self.deps.storage.star_cancels_due(limit=self.batch)
+        for pending in due:
+            deps = await self._deps_of(pending.user_id)
+            if deps is None:
+                continue
+            try:
+                await subscriptions.cancel_replaced(deps, pending)
+            except Exception as error:
+                deps.logger.error(
+                    "billing_step_failed",
+                    step="cancel_replaced",
+                    user_id=int(pending.user_id),
+                    error=repr(error),
+                )
 
     async def check_prices(self) -> None:
         """Предупреждает о новой цене за неделю до списания (§4.17 оферты)."""
@@ -99,7 +122,7 @@ class Billing:
         отвалившийся мессенджер одного человека не должен оставить остальных
         без списания или без предупреждения о нём.
         """
-        deps = await self._deps_for(subscription)
+        deps = await self._deps_of(subscription.user_id)
         if deps is None:
             return
         try:
@@ -112,7 +135,7 @@ class Billing:
                 error=repr(error),
             )
 
-    async def _deps_for(self, subscription: Subscription) -> Deps | None:
+    async def _deps_of(self, user_id: UserId) -> Deps | None:
         """Зависимости того мессенджера, из которого пришёл человек.
 
         Если этот мессенджер сейчас выключен, шаг пропускается целиком —
@@ -120,20 +143,16 @@ class Billing:
         не взять: человек всё равно не может пользоваться ботом там, где бота
         нет.
         """
-        user = await self._user(subscription)
+        user = await self._user(user_id)
         if user is None:
             return None
         deps = self.by_messenger.get(user.messenger)
         if deps is None:
-            self.deps.logger.warning(
-                "billing_messenger_disabled", user_id=int(subscription.user_id)
-            )
+            self.deps.logger.warning("billing_messenger_disabled", user_id=int(user_id))
         return deps
 
-    async def _user(self, subscription: Subscription) -> User | None:
-        user = await self.deps.storage.get_user_by_id(subscription.user_id)
+    async def _user(self, user_id: UserId) -> User | None:
+        user = await self.deps.storage.get_user_by_id(user_id)
         if user is None:
-            self.deps.logger.error(
-                "billing_user_missing", user_id=int(subscription.user_id)
-            )
+            self.deps.logger.error("billing_user_missing", user_id=int(user_id))
         return user

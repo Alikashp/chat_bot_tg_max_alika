@@ -710,7 +710,9 @@ async def _end_previous(
 
     Зовётся после выдачи, а не до неё: новая оплата подтверждена, и тариф
     человек получает в любом случае — даже если Telegram отменить не дал.
-    Такой сбой — ошибка в логе для ручного разбора, а не повод не выдать.
+    Такой сбой — не повод не выдать: прежняя подписка встаёт в очередь, и
+    отмену повторяет каждый проход биллинга, пока она не пройдёт
+    (``subscriptions.cancel_replaced``).
     """
     if previous is None or previous.status == SubscriptionStatus.CANCELLED.value:
         return
@@ -721,21 +723,28 @@ async def _end_previous(
         # Карточную отменять у провайдера нечего: списываем по ней мы сами, и
         # новая запись о подписке (или отметка об отмене ниже) её остановит.
         # Звёздную списывает Telegram, и наша запись его ни к чему не обязывает.
-        try:
-            if deps.stars is None or previous.charge_id is None:
-                raise RuntimeError("отменить звёздную подписку нечем")
-            await deps.stars.cancel(
-                user_id=user.external_id, charge_id=previous.charge_id
-            )
-        except Exception as error:
-            deps.logger.error(
-                "subscription_replace_failed",
-                user_id=int(user.id),
-                charge_id=previous.charge_id,
-                error=repr(error),
-            )
+        if previous.charge_id is None:
+            # Без идентификатора первого списания Telegram отменить не даст,
+            # и повтор тут не поможет: такого быть не должно вовсе.
+            deps.logger.error("subscription_replace_impossible", user_id=int(user.id))
         else:
-            deps.logger.info("subscription_replaced", user_id=int(user.id))
+            try:
+                if deps.stars is None:
+                    raise RuntimeError("звёзды сейчас выключены")
+                await deps.stars.cancel(
+                    user_id=user.external_id, charge_id=previous.charge_id
+                )
+            except Exception as error:
+                deps.logger.warning(
+                    "subscription_replace_failed",
+                    user_id=int(user.id),
+                    error=repr(error),
+                )
+                await deps.storage.queue_star_cancel(
+                    user.id, previous.charge_id, deps.now()
+                )
+            else:
+                deps.logger.info("subscription_replaced", user_id=int(user.id))
 
     if replaced_by is None:
         # Новая оплата разовая: заменить прежнюю записью нечем, а оставить её

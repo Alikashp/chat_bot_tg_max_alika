@@ -30,6 +30,7 @@ from app.adapters.storage.schema import (
     monthly_usage,
     payments,
     referrals,
+    star_cancels,
     subscriptions,
     usage,
     users,
@@ -45,6 +46,7 @@ from app.core.models import (
     Payment,
     PeriodUsage,
     Role,
+    StarCancel,
     Subscription,
     TariffId,
     Usage,
@@ -824,6 +826,35 @@ class PostgresStorage:
                 .where(subscriptions.c.user_id == user_id)
                 .values(price_checked_for=charge_at)
             )
+
+    async def queue_star_cancel(
+        self, user_id: UserId, charge_id: str, at: datetime
+    ) -> None:
+        query = (
+            insert(star_cancels)
+            .values(user_id=user_id, charge_id=charge_id, queued_at=at)
+            .on_conflict_do_nothing(index_elements=[star_cancels.c.charge_id])
+        )
+        async with self._session() as session, session.begin():
+            await session.execute(query)
+
+    async def star_cancels_due(self, *, limit: int) -> list[StarCancel]:
+        query = select(star_cancels).order_by(star_cancels.c.queued_at).limit(limit)
+        async with self._session() as session:
+            rows = (await session.execute(query)).mappings().all()
+        return [
+            StarCancel(
+                user_id=UserId(row["user_id"]),
+                charge_id=row["charge_id"],
+                queued_at=row["queued_at"],
+            )
+            for row in rows
+        ]
+
+    async def star_cancel_done(self, charge_id: str) -> None:
+        query = delete(star_cancels).where(star_cancels.c.charge_id == charge_id)
+        async with self._session() as session, session.begin():
+            await session.execute(query)
 
     # --- Диалог --------------------------------------------------------
 

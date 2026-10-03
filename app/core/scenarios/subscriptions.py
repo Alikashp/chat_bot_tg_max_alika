@@ -25,7 +25,7 @@ from datetime import datetime, timedelta
 
 from app.core import texts
 from app.core.limits import current_day
-from app.core.models import Payment, Subscription, User
+from app.core.models import Payment, StarCancel, Subscription, User
 from app.core.scenarios import keyboards, payments
 from app.core.scenarios.deps import Deps, Session, session_for
 from app.core.tariffs import RUB, tariff_of
@@ -163,6 +163,32 @@ async def remind(deps: Deps, subscription: Subscription) -> None:
     )
     await deps.storage.mark_reminded(subscription.user_id, subscription.next_charge_at)
     deps.logger.info("subscription_reminded", user_id=int(subscription.user_id))
+
+
+async def cancel_replaced(deps: Deps, pending: StarCancel) -> None:
+    """Повторяет отмену прежней звёздной подписки, которую Telegram не принял.
+
+    Без неё человек платит звёздами за две подписки сразу: новая оплата уже
+    заменила прежнюю у нас, но списывает Telegram, а не мы. Повтор — каждый
+    проход биллинга, пока отмена не пройдёт: ручной отмены у заказчика нет.
+    С очереди подписка снимается только после принятой отмены.
+    """
+    user = await deps.storage.get_user_by_id(pending.user_id)
+    if user is None:
+        await deps.storage.star_cancel_done(pending.charge_id)
+        return
+    if deps.stars is None:
+        deps.logger.warning("subscription_replace_waiting", user_id=int(user.id))
+        return
+    try:
+        await deps.stars.cancel(user_id=user.external_id, charge_id=pending.charge_id)
+    except Exception as error:
+        deps.logger.warning(
+            "subscription_replace_failed", user_id=int(user.id), error=repr(error)
+        )
+        return
+    await deps.storage.star_cancel_done(pending.charge_id)
+    deps.logger.info("subscription_replaced", user_id=int(user.id))
 
 
 async def check_price(deps: Deps, subscription: Subscription) -> None:

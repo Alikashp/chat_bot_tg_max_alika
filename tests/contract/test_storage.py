@@ -414,6 +414,35 @@ async def test_bonus_cannot_be_overspent_concurrently(storage: Storage) -> None:
     assert updated.bonus_images == 0
 
 
+# --- Отмена прежней звёздной подписки (фаза 11, часть 3) ----------------
+
+
+async def test_a_star_cancel_waits_in_the_queue_until_done(storage: Storage) -> None:
+    user = await _make_user(storage)
+
+    await storage.queue_star_cancel(user.id, "charge-1", MOMENT)
+    await storage.queue_star_cancel(user.id, "charge-1", MOMENT)
+
+    due = await storage.star_cancels_due(limit=10)
+    assert [(c.user_id, c.charge_id, c.queued_at) for c in due] == [
+        (user.id, "charge-1", MOMENT)
+    ]
+    await storage.star_cancel_done("charge-1")
+    assert await storage.star_cancels_due(limit=10) == []
+
+
+async def test_star_cancels_come_oldest_first_and_up_to_the_limit(
+    storage: Storage,
+) -> None:
+    user = await _make_user(storage)
+    await storage.queue_star_cancel(user.id, "late", MOMENT + timedelta(hours=1))
+    await storage.queue_star_cancel(user.id, "early", MOMENT)
+
+    due = await storage.star_cancels_due(limit=1)
+
+    assert [c.charge_id for c in due] == ["early"]
+
+
 # --- Месячная норма (фаза 11) --------------------------------------------
 
 PERIOD = MOMENT

@@ -125,6 +125,22 @@ usage = Table(
     Column("documents_used", Integer, nullable=False, server_default="0"),
 )
 
+star_cancels = Table(
+    "star_cancels",
+    metadata,
+    # Идентификатор первого списания звёздной подписки: по нему Telegram её
+    # отменяет. Ключ — он, а не человек: у одного человека могут застрять
+    # две прежние подписки, а одна и та же подписка встаёт в очередь один раз.
+    Column("charge_id", String(128), primary_key=True),
+    Column(
+        "user_id",
+        BigInteger,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column("queued_at", DateTime(timezone=True), nullable=False),
+)
+
 monthly_usage = Table(
     "monthly_usage",
     metadata,

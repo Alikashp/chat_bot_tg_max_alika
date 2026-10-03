@@ -21,6 +21,7 @@ from app.core.models import (
     MessengerKind,
     Payment,
     PeriodUsage,
+    StarCancel,
     Subscription,
     TariffId,
     Usage,
@@ -492,6 +493,24 @@ class Storage(Protocol):
         нечего: иначе сверка повторялась бы каждый тик планировщика всю
         неделю до списания.
         """
+        ...
+
+    async def queue_star_cancel(
+        self, user_id: UserId, charge_id: str, at: datetime
+    ) -> None:
+        """Ставит звёздную подписку в очередь на отмену в Telegram.
+
+        Повторная постановка той же подписки ничего не меняет: отменять её
+        надо один раз, а сбой может случиться не единожды.
+        """
+        ...
+
+    async def star_cancels_due(self, *, limit: int) -> list[StarCancel]:
+        """Подписки, ждущие отмены в Telegram. Старшие — первыми."""
+        ...
+
+    async def star_cancel_done(self, charge_id: str) -> None:
+        """Снимает подписку с очереди: Telegram отмену принял."""
         ...
 
     # --- Диалог --------------------------------------------------------

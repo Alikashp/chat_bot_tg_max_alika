@@ -29,6 +29,7 @@ from app.core.models import (
     MessengerKind,
     Payment,
     PeriodUsage,
+    StarCancel,
     Subscription,
     TariffId,
     Usage,
@@ -80,6 +81,7 @@ class InMemoryStorage:
         self._referrals: dict[UserId, tuple[UserId, datetime]] = {}
         self._payments: dict[str, Payment] = {}
         self._subscriptions: dict[UserId, Subscription] = {}
+        self._star_cancels: dict[str, StarCancel] = {}
 
     # --- Пользователи --------------------------------------------------
 
@@ -508,6 +510,19 @@ class InMemoryStorage:
         current = self._subscriptions.get(user_id)
         if current is not None:
             self._subscriptions[user_id] = replace(current, price_checked_for=charge_at)
+
+    async def queue_star_cancel(
+        self, user_id: UserId, charge_id: str, at: datetime
+    ) -> None:
+        self._require_user(user_id)
+        self._star_cancels.setdefault(charge_id, StarCancel(user_id, charge_id, at))
+
+    async def star_cancels_due(self, *, limit: int) -> list[StarCancel]:
+        due = sorted(self._star_cancels.values(), key=lambda c: c.queued_at)
+        return due[:limit]
+
+    async def star_cancel_done(self, charge_id: str) -> None:
+        self._star_cancels.pop(charge_id, None)
 
     # --- Диалог --------------------------------------------------------
 

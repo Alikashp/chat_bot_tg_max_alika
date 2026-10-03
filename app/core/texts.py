@@ -71,6 +71,10 @@ def _presentations(count: int) -> str:
     return f"{count} {plural(count, 'презентация', 'презентации', 'презентаций')}"
 
 
+def _documents(count: int) -> str:
+    return f"{count} {plural(count, 'доклад', 'доклада', 'докладов')}"
+
+
 def _gifts(*parts: str) -> str:
     """«+20 сообщений, +2 картинки и +1 презентация» — через запятую и «и»."""
     marked = [f"+{part}" for part in parts]
@@ -208,34 +212,39 @@ TARIFF_TITLES: dict[TariffId, str] = {
     TariffId.MAX: "Макс",
 }
 
-#: Что обещает каждый платный тариф (§2.8).
-#:
-#: Списком, а не строкой через точки: в одну строку человек не читает
-#: перечисление, он его просматривает. И накопительно — старший тариф
-#: перечисляет всё, что умеет младший. В §2.8 голосовой ввод назван только у
-#: Лайта, из-за чего Про выглядел так, будто ввод в нём пропадает.
-TARIFF_FEATURES: dict[TariffId, tuple[str, ...]] = {
-    TariffId.LITE: (
-        "100 сообщений в день",
-        "40 картинок",
-        "голосовой ввод",
-    ),
-    TariffId.PRO: (
-        "100 сообщений в день",
-        "60 картинок",
-        "голосовой ввод",
-    ),
-    # «Отвечает умнее» отсюда убрано: модель у всех тарифов одна, и обещание
-    # стало бы неправдой на экране, за который человек платит. Вернуть его
-    # можно ровно тогда, когда MODEL_STANDARD снова будет отличаться от
-    # MODEL_ECONOMY.
-    TariffId.MAX: (
-        "200 сообщений в день",
-        "150 картинок",
-        "голосовой ввод",
-        "2 видео",
-    ),
+#: Значок в заголовке карточки тарифа (фаза 11). Только на экране тарифов:
+#: в кнопках и в остальных текстах тариф называется словом.
+TARIFF_ICONS: dict[TariffId, str] = {
+    TariffId.LITE: "⚡️",
+    TariffId.PRO: "🚀",
+    TariffId.MAX: "💥",
 }
+
+
+def tariff_features(
+    tariff_id: TariffId, *, with_presentations: bool
+) -> tuple[str, ...]:
+    """Что обещает платный тариф — строками карточки (фаза 11, Т6).
+
+    Числа берутся из реестра тарифов, а не пишутся здесь второй раз: иначе
+    норму поменяли бы в одном месте, а продавали бы по-старому в другом.
+
+    Каждая строка — то, что в боте правда есть. Голосового ввода и видео в
+    нём нет, и с реальной оплатой обещать их значило бы продавать
+    несуществующее. По той же причине строки о презентациях нет, когда
+    раздела презентаций нет (не задан ключ API). Порядок у всех тарифов один:
+    старший отличается от младшего только числами.
+    """
+    tariff = TARIFFS[tariff_id]
+    features = [
+        f"{_messages(tariff.daily_messages)} в день",
+        f"{_images(tariff.monthly_images)} в месяц",
+    ]
+    if with_presentations:
+        features.append(f"{_presentations(tariff.monthly_presentations)} в месяц")
+    features.append(f"{_documents(tariff.monthly_documents)} в месяц")
+    return tuple(features)
+
 
 #: Отметка самого ходового тарифа. Без звезды: в Telegram звезда — это
 #: валюта, и «⭐ популярный» читается как «купить за звёзды».
@@ -976,7 +985,7 @@ BUTTON_PRIVACY = "🔒 Данные"
 BUTTON_EMAIL_CHANGE = "✏️ Другая почта"
 
 
-def tariffs_screen() -> Screen:
+def tariffs_screen(*, with_presentations: bool) -> Screen:
     """Все три тарифа одним сообщением (§2.8).
 
     Одним, а не тремя: тремя сообщениями сравнить их нельзя — пока листаешь
@@ -986,7 +995,10 @@ def tariffs_screen() -> Screen:
     Отсюда и превышение обычного потолка в пять строк. Здесь сравнение и есть
     смысл экрана, поэтому потолок поднят явно и только для него.
     """
-    blocks = [_tariff_block(tariff_id) for tariff_id in PAID_TARIFFS]
+    blocks = [
+        _tariff_block(tariff_id, with_presentations=with_presentations)
+        for tariff_id in PAID_TARIFFS
+    ]
     return Screen(
         text="\n\n".join(blocks),
         buttons=tuple(choose_button(tariff_id) for tariff_id in PAID_TARIFFS),
@@ -994,13 +1006,17 @@ def tariffs_screen() -> Screen:
     )
 
 
-def _tariff_block(tariff_id: TariffId) -> str:
+def _tariff_block(tariff_id: TariffId, *, with_presentations: bool) -> str:
     tariff = TARIFFS[tariff_id]
-    title = f"{TARIFF_TITLES[tariff_id]} — {_rubles(tariff.price_rub)} ₽/мес"
+    title = (
+        f"{TARIFF_ICONS[tariff_id]} {TARIFF_TITLES[tariff_id]} — "
+        f"{_rubles(tariff.price_rub)} ₽/мес"
+    )
     if tariff_id is TariffId.PRO:
         title = f"{title} · {POPULAR_MARK}"
-    features = "\n".join(f"· {feature}" for feature in TARIFF_FEATURES[tariff_id])
-    return f"{title}\n{features}"
+    features = tariff_features(tariff_id, with_presentations=with_presentations)
+    lines = "\n".join(f"· {feature}" for feature in features)
+    return f"{title}\n{lines}"
 
 
 def choose_button(tariff_id: TariffId) -> str:
@@ -1206,7 +1222,9 @@ def invoice(tariff_id: TariffId, *, days: int) -> tuple[str, str]:
     Не Screen: это не экран бота, а поля счёта, которые рисует сам мессенджер.
     Но текст всё равно наш, поэтому живёт здесь.
     """
-    features = TARIFF_FEATURES[tariff_id]
+    # Без презентаций: заголовок счёта короткий, и в нём только первые две
+    # строки карточки — сообщения и картинки, они есть всегда.
+    features = tariff_features(tariff_id, with_presentations=False)
     return (
         f"Тариф {TARIFF_TITLES[tariff_id]}",
         f"{features[0]} · {features[1]}. Подписка на {_days(days)}.",
@@ -1511,7 +1529,8 @@ def _all_screens() -> tuple[Screen, ...]:
         referral_invite("https://t.me/mybot?start=ref_abc123"),
         referral_reward(messages=20, images=2),
         referral_reward(messages=20, images=2, presentations=1),
-        tariffs_screen(),
+        tariffs_screen(with_presentations=True),
+        tariffs_screen(with_presentations=False),
         payment_methods(TariffId.PRO, price_rub=599, stars=524),
         email_ask(),
         email_bad(),

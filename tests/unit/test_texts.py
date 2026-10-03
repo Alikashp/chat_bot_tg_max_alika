@@ -219,7 +219,7 @@ def test_share_caption_carries_the_personal_link() -> None:
 
 
 def test_pro_is_marked_as_the_one_people_take() -> None:
-    assert texts.POPULAR_MARK in texts.tariffs_screen().text
+    assert texts.POPULAR_MARK in texts.tariffs_screen(with_presentations=True).text
 
 
 def test_the_popular_mark_is_not_a_star() -> None:
@@ -228,34 +228,72 @@ def test_the_popular_mark_is_not_a_star() -> None:
 
 
 def test_max_price_is_formatted_with_a_space() -> None:
-    assert "1 490 ₽/мес" in texts.tariffs_screen().text
+    assert "1 490 ₽/мес" in texts.tariffs_screen(with_presentations=True).text
 
 
 def test_all_three_tariffs_fit_one_screen() -> None:
     """Сравнивают глазами: три отдельных сообщения сравнить нельзя."""
-    screen = texts.tariffs_screen()
+    screen = texts.tariffs_screen(with_presentations=True)
 
     for title in ("Лайт", "Про", "Макс"):
         assert title in screen.text
     assert screen.buttons == ("Лайт", "Про", "Макс")
 
 
-def test_every_feature_is_on_its_own_line() -> None:
-    """Перечисление через точки глаз не читает, а пробегает."""
-    lines = texts.tariffs_screen().lines
+#: Карточки тарифов из поручения фазы 11, часть 2 — дословно (Т6).
+TARIFF_CARDS = (
+    "⚡️ Лайт — 299 ₽/мес\n"
+    "· 100 сообщений в день\n"
+    "· 20 картинок в месяц\n"
+    "· 10 презентаций в месяц\n"
+    "· 15 докладов в месяц\n"
+    "\n"
+    "🚀 Про — 599 ₽/мес · берут чаще всего\n"
+    "· 100 сообщений в день\n"
+    "· 40 картинок в месяц\n"
+    "· 25 презентаций в месяц\n"
+    "· 40 докладов в месяц\n"
+    "\n"
+    "💥 Макс — 1 490 ₽/мес\n"
+    "· 200 сообщений в день\n"
+    "· 150 картинок в месяц\n"
+    "· 60 презентаций в месяц\n"
+    "· 100 докладов в месяц"
+)
 
-    assert "· 100 сообщений в день" in lines
-    assert "· голосовой ввод" in lines
+
+def test_the_tariff_cards_are_word_for_word() -> None:
+    """Т6: карточки — ровно те, что дал заказчик."""
+    assert texts.tariffs_screen(with_presentations=True).text == TARIFF_CARDS
 
 
-def test_a_higher_tariff_repeats_what_a_lower_one_gives() -> None:
-    """Иначе Про выглядит так, будто голосовой ввод в нём пропадает."""
-    lite = set(texts.TARIFF_FEATURES[TariffId.LITE])
-    pro = set(texts.TARIFF_FEATURES[TariffId.PRO])
-    biggest = set(texts.TARIFF_FEATURES[TariffId.MAX])
+def test_without_presentations_the_cards_do_not_promise_them() -> None:
+    """Т6: без ключа API презентаций раздела нет — и в карточках о нём ни слова."""
+    screen = texts.tariffs_screen(with_presentations=False)
 
-    assert "голосовой ввод" in pro & biggest
-    assert lite - pro == {"40 картинок"}, "различаться должны только числа"
+    assert "презентац" not in screen.text
+    expected = "\n".join(
+        line for line in TARIFF_CARDS.split("\n") if "презентац" not in line
+    )
+    assert screen.text == expected
+
+
+def test_nothing_that_does_not_exist_is_sold() -> None:
+    """Голосового ввода и видео в боте нет — и на витрине их нет."""
+    for with_presentations in (True, False):
+        text = texts.tariffs_screen(with_presentations=with_presentations).text
+        assert "голосов" not in text
+        assert "видео" not in text
+
+
+def test_the_cards_follow_the_registry() -> None:
+    """Числа на карточках берутся из реестра тарифов, а не пишутся второй раз."""
+    from app.core.tariffs import tariff_of
+
+    lines = texts.tariffs_screen(with_presentations=True).lines
+    for tariff_id in (TariffId.LITE, TariffId.PRO, TariffId.MAX):
+        tariff = tariff_of(tariff_id)
+        assert f"· {tariff.monthly_images} картинок в месяц" in lines
 
 
 # --- Согласование числительных -------------------------------------------
@@ -370,8 +408,9 @@ def test_only_the_tariff_screen_raises_the_line_limit() -> None:
     """
     exceptions = [screen for screen in texts.SCREENS if screen.max_lines != 5]
 
-    assert len(exceptions) == 1
-    assert exceptions[0].buttons == ("Лайт", "Про", "Макс")
+    # Экран тарифов в двух редакциях — с презентациями и без них.
+    assert len(exceptions) == 2
+    assert {screen.buttons for screen in exceptions} == {("Лайт", "Про", "Макс")}
 
 
 def test_only_the_consent_screen_may_say_you() -> None:

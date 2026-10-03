@@ -190,7 +190,9 @@ async def remember_email(deps: Deps, session: Session, written: str) -> None:
         # Ожидание от версии, где тариф назывался иначе. Возвращаем к выбору.
         await _clear_pending(deps, session)
         await deps.messenger.send_text(
-            session.chat, texts.tariffs_screen().text, keyboard=keyboards.tariffs()
+            session.chat,
+            texts.tariffs_screen(with_presentations=deps.presentations_on).text,
+            keyboard=keyboards.tariffs(),
         )
         return
 

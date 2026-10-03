@@ -37,6 +37,7 @@ from tests.fakes import (
     FakeImages,
     FakeLLM,
     FakeMessenger,
+    FakePresentations,
     use_up_norm,
 )
 
@@ -517,6 +518,19 @@ async def test_tariff_screen_is_one_message_with_three_buttons(
     keyboard = messenger.last_text.keyboard
     assert keyboard is not None
     assert [button.text for button in keyboard.rows[0]] == ["Лайт", "Про", "Макс"]
+
+
+async def test_the_tariff_cards_speak_of_presentations_only_with_the_key(
+    deps: Deps, session: Session, messenger: FakeMessenger
+) -> None:
+    """Т6: строка презентаций — только там, где раздел презентаций есть."""
+    await tariffs.show(deps, session)
+    without = messenger.last_text.text
+    await tariffs.show(replace(deps, presentations=FakePresentations()), session)
+    with_key = messenger.last_text.text
+
+    assert "презентац" not in without
+    assert "· 25 презентаций в месяц" in with_key.split("\n")
 
 
 async def test_payment_stub_is_not_a_dead_end(

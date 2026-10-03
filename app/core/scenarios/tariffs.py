@@ -20,7 +20,7 @@ async def show(deps: Deps, session: Session) -> None:
     Одним, а не тремя: тремя сравнить их нельзя — пока листаешь до третьего,
     первое уже ушло за экран, а выбирают именно сравнением.
     """
-    screen = texts.tariffs_screen()
+    screen = texts.tariffs_screen(with_presentations=deps.presentations_on)
     await deps.messenger.send_text(
         session.chat,
         screen.text,

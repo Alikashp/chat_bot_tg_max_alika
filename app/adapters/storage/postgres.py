@@ -776,6 +776,7 @@ class PostgresStorage:
             select(subscriptions)
             .where(
                 subscriptions.c.status == SubscriptionStatus.ACTIVE.value,
+                subscriptions.c.remind_before_charge.is_(True),
                 subscriptions.c.next_charge_at > since,
                 subscriptions.c.next_charge_at <= until,
                 or_(
@@ -954,6 +955,7 @@ def _to_subscription(row: Any) -> Subscription:
         failed_since=row.failed_since,
         cancelled_at=row.cancelled_at,
         charge_order_id=row.charge_order_id,
+        remind_before_charge=row.remind_before_charge,
     )
 
 
@@ -1030,6 +1032,7 @@ def _upsert_subscription(subscription: Subscription) -> Any:
         "failed_since": subscription.failed_since,
         "cancelled_at": subscription.cancelled_at,
         "charge_order_id": subscription.charge_order_id,
+        "remind_before_charge": subscription.remind_before_charge,
     }
     updates = {key: value for key, value in values.items() if key != "user_id"}
     return (

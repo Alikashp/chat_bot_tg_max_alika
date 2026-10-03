@@ -1030,6 +1030,7 @@ async def _make_subscription(
     next_charge_at: datetime | None = None,
     amount: int = 599,
     currency: str = "RUB",
+    remind_before_charge: bool = True,
 ) -> Subscription:
     subscription = Subscription(
         user_id=user.id,
@@ -1041,6 +1042,7 @@ async def _make_subscription(
         next_charge_at=next_charge_at or MOMENT,
         created_at=MOMENT,
         payment_method_id="card-1",
+        remind_before_charge=remind_before_charge,
     )
     await storage.save_subscription(subscription)
     return subscription
@@ -1146,6 +1148,36 @@ async def test_reminders_go_out_once_per_charge(storage: Storage) -> None:
 
     assert [each.user_id for each in first] == [user.id]
     assert second == []
+
+
+async def test_an_ordinary_renewal_gets_no_reminder(storage: Storage) -> None:
+    """0г: напоминание — только перед списанием, которому оно положено.
+
+    Обычные продления идут без «завтра спишем» (решение заказчика); иначе
+    проход напоминаний выбирал бы их каждый тик и упирался в предел выборки.
+    """
+    user = await _make_user(storage, "sub-10b")
+    charge_at = MOMENT + timedelta(hours=12)
+    await _make_subscription(
+        storage, user, next_charge_at=charge_at, remind_before_charge=False
+    )
+
+    due = await storage.subscriptions_to_remind(
+        MOMENT, MOMENT + timedelta(days=1), limit=10
+    )
+
+    assert due == []
+    found = await storage.get_subscription(user.id)
+    assert found is not None and found.remind_before_charge is False
+
+
+async def test_the_reminder_mark_is_read_back(storage: Storage) -> None:
+    user = await _make_user(storage, "sub-10c")
+    await _make_subscription(storage, user, remind_before_charge=True)
+
+    found = await storage.get_subscription(user.id)
+
+    assert found is not None and found.remind_before_charge is True
 
 
 async def test_a_new_charge_needs_a_new_reminder(storage: Storage) -> None:

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     Column,
     Date,
@@ -26,6 +27,7 @@ from sqlalchemy import (
     Table,
     Text,
     UniqueConstraint,
+    false,
     func,
 )
 from sqlalchemy.dialects.postgresql import JSONB
@@ -205,6 +207,9 @@ subscriptions = Table(
     Column("cancelled_at", DateTime(timezone=True), nullable=True),
     # Заказ списания с неизвестным исходом: один период — один заказ.
     Column("charge_order_id", String(36), nullable=True),
+    # Предупредить перед очередным списанием и без этого не списывать. Только
+    # первое списание после пробного периода (фаза 11, часть 3).
+    Column("remind_before_charge", Boolean, nullable=False, server_default=false()),
     CheckConstraint("amount > 0", name="ck_subscriptions_amount"),
 )
 

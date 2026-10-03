@@ -33,7 +33,8 @@ async def _subscribe(
     *,
     charge_at: timedelta,
     amount: int = 599,
-    reminded: bool = True,
+    reminded: bool = False,
+    remind_before_charge: bool = False,
 ) -> Subscription:
     subscription = Subscription(
         user_id=user.id,
@@ -45,9 +46,10 @@ async def _subscribe(
         next_charge_at=deps.now() + charge_at,
         created_at=deps.now(),
         payment_method_id="card-1",
-        # По умолчанию человек предупреждён: без этого списание не пройдёт, и
-        # каждый тест про деньги начинался бы с переноса срока.
         reminded_for=deps.now() + charge_at if reminded else None,
+        # Напоминание положено только первому списанию после пробного
+        # периода; обычные продления идут без него (решение заказчика).
+        remind_before_charge=remind_before_charge,
     )
     await deps.storage.save_subscription(subscription)
     await deps.storage.set_tariff(user.id, PRO, deps.now() + charge_at)
@@ -80,17 +82,44 @@ async def test_a_charge_that_is_not_due_is_left_alone(deps: Deps, user: User) ->
     assert cards.charged == []
 
 
-async def test_the_warning_comes_before_the_money(
+async def test_an_ordinary_renewal_needs_no_reminder(
+    deps: Deps, storage: InMemoryStorage, user: User, messenger: FakeMessenger
+) -> None:
+    """0г: обычное продление проходит без напоминания — и ровно одним списанием.
+
+    Решение заказчика: «завтра спишем» перед каждым продлением не нужно, и
+    списание от него не зависит. Проход планировщика повторяется каждый час,
+    и ни один повтор не должен взять деньги за тот же период второй раз.
+    """
+    cards = FakeCards(recurring=True)
+    recurring = replace(deps, cards=cards)
+    await _subscribe(recurring, user, charge_at=timedelta(0))
+    billing = _billing(recurring)
+
+    await billing.run()
+    await billing.run()
+
+    assert len(cards.charged) == 1
+    said = messenger.texts_said()
+    assert not [text for text in said if "Завтра" in text]
+    saved = await storage.get_subscription(user.id)
+    assert saved is not None
+    assert saved.next_charge_at > deps.now() + timedelta(days=29)
+
+
+async def test_the_warning_comes_before_the_money_where_it_is_due(
     deps: Deps, user: User, messenger: FakeMessenger
 ) -> None:
-    """Предупреждение вдогонку списанию — это не предупреждение.
+    """Где напоминание положено, оно приходит раньше денег.
 
     За сутки до срока проход обязан сказать о деньгах и обязан их не брать:
     иначе человек узнаёт о списании от банка, а не от нас.
     """
     cards = FakeCards(recurring=True)
     recurring = replace(deps, cards=cards)
-    await _subscribe(recurring, user, charge_at=timedelta(hours=12), reminded=False)
+    await _subscribe(
+        recurring, user, charge_at=timedelta(hours=12), remind_before_charge=True
+    )
 
     await _billing(recurring).run()
 
@@ -186,7 +215,7 @@ def test_billing_needs_at_least_one_messenger() -> None:
 async def test_a_charge_nobody_was_warned_about_is_deferred(
     deps: Deps, storage: InMemoryStorage, user: User, messenger: FakeMessenger
 ) -> None:
-    """§4.13 оферты: предупредить обязаны, и обязаны заранее.
+    """Где напоминание положено, без него денег не берут.
 
     Сюда попадают, только если проход напоминаний проспал своё окно — сервис
     лежал сутки. Списать молча дешевле для нас и дороже для доверия, поэтому
@@ -194,7 +223,7 @@ async def test_a_charge_nobody_was_warned_about_is_deferred(
     """
     cards = FakeCards(recurring=True)
     recurring = replace(deps, cards=cards)
-    await _subscribe(recurring, user, charge_at=timedelta(0), reminded=False)
+    await _subscribe(recurring, user, charge_at=timedelta(0), remind_before_charge=True)
 
     await _billing(recurring).charge()
 
@@ -212,13 +241,52 @@ async def test_the_deferred_charge_goes_through_next_time(
     """Перенос — это отсрочка, а не отмена: через сутки деньги берутся."""
     cards = FakeCards(recurring=True)
     recurring = replace(deps, cards=cards)
-    await _subscribe(recurring, user, charge_at=timedelta(0), reminded=False)
+    await _subscribe(recurring, user, charge_at=timedelta(0), remind_before_charge=True)
     await _billing(recurring).charge()
 
     later = replace(recurring, now=lambda: deps.now() + timedelta(hours=25))
     await _billing(later).charge()
 
     assert len(cards.charged) == 1
+
+
+async def _calendar(
+    deps: Deps, messenger: FakeMessenger, clock: FrozenClock, cards: FakeCards
+) -> list[tuple[str, str]]:
+    """Неделя проходов раз в час: когда списывали и что говорили, по Москве."""
+    billing = _billing(deps)
+    zone = ZoneInfo(deps.settings.timezone)
+    calendar: list[tuple[str, str]] = []
+    for _ in range(7 * 24):
+        charges, said = len(cards.keys), len(messenger.texts_said())
+        await billing.run()
+        moment = clock.now.astimezone(zone).strftime("%d.%m %H:%M")
+        calendar += [(moment, "списание")] * (len(cards.keys) - charges)
+        calendar += [(moment, text) for text in messenger.texts_said()[said:]]
+        clock.advance(hours=1)
+    return calendar
+
+
+#: Три попытки после отказа банка — одинаковы для обычного продления и для
+#: первого списания после пробного периода (ПП6).
+_REFUSALS = [
+    ("30.08 15:00", "списание"),
+    (
+        "30.08 15:00",
+        texts.subscription_charge_failed(
+            PRO, amount=599, currency=RUB, next_try="31 августа"
+        ).text,
+    ),
+    ("31.08 15:00", "списание"),
+    (
+        "31.08 15:00",
+        texts.subscription_charge_failed(
+            PRO, amount=599, currency=RUB, next_try="1 сентября"
+        ).text,
+    ),
+    ("01.09 15:00", "списание"),
+    ("01.09 15:00", texts.subscription_ended(PRO).text),
+]
 
 
 async def test_the_calendar_of_a_refused_card(
@@ -231,48 +299,39 @@ async def test_the_calendar_of_a_refused_card(
 
     Банк отказывает всякий раз. Ожидание по §4.16 оферты: три попытки с
     суточным шагом, о каждой человек узнаёт, после третьей — ни одного
-    списания. Календарь ниже — фактический: время каждого обращения к
-    провайдеру и каждого сообщения, по Москве.
+    списания. Напоминания перед обычным продлением нет (0г).
     """
     cards = FakeCards(recurring=True)
     cards.charge_succeeds = False
     recurring = replace(deps, cards=cards)
     _assert_default_timing(recurring.settings)
-    # Срок списания — послезавтра, напоминания ещё не было.
-    await _subscribe(recurring, user, charge_at=timedelta(days=2), reminded=False)
-    billing = _billing(recurring)
-    zone = ZoneInfo(recurring.settings.timezone)
+    await _subscribe(recurring, user, charge_at=timedelta(days=2))
 
-    calendar: list[tuple[str, str]] = []
-    for _ in range(7 * 24):
-        charges, said = len(cards.keys), len(messenger.texts_said())
-        await billing.run()
-        moment = clock.now.astimezone(zone).strftime("%d.%m %H:%M")
-        calendar += [(moment, "списание")] * (len(cards.keys) - charges)
-        calendar += [(moment, text) for text in messenger.texts_said()[said:]]
-        clock.advance(hours=1)
+    calendar = await _calendar(recurring, messenger, clock, cards)
 
-    failed = texts.subscription_charge_failed
-    assert calendar == [
-        (
-            "29.08 15:00",
-            texts.subscription_reminder(
-                PRO, amount=599, currency=RUB, on="30 августа"
-            ).text,
-        ),
-        ("30.08 15:00", "списание"),
-        (
-            "30.08 15:00",
-            failed(PRO, amount=599, currency=RUB, next_try="31 августа").text,
-        ),
-        ("31.08 15:00", "списание"),
-        (
-            "31.08 15:00",
-            failed(PRO, amount=599, currency=RUB, next_try="1 сентября").text,
-        ),
-        ("01.09 15:00", "списание"),
-        ("01.09 15:00", texts.subscription_ended(PRO).text),
-    ]
+    assert calendar == _REFUSALS
+
+
+async def test_the_calendar_of_a_refused_first_charge_after_a_warning(
+    deps: Deps,
+    user: User,
+    messenger: FakeMessenger,
+    clock: FrozenClock,
+) -> None:
+    """Там, где напоминание положено, оно приходит за сутки — дальше всё так же."""
+    cards = FakeCards(recurring=True)
+    cards.charge_succeeds = False
+    recurring = replace(deps, cards=cards)
+    await _subscribe(
+        recurring, user, charge_at=timedelta(days=2), remind_before_charge=True
+    )
+
+    calendar = await _calendar(recurring, messenger, clock, cards)
+
+    reminder = texts.subscription_reminder(
+        PRO, amount=599, currency=RUB, on="30 августа"
+    ).text
+    assert calendar == [("29.08 15:00", reminder), *_REFUSALS]
 
 
 def _assert_default_timing(settings: CoreSettings) -> None:

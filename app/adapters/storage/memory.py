@@ -482,6 +482,7 @@ class InMemoryStorage:
             subscription
             for subscription in self._subscriptions.values()
             if subscription.status == SubscriptionStatus.ACTIVE.value
+            and subscription.remind_before_charge
             and since < subscription.next_charge_at <= until
             and subscription.reminded_for != subscription.next_charge_at
         ]

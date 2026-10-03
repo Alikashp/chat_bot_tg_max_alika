@@ -14,9 +14,17 @@ from __future__ import annotations
 from datetime import timedelta
 
 from app.core import referral, sources, support, texts
-from app.core.models import Chat, MessengerKind, User, UserId, username_or_none
+from app.core.models import (
+    Chat,
+    MessengerKind,
+    TariffId,
+    User,
+    UserId,
+    username_or_none,
+)
 from app.core.scenarios import identity, keyboards
 from app.core.scenarios.deps import Deps, Session, session_for
+from app.core.tariffs import tariff_of
 
 #: Сколько попыток подобрать незанятые код и номер. Коллизия маловероятна,
 #: но «маловероятно» и «невозможно» — разные вещи, а падение на регистрации
@@ -73,11 +81,15 @@ async def _create_user(
     username: str | None = None,
     source: str = sources.DIRECT,
 ) -> User:
-    """Заводит пользователя, подбирая свободный реферальный код."""
+    """Заводит пользователя, подбирая свободный реферальный код.
+
+    Картинок в бонус новому человеку не кладётся: три в месяц — норма
+    бесплатного тарифа, она начинается с регистрации. Бонус получают только
+    пришедшие из бота презентаций — подарок за переход сверх нормы.
+    """
+    free = tariff_of(TariffId.FREE)
     granted = (
-        deps.settings.presentation_signup_images
-        if from_presentations
-        else deps.settings.signup_images
+        deps.settings.presentation_signup_bonus_images if from_presentations else 0
     )
     last_error: ValueError | None = None
     for _ in range(_CODE_ATTEMPTS):
@@ -88,8 +100,8 @@ async def _create_user(
                 referral_code=referral.generate_code(),
                 support_number=support.generate_number(),
                 bonus_images=granted,
-                bonus_documents=deps.settings.signup_documents,
-                bonus_presentations=deps.settings.signup_presentations,
+                bonus_documents=free.one_time_documents,
+                bonus_presentations=free.one_time_presentations,
                 username=username_or_none(username),
                 source=source,
             )

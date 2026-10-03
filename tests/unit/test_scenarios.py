@@ -261,8 +261,9 @@ async def test_failed_drawing_replaces_the_waiting_message(
 async def test_image_paywall_when_pictures_run_out(
     deps: Deps, session: Session, storage: InMemoryStorage, messenger: FakeMessenger
 ) -> None:
-    """Выданное при регистрации кончилось — и завтра нового не будет."""
+    """Кончились и норма месяца, и бонус."""
     assert await storage.spend_bonus(session.user.id, images=3)
+    await use_up_norm(deps, session, LimitKind.IMAGES)
 
     await images.draw(deps, session, "кот")
 
@@ -476,7 +477,7 @@ async def test_profile_shows_real_numbers(
     assert messenger.last_text.text == (
         "Твой тариф: Бесплатный\n"
         "Сообщений сегодня: 12 из 20\n"
-        "Картинки: 2 · Доклад / Реферат: 3\n"
+        "Картинки: 5 · Доклад / Реферат: 3\n"
         "Друзей позвал: 0"
     )
 
@@ -489,7 +490,7 @@ async def test_profile_counts_the_bonus_in_the_pictures_left(
 
     await profile.show(deps, session)
 
-    assert "Картинки: 8" in messenger.last_text.text
+    assert "Картинки: 11" in messenger.last_text.text
 
 
 async def test_profile_always_offers_two_ways_out(

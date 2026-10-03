@@ -105,8 +105,9 @@ def test_quota_never_goes_negative() -> None:
 
 def test_bonus_adds_to_the_total() -> None:
     user = make_user(tariff=TariffId.LITE, bonus_images=5)
+    norm = monthly_norm(tariff_of(TariffId.LITE), LimitKind.IMAGES)
 
-    assert images(user, 0).total_left == 45
+    assert images(user, 0).total_left == norm + 5
 
 
 def test_the_norm_is_spent_before_the_bonus() -> None:
@@ -122,18 +123,20 @@ def test_the_norm_is_spent_before_the_bonus() -> None:
     assert messages(make_user(bonus_messages=5), 0).next_source is Source.DAILY
 
 
-def test_bonus_kicks_in_when_the_daily_quota_runs_out() -> None:
+def test_bonus_kicks_in_when_the_norm_runs_out() -> None:
     user = make_user(tariff=TariffId.LITE, bonus_images=5)
+    norm = monthly_norm(tariff_of(TariffId.LITE), LimitKind.IMAGES)
 
-    assert images(user, 40).next_source is Source.BONUS
-    assert images(user, 40).exhausted is False
+    assert images(user, norm).next_source is Source.BONUS
+    assert images(user, norm).exhausted is False
 
 
-def test_a_free_user_spends_straight_from_the_bonus() -> None:
-    """Дневной корзины у него нет, и списывать больше неоткуда."""
-    user = make_user(bonus_images=3)
+def test_a_free_user_spends_the_bonus_after_the_monthly_three() -> None:
+    """Подарки за друзей — после нормы и у бесплатного тоже."""
+    user = make_user(bonus_images=2)
 
-    assert images(user, 0).next_source is Source.BONUS
+    assert images(user, 0).next_source is Source.MONTHLY
+    assert images(user, 3).next_source is Source.BONUS
 
 
 def test_nothing_left_when_both_baskets_are_empty() -> None:
@@ -158,40 +161,28 @@ def test_free_tariff_has_no_daily_images_at_all() -> None:
     """Картинки не возобновляются по суткам ни на одном тарифе.
 
     Ноль в дневной норме — не мелочь: он один отвечает за то, что три
-    подаренные при регистрации картинки не превращаются в три в сутки.
+    картинки месячной нормы не превращаются в три в сутки.
     """
-    user = make_user(bonus_images=3)
+    user = make_user()
 
     assert images(user, 0).daily_left == 0
-    assert images(user, 0).monthly_left == 0
+    assert images(user, 0).monthly_left == 3
     assert images(user, 0).total_left == 3
 
 
-def test_a_free_user_spends_the_signup_grant_and_it_does_not_come_back() -> None:
-    """Потратив выданное, человек упирается в пейволл, а не ждёт завтра."""
-    user = make_user(bonus_images=0)
-
-    assert images(user, 0).exhausted is True
+def test_a_free_user_who_spent_the_month_hits_the_paywall() -> None:
+    """Потратив норму месяца без подарков, человек упирается в пейволл."""
+    assert images(make_user(bonus_images=0), 3).exhausted is True
 
 
-@pytest.mark.parametrize(
-    ("tariff", "expected_messages", "expected_images"),
-    [
-        (TariffId.FREE, 20, 0),
-        (TariffId.LITE, 100, 40),
-        (TariffId.PRO, 100, 60),
-        (TariffId.MAX, 200, 150),
-    ],
-)
-def test_tariff_limits_match_the_brief(
-    tariff: TariffId, expected_messages: int, expected_images: int
-) -> None:
-    """Сообщения — дневная норма, картинки — месячная."""
+@pytest.mark.parametrize("tariff", list(TariffId))
+def test_messages_are_daily_and_the_rest_monthly(tariff: TariffId) -> None:
+    """Сообщения — дневная норма, картинки, доклады, презентации — месячная."""
     user = make_user(tariff=tariff)
 
-    assert messages(user, 0).daily_left == expected_messages
-    assert monthly_norm(tariff_of(tariff), LimitKind.IMAGES) == expected_images
+    assert messages(user, 0).daily_left == tariff_of(tariff).daily_messages
     assert images(user, 0).daily_left == 0
+    assert documents(user, 0).daily_left == 0
 
 
 # --- Сутки ---------------------------------------------------------------
@@ -252,7 +243,7 @@ def test_documents_do_not_borrow_from_the_image_basket() -> None:
     user = make_user(bonus_images=9, bonus_documents=0)
 
     assert documents(user, 0).total_left == 0
-    assert images(user, 0).total_left == 9
+    assert images(user, 0).total_left == 3 + 9
 
 
 def test_spent_documents_do_not_touch_the_image_counter() -> None:

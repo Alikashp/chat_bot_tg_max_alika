@@ -110,12 +110,11 @@ async def test_failed_chat_does_not_pollute_the_dialog(
 async def test_image_charges_after_delivery(
     deps: Deps, session: Session, storage: InMemoryStorage, user: User
 ) -> None:
-    """На бесплатном тарифе картинка списывается из бонуса: дневной нормы
-    картинок там нет, а выданное при регистрации лежит именно в нём."""
+    """Картинка списывается из месячной нормы, бонус остаётся на потом."""
     await images.draw(deps, session, "кот-космонавт")
 
-    assert await bonus(storage, user) == (0, 2)
-    assert await used(storage, session) == (0, 0)
+    assert await bonus(storage, user) == (0, 3)
+    assert await used(storage, session) == (0, 1)
 
 
 async def test_image_does_not_charge_when_the_provider_fails(
@@ -150,7 +149,7 @@ async def test_preset_charges_after_delivery(
 ) -> None:
     await presets.apply(deps, session, PRESETS["lego"], [Photo(data=PNG_BYTES)])
 
-    assert await bonus(storage, user) == (0, 2)
+    assert await bonus(storage, user) == (0, 3)
 
 
 async def test_preset_does_not_charge_when_the_provider_fails(

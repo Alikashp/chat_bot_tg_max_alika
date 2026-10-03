@@ -425,9 +425,10 @@ async def test_start_creates_the_user_once(harness: Harness) -> None:
     await harness.send_text("/start")
 
     user = await harness.user()
-    # Три картинки выдаются один раз — при регистрации. Второй /start их не
-    # удваивает: иначе бесплатные картинки печатались бы кнопкой.
-    assert user.bonus_images == 3
+    # Разовое выдаётся один раз — при регистрации. Второй /start его не
+    # удваивает: иначе бесплатные доклады печатались бы кнопкой.
+    assert user.bonus_documents == 2
+    assert user.bonus_images == 0
     assert await harness.storage.get_user(MessengerKind.TELEGRAM, "999") is None
 
 

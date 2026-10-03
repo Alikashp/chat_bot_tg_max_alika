@@ -13,8 +13,9 @@ from dataclasses import replace
 
 from app.adapters.storage.memory import InMemoryStorage
 from app.core import support, texts
+from app.core.limits import LimitKind
 from app.core.models import Chat, MessengerKind, User
-from app.core.scenarios import onboarding
+from app.core.scenarios import onboarding, spending
 from app.core.scenarios.deps import Deps, Session
 from tests.fakes import FakeLogger, FakeMessenger, FrozenClock
 
@@ -93,13 +94,15 @@ async def test_presentation_deeplink_raises_the_signup_grant(
 ) -> None:
     """§2.1: 5 картинок вместо 3.
 
-    Картинки ложатся в бонус, а не в дневную квоту: дневной квоты картинок
-    на бесплатном тарифе нет вовсе. В тексте первого экрана их больше не
-    называют — число проверяется по самой выдаче.
+    Три — месячная норма бесплатного тарифа, она у всех. Ещё две за переход
+    ложатся в бонус: он не сгорает вместе с первым периодом. В тексте
+    первого экрана их не называют — число проверяется по самой выдаче.
     """
     session = await start(deps, payload="pres_autumn")
 
-    assert session.user.bonus_images == 5
+    assert session.user.bonus_images == 2
+    left = await spending.current_allowance(deps, session, LimitKind.IMAGES)
+    assert left.total_left == 5
 
 
 async def test_a_fresh_user_gets_documents_to_try(deps: Deps) -> None:
@@ -110,7 +113,27 @@ async def test_a_fresh_user_gets_documents_to_try(deps: Deps) -> None:
     """
     session = await start(deps)
 
-    assert session.user.bonus_documents == 3
+    assert session.user.bonus_documents == 2
+
+
+async def test_a_new_person_gets_exactly_the_free_grants(deps: Deps) -> None:
+    """Т4: ровно 3 картинки, 1 презентация и 2 доклада — не больше и не меньше.
+
+    Картинки — месячной нормой вместо прежних трёх разовых, а не вместе с
+    ними: бонуса картинок у нового человека нет.
+    """
+    session = await start(deps)
+
+    left = {
+        kind: await spending.current_allowance(deps, session, kind)
+        for kind in (LimitKind.IMAGES, LimitKind.PRESENTATIONS, LimitKind.DOCUMENTS)
+    }
+    assert {kind: grant.total_left for kind, grant in left.items()} == {
+        LimitKind.IMAGES: 3,
+        LimitKind.PRESENTATIONS: 1,
+        LimitKind.DOCUMENTS: 2,
+    }
+    assert left[LimitKind.IMAGES].bonus == 0
 
 
 async def test_the_document_grant_is_separate_from_the_image_one(
@@ -119,8 +142,8 @@ async def test_the_document_grant_is_separate_from_the_image_one(
     """Пять картинок из презентаций не должны превращаться в пять разборов."""
     session = await start(deps, payload="pres_autumn")
 
-    assert session.user.bonus_images == 5
-    assert session.user.bonus_documents == 3
+    assert session.user.bonus_images == 2
+    assert session.user.bonus_documents == 2
 
 
 # --- Источник регистрации ------------------------------------------------
@@ -202,8 +225,8 @@ async def test_the_reward_goes_to_the_referrer_alone(
     referrer = await refresh(storage, user)
     assert (referrer.bonus_messages, referrer.bonus_images) == (20, 3 + 2)
     invited = await refresh(storage, session.user)
-    # Только выданное при регистрации: подарка от друга больше нет.
-    assert (invited.bonus_messages, invited.bonus_images) == (0, 3)
+    # Подарка от друга нет: бонус у приглашённого пустой.
+    assert (invited.bonus_messages, invited.bonus_images) == (0, 0)
 
 
 async def test_the_invited_user_is_promised_nothing(
@@ -257,7 +280,7 @@ async def test_unknown_code_earns_nothing_but_still_greets(
     session = await start(deps, payload="ref_нетакого")
 
     fresh = await refresh(storage, session.user)
-    assert (fresh.bonus_messages, fresh.bonus_images) == (0, 3)
+    assert (fresh.bonus_messages, fresh.bonus_images) == (0, 0)
     assert "подарок" not in messenger.last_text.text
 
 

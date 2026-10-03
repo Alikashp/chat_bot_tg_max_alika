@@ -34,7 +34,7 @@ from app.adapters.max.intake import dedup_key
 from app.adapters.max.messenger import MaxMessenger
 from app.adapters.storage.memory import InMemoryStorage
 from app.core import support, texts
-from app.core.actions import Action, preset_action
+from app.core.actions import Action, document_action, preset_action
 from app.core.limits import current_day, norm_period
 from app.core.models import MessengerKind, Payment, TariffId
 from app.core.referral import MAX_HOST
@@ -476,6 +476,22 @@ async def test_the_waiting_message_is_edited_into_the_picture(
     assert started.texts_said() == [texts.IMAGE_DRAWING]
     assert len(started.bot.edits) == 1
     assert started.bot.edits[0].images, "картинка не приехала в редактирование"
+
+
+async def test_the_report_result_comes_after_its_files(started: Harness) -> None:
+    """В1 в MAX: файлы доклада, потом итог с одной кнопкой «В меню» (без ключа)."""
+    await started.press(document_action("topic_report"))
+    started.bot.sent.clear()
+
+    await started.send_text("Влияние климата на урожай")
+
+    files = [m for m in started.bot.sent if m.text is None and m.images]
+    assert len(files) == 2
+    result = started.bot.sent[-1]
+    assert result.text == texts.DOCUMENT_READY
+    assert started.bot.sent.index(files[-1]) < len(started.bot.sent) - 1
+    labels = [button.text for row in result.buttons for button in row]
+    assert labels == [texts.BUTTON_SHOW_MENU]
 
 
 async def test_the_limit_is_spent_only_after_delivery(started: Harness) -> None:

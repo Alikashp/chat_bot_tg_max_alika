@@ -735,12 +735,12 @@ async def test_every_report_offers_a_presentation_when_they_are_on(
 
     await report_ready(enabled, storage, user)
     labels = [text for text, _ in edit_buttons(messenger)]
-    assert labels[-1] == texts.BUTTON_PRESENTATION_FROM_REPORT
+    assert labels[0] == texts.BUTTON_PRESENTATION_FROM_REPORT
 
 
 def edit_buttons(messenger: FakeMessenger) -> list[tuple[str, str | None]]:
-    """Кнопки под последним правленым сообщением — под готовым докладом."""
-    keyboard = messenger.text_edits[-1].keyboard
+    """Кнопки под итогом доклада — последним сообщением после файлов."""
+    keyboard = messenger.last_text.keyboard
     assert keyboard is not None
     return [(b.text, b.action) for row in keyboard.rows for b in row]
 

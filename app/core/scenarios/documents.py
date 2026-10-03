@@ -267,20 +267,25 @@ async def _produce(
     for ready in built:
         await deps.messenger.send_document(session.chat, ready)
 
-    await deps.messenger.edit_text(
-        waiting,
+    # Файлы у человека — это и есть доставка. Списываем до сообщений после
+    # них: их сбой не отменяет того, что доклад уже получили.
+    await spending.charge(deps, session, LimitKind.DOCUMENTS)
+    await deps.messenger.edit_text(waiting, texts.document_files().text)
+    # Итог — отдельным сообщением после файлов, а не правкой «читаю»: то
+    # стоит над файлами, а «файлы выше» и кнопки «что дальше» нужны под ними.
+    token = _presentation_token(
+        deps, title=title or "", fallback=action.title, text=answer.text
+    )
+    await deps.messenger.send_text(
+        session.chat,
         # Про обрыв говорим прямо. Упёршись в потолок длины, модель бросает
         # фразу на полуслове, и человек, не зная об этом, отдаст обрубок
         # преподавателю как готовую работу.
-        texts.document_ready(_buttons(), truncated=answer.truncated).text,
-        keyboard=keyboards.document_result(
-            _choices(),
-            presentation_token=_presentation_token(
-                deps, title=title or "", fallback=action.title, text=answer.text
-            ),
-        ),
+        texts.document_ready(
+            with_presentation=token is not None, truncated=answer.truncated
+        ).text,
+        keyboard=keyboards.document_result(presentation_token=token),
     )
-    await spending.charge(deps, session, LimitKind.DOCUMENTS)
     return True
 
 

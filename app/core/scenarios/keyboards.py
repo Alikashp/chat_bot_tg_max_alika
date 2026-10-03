@@ -347,26 +347,21 @@ def documents_menu(actions: tuple[tuple[str, str], ...]) -> Keyboard:
     )
 
 
-def document_result(
-    actions: tuple[tuple[str, str], ...], presentation_token: str | None = None
-) -> Keyboard:
-    """Кнопки под готовыми файлами — те же действия.
-
-    Отдельной кнопки «ещё раз» здесь нет намеренно: файл уже обработан, и
-    повторять ровно то же незачем, а вот сделать по нему же конспект после
-    доклада — обычное желание. Для этого нужно то же меню.
+def document_result(presentation_token: str | None = None) -> Keyboard:
+    """Под итогом доклада: презентация по нему и «В меню» (сессия 7, В1).
 
     ``presentation_token`` — жетон доклада для «Сделать презентацию по
-    докладу». Есть только при включённых презентациях.
+    докладу». Есть только при включённых презентациях; без него остаётся
+    одно «В меню».
     """
-    menu = documents_menu(actions)
+    menu = (Button(text=texts.BUTTON_SHOW_MENU, action=Action.MENU_SHOW),)
     if presentation_token is None:
-        return menu
+        return Keyboard(rows=(menu,))
     link = Button(
         text=texts.BUTTON_PRESENTATION_FROM_REPORT,
         action=presentation_from_action(presentation_token),
     )
-    return Keyboard(rows=(*menu.rows, (link,)))
+    return Keyboard(rows=((link,), menu))
 
 
 def menu_labels(*, presentations: bool = False) -> tuple[str, ...]:

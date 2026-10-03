@@ -18,6 +18,7 @@ from app.adapters.max.intake import dedup_key
 from app.adapters.max.messenger import MaxMessenger
 from app.adapters.max.router import to_incoming
 from app.core import texts
+from app.core.actions import Action
 from app.core.models import Button, Chat, Keyboard, MessengerKind
 from app.core.photos import PhotoTooLargeError
 from tests.fakes import PNG_BYTES
@@ -214,6 +215,18 @@ def test_screen_buttons_and_the_menu_live_together() -> None:
     # Ряд кнопок экрана плюс одна кнопка «в меню».
     assert len(attachment.payload.buttons) == 2
     assert attachment.payload.buttons[0][0].text == "Повторить"
+
+
+def test_a_screen_with_its_own_menu_button_gets_no_second_one() -> None:
+    """Экран уже ведёт в меню своей кнопкой — вторая такая же лишняя."""
+    attachment = max_keyboards.build(
+        Keyboard.row(Button(text=texts.BUTTON_SHOW_MENU, action=Action.MENU_SHOW)),
+        show_menu=True,
+    )
+
+    assert attachment is not None
+    labels = [button.text for row in attachment.payload.buttons for button in row]
+    assert labels == [texts.BUTTON_SHOW_MENU]
 
 
 def test_a_message_can_ask_for_no_buttons_at_all() -> None:

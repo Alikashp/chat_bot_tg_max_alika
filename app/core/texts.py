@@ -442,12 +442,28 @@ def document_working() -> Screen:
     )
 
 
-def document_ready(
-    action_buttons: tuple[str, ...], *, truncated: bool = False
-) -> Screen:
+#: Чем становится «Читаю файл…», когда файлы отправлены: оно стоит над ними.
+DOCUMENT_FILES = "Вот файлы 👇"
+
+
+def document_files() -> Screen:
+    return Screen(text=DOCUMENT_FILES, next_step="файлы и итог — ниже")
+
+
+def document_ready(*, with_presentation: bool, truncated: bool = False) -> Screen:
+    """Итог под файлами доклада (сессия 7).
+
+    Приходит после файлов, а не над ними: «файлы выше» должно указывать на
+    файлы. Кнопок две — презентация по этому докладу и меню; без ключа API
+    презентаций остаётся одно меню. Кнопок действий («Доклад», «Реферат»…)
+    здесь больше нет: их место — в меню раздела.
+    """
+    buttons: tuple[str, ...] = (BUTTON_SHOW_MENU,)
+    if with_presentation:
+        buttons = (BUTTON_PRESENTATION_FROM_REPORT, BUTTON_SHOW_MENU)
     return Screen(
         text=DOCUMENT_READY_CUT if truncated else DOCUMENT_READY,
-        buttons=action_buttons,
+        buttons=buttons,
     )
 
 
@@ -1772,8 +1788,9 @@ def _all_screens() -> tuple[Screen, ...]:
         documents_menu(("📊 Доклад", "📝 Реферат", "📌 Конспект")),
         document_ask_file("Кинь файл — сделаю по нему доклад"),
         document_working(),
-        document_ready(("📊 Доклад",)),
-        document_ready(("📊 Доклад",), truncated=True),
+        document_files(),
+        document_ready(with_presentation=True),
+        document_ready(with_presentation=False, truncated=True),
         document_error(),
         document_rejected(DOCUMENT_UNREADABLE, ("📊 Доклад",)),
         document_rejected(DOCUMENT_EMPTY, ("📊 Доклад",)),

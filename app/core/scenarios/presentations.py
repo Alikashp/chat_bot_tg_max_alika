@@ -33,7 +33,8 @@ from datetime import datetime, timedelta
 
 from app.core import decks, pending, retry_context, texts
 from app.core.actions import Action, DeckAction, DeckField
-from app.core.decks import Draft, with_theme
+from app.core.decks import MAX_TOPIC, MIN_TOPIC, Draft, with_theme
+from app.core.documents import DocumentTooLargeError
 from app.core.generations import GenerationKind, error_code
 from app.core.limits import LimitKind
 from app.core.models import Document
@@ -44,6 +45,7 @@ from app.ports.handoff import Carried
 from app.ports.presentations import (
     AUDIENCES,
     LANGUAGES,
+    MATERIAL_MAX_BYTES,
     MAX_SLIDES,
     MIN_SLIDES,
     BuiltPresentation,
@@ -51,10 +53,6 @@ from app.ports.presentations import (
     PresentationTheme,
 )
 from config.presentation_topics import SUGGESTED_TOPICS
-
-#: Границы темы — те же, что у провайдера (docs/API.md §3.1).
-MIN_TOPIC = 3
-MAX_TOPIC = 200
 
 #: Через сколько сборка считается брошенной. Пять минут ждём колоду (§8),
 #: по минуте на каждый из двух файлов и запас на отправку: живая сборка
@@ -146,6 +144,87 @@ async def receive_topic(deps: Deps, session: Session, written: str) -> None:
     await show_screen(deps, session, token)
 
 
+async def receive_file(
+    deps: Deps, session: Session, document_ref: str, filename: str
+) -> None:
+    """Пришёл файл-материал: вместо темы или по кнопке «Материал» (В3).
+
+    Тип проверяется по имени ещё до скачивания — чужое не тянем вовсе, —
+    размер мессенджер сообщает до загрузки байтов, содержимое сверяется с
+    расширением после. Отказ оставляет ожидание файла: можно прислать
+    другой, презентация не тратится. Байты живут только в черновике в
+    памяти — ни в базе, ни в логе их нет (В6).
+    """
+    if deps.presentations is None or deps.drafts is None:
+        await _unavailable(deps, session)
+        return
+
+    token = pending.parse_await_deck_file(session.user.pending)
+    document = await _download_material(deps, session, document_ref, filename, token)
+    if document is None:
+        return
+
+    if token is None:
+        # Тема по имени файла; не вышла — экран сам её спросит, а файл
+        # подождёт в черновике.
+        topic = decks.topic_from_filename(filename) or ""
+        await _open_screen(deps, session, Draft(topic=topic, file=document))
+        return
+
+    current = deps.drafts.peek(token)
+    if current is None:
+        await deps.storage.set_pending(session.user.id, None)
+        await _gone(deps, session)
+        return
+    # API берёт материал одним видом: файл вытесняет доклад.
+    deps.drafts.update(
+        token, replace(current, file=document, material="", report_token=None)
+    )
+    await show_screen(deps, session, token)
+
+
+async def _download_material(
+    deps: Deps,
+    session: Session,
+    document_ref: str,
+    filename: str,
+    token: str | None,
+) -> Document | None:
+    """Скачивает файл-материал, если он годится; иначе — отказ с выходом."""
+    too_big = False
+    document: Document | None = None
+    if decks.material_extension(filename) is not None:
+        try:
+            downloaded = await deps.messenger.download_document(
+                document_ref, max_bytes=MATERIAL_MAX_BYTES
+            )
+        except DocumentTooLargeError:
+            too_big = True
+        else:
+            # Имя — из сообщения: Telegram отдаёт своё служебное, а человеку
+            # на экране нужно его собственное, и тип API берёт по нему же.
+            document = replace(downloaded, filename=filename)
+            if not decks.material_ok(document):
+                document = None
+    if document is not None:
+        return document
+
+    deps.logger.info(
+        "presentation_file_refused", user_id=int(session.user.id), too_big=too_big
+    )
+    screen = texts.deck_file_refused(too_big=too_big, from_screen=token is not None)
+    await deps.messenger.send_text(
+        session.chat,
+        screen.text,
+        keyboard=(
+            keyboards.deck_back(token)
+            if token is not None
+            else keyboards.presentation_cancel()
+        ),
+    )
+    return None
+
+
 async def from_report(deps: Deps, session: Session, token: str) -> None:
     """«Сделать презентацию по докладу»: экран параметров с докладом-материалом.
 
@@ -174,6 +253,16 @@ async def show_screen(deps: Deps, session: Session, token: str) -> None:
     draft = deps.drafts.peek(token)
     if draft is None:
         await _gone(deps, session)
+        return
+    if not draft.topic:
+        # Файл пришёл, а из его имени тема не вышла: «Итоги» на титульном
+        # слайде нужны настоящие, а не «a». «Назад» сюда же и приводит.
+        await deps.storage.set_pending(session.user.id, pending.await_deck_topic(token))
+        await deps.messenger.send_text(
+            session.chat,
+            texts.deck_file_topic().text,
+            keyboard=keyboards.presentation_cancel(),
+        )
         return
 
     themes = await _themes(deps, session, token)
@@ -380,6 +469,16 @@ async def _pick_value(
         )
         return
 
+    if field is DeckField.MATERIAL:
+        has_material = draft.file is not None or bool(draft.material)
+        await deps.storage.set_pending(session.user.id, pending.await_deck_file(token))
+        await deps.messenger.send_text(
+            session.chat,
+            texts.deck_ask_file(has_material=has_material).text,
+            keyboard=keyboards.deck_material(token, has_material=has_material),
+        )
+        return
+
     if field is DeckField.DESIGN:
         themes = await _themes(deps, session, token)
         if themes is None:
@@ -429,7 +528,11 @@ async def _set_value(
     спискам API, а оформление — по списку от самого провайдера.
     """
     changed: Draft | None = None
-    if field is DeckField.LANGUAGE:
+    if field is DeckField.MATERIAL and value == keyboards.NO_MATERIAL:
+        # Без материала — по одной теме. Жетон доклада больше не нужен
+        # этой колоде, но и не сжигается: кнопка под докладом остаётся живой.
+        changed = replace(draft, file=None, material="", report_token=None)
+    elif field is DeckField.LANGUAGE:
         changed = decks.with_language(draft, value)
     elif field is DeckField.AUDIENCE:
         changed = decks.with_audience(draft, value)

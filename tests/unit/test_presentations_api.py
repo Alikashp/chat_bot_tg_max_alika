@@ -19,6 +19,7 @@ from app.adapters.presentations.fibonacci import (
     POLL_SECONDS,
     FibonacciPresentations,
 )
+from app.core.models import Document
 from app.ports.presentations import (
     DeckRequest,
     PresentationBusyError,
@@ -186,6 +187,41 @@ async def test_the_report_goes_as_material(api: FibonacciPresentations) -> None:
 
     sent = json.loads(create.calls.last.request.content)
     assert sent["input"] == {"topic": "Фотосинтез", "text": "Текст доклада"}
+
+
+@respx.mock
+async def test_a_file_goes_as_multipart(api: FibonacciPresentations) -> None:
+    """Презентация по файлу: поле params с параметрами JSON и поле file (§2).
+
+    Тип API определяет по расширению имени — имя уходит то, что прислал
+    человек; темы в params по-прежнему хватает для титульного слайда.
+    """
+    create = respx.post(f"{API}/v1/decks").mock(
+        return_value=httpx.Response(202, json=deck("done"))
+    )
+    mock_files()
+    material = Document(
+        data=b"PK\x03\x04 slides", filename="Итоги.pptx", mime_type="x/y"
+    )
+
+    await api.build(
+        DeckRequest(topic="Итоги квартала", theme_id="azure_coral", file=material)
+    )
+
+    sent = create.calls.last.request
+    assert sent.headers["content-type"].startswith("multipart/form-data; boundary=")
+    boundary = sent.headers["content-type"].split("boundary=")[1].encode()
+    parts: dict[str, tuple[str, bytes]] = {}
+    for part in sent.content.split(b"--" + boundary)[1:-1]:
+        head, _, body = part.partition(b"\r\n\r\n")
+        name = head.split(b'name="')[1].split(b'"')[0].decode()
+        parts[name] = (head.decode(), body.removesuffix(b"\r\n"))
+    params = json.loads(parts["params"][1])
+    assert params["input"] == {"topic": "Итоги квартала"}
+    assert params["theme_id"] == "azure_coral"
+    file_head, file_body = parts["file"]
+    assert 'filename="Итоги.pptx"' in file_head
+    assert file_body == material.data
 
 
 @respx.mock

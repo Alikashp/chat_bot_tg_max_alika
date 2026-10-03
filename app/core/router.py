@@ -412,6 +412,17 @@ async def _handle_document(
     deps: Deps, session: Session, document_ref: str, filename: str
 ) -> None:
     """Пришёл файл."""
+    if pending.is_awaiting_presentation_topic(
+        session.user.pending
+    ) or pending.parse_await_deck_file(session.user.pending):
+        # Файл вместо темы презентации или как её материал (В3). Скачивание
+        # — долгая работа, под тем же ключом, что и разбор файлов.
+        async def take_material(d: Deps, s: Session) -> None:
+            await presentations.receive_file(d, s, document_ref, filename)
+
+        await _guarded(deps, session, _image_key(session), take_material)
+        return
+
     action_id = pending.parse_await_document(session.user.pending)
     action = document_registry.action_of(action_id) if action_id else None
     if action is None:

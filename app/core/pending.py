@@ -38,6 +38,9 @@ AWAIT_PRESENTATION_TOPIC = "await:pres"
 #: и в базе ей не место (В6).
 _AWAIT_DECK_TOPIC_PREFIX = "await:pres:topic:"
 
+#: Ждём файл-материал для экрана параметров. За префиксом — жетон черновика.
+_AWAIT_DECK_FILE_PREFIX = "await:pres:file:"
+
 #: Ждём почту для фискального чека. За префиксом — тариф, за которым человек
 #: шёл: спросив адрес, надо вернуть его туда же, а не в начало витрины.
 _AWAIT_EMAIL_PREFIX = "await:email:"
@@ -176,6 +179,20 @@ def await_deck_topic(token: str) -> str:
     if not token:
         raise ValueError("нужен жетон черновика")
     return f"{_AWAIT_DECK_TOPIC_PREFIX}{token}"
+
+
+def await_deck_file(token: str) -> str:
+    """Состояние «ждём файл-материал для черновика под таким-то жетоном»."""
+    if not token:
+        raise ValueError("нужен жетон черновика")
+    return f"{_AWAIT_DECK_FILE_PREFIX}{token}"
+
+
+def parse_await_deck_file(pending: str | None) -> str | None:
+    """Жетон черновика, для которого ждём файл; None — ждём не его."""
+    if pending is None or not pending.startswith(_AWAIT_DECK_FILE_PREFIX):
+        return None
+    return pending.removeprefix(_AWAIT_DECK_FILE_PREFIX) or None
 
 
 def parse_await_deck_topic(pending: str | None) -> str | None:

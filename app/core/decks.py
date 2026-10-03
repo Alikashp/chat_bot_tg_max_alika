@@ -21,11 +21,16 @@ from app.ports.presentations import (
     DEFAULT_SLIDES,
     DEFAULT_THEME,
     LANGUAGES,
+    MATERIAL_EXTENSIONS,
     MAX_SLIDES,
     MIN_SLIDES,
     DeckRequest,
     PresentationTheme,
 )
+
+#: Границы темы — те же, что у провайдера (docs/API.md §3.1).
+MIN_TOPIC = 3
+MAX_TOPIC = 200
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,6 +107,56 @@ def with_design(
     if value not in {theme.id for theme in themes}:
         return None
     return replace(draft, theme_id=value)
+
+
+#: Начало PDF и zip-архива (внутри zip — docx и pptx). Расширение называет
+#: формат, сигнатура подтверждает: под «отчёт.pdf» может приехать что угодно.
+_PDF = b"%PDF-"
+_ZIP = b"PK\x03\x04"
+_SIGNATURES: dict[str, bytes] = {".pdf": _PDF, ".docx": _ZIP, ".pptx": _ZIP}
+
+
+def material_extension(filename: str) -> str | None:
+    """Расширение файла-материала, если API его принимает; None — не примет.
+
+    Проверяется до скачивания: API определяет тип по расширению имени
+    (docs/API.md §3.1), и чужое расширение незачем даже тянуть.
+    """
+    _, dot, tail = filename.rpartition(".")
+    extension = f".{tail.lower()}" if dot else ""
+    return extension if extension in MATERIAL_EXTENSIONS else None
+
+
+def material_ok(document: Document) -> bool:
+    """Годится ли скачанный файл в материал: расширение и содержимое сходятся.
+
+    Текстовый файл обязан читаться как UTF-8 без нулевых байтов — иначе это
+    двоичное под чужим именем.
+    """
+    extension = material_extension(document.filename)
+    if extension is None or not document.data:
+        return False
+    if extension == ".txt":
+        if b"\x00" in document.data:
+            return False
+        try:
+            document.data.decode("utf-8")
+        except UnicodeDecodeError:
+            return False
+        return True
+    return document.data.startswith(_SIGNATURES[extension])
+
+
+def topic_from_filename(filename: str) -> str | None:
+    """Тема по имени файла: «Итоги_квартала.docx» → «Итоги квартала».
+
+    None — из имени темы не выходит (короче трёх знаков): тогда её спросят.
+    Тема становится заголовком титульного слайда, и подставлять туда «a»
+    нельзя.
+    """
+    stem, dot, _ = filename.rpartition(".")
+    cleaned = " ".join((stem if dot else filename).replace("_", " ").split())
+    return cleaned if MIN_TOPIC <= len(cleaned) <= MAX_TOPIC else None
 
 
 def weight(draft: Draft) -> int:

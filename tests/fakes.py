@@ -103,6 +103,8 @@ class FakeMessenger:
         #: Что вернуть на скачивание присланного файла.
         self.incoming_document: Document | None = None
         self.fail_download_document: Exception | None = None
+        #: С каким пределом размера просили скачать каждый файл.
+        self.downloads_limited_to: list[int] = []
         self.fail_send_document: Exception | None = None
         #: Если задано, отправка текста падает. Нужно для проверки инварианта:
         #: лимит не списывается, когда результат до пользователя не доехал.
@@ -200,6 +202,7 @@ class FakeMessenger:
         self.timeline.append(("document", document.filename))
 
     async def download_document(self, document_ref: str, *, max_bytes: int) -> Document:
+        self.downloads_limited_to.append(max_bytes)
         if self.fail_download_document is not None:
             raise self.fail_download_document
         return self.incoming_document or Document(

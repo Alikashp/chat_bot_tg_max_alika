@@ -483,7 +483,10 @@ def document_rejected(reason: str, action_buttons: tuple[str, ...]) -> Screen:
 
 # --- Презентации (фаза 10) -----------------------------------------------
 
-PRESENTATION_ASK = "О чём презентация? Напиши тему, например: Как работает фотосинтез"
+PRESENTATION_ASK = (
+    "О чём презентация? Напиши тему, например: Как работает фотосинтез\n"
+    "Или пришли файл — pdf, docx, pptx или txt до 20 МБ, соберу по нему"
+)
 
 #: Границы — те же, что у провайдера (docs/API.md §3.1). Отсекаем до
 #: обращения: ответ провайдера на неверную тему человеку мы всё равно не
@@ -567,6 +570,8 @@ def presentation_topic_bad() -> Screen:
 
 BUTTON_DECK_BUILD = "🚀 Собрать презентацию"
 BUTTON_DECK_TOPIC = "📝 Тема"
+BUTTON_DECK_MATERIAL = "📎 Материал"
+BUTTON_DECK_NO_MATERIAL = "🗑 Без материала"
 BUTTON_DECK_LANGUAGE = "🌐 Язык"
 BUTTON_DECK_SLIDES = "🔢 Слайды"
 BUTTON_DECK_AUDIENCE = "👥 Аудитория"
@@ -640,6 +645,7 @@ def deck_screen(
         buttons=(
             BUTTON_DECK_BUILD,
             BUTTON_DECK_TOPIC,
+            BUTTON_DECK_MATERIAL,
             BUTTON_DECK_LANGUAGE,
             BUTTON_DECK_SLIDES,
             BUTTON_DECK_AUDIENCE,
@@ -664,6 +670,41 @@ DECK_ASK_TOPIC = "📝 Напиши новую тему — от 3 до 200 зн
 
 def deck_new_topic() -> Screen:
     return Screen(text=DECK_ASK_TOPIC, buttons=(BUTTON_BACK,))
+
+
+#: Форматы и предел — из docs/API.md §3.1.
+DECK_ASK_FILE = (
+    "📎 Пришли файл — pdf, docx, pptx или txt до 20 МБ. Соберу презентацию по нему"
+)
+DECK_FILE_TOPIC = (
+    "📎 Файл получил. Как назвать презентацию? Напиши тему — от 3 до 200 знаков"
+)
+DECK_FILE_WRONG = (
+    "Такой файл не подойдёт 🙅 Пришли pdf, docx, pptx или txt — "
+    "презентация не потратилась"
+)
+DECK_FILE_TOO_BIG = "Файл больше 20 МБ 🙅 Пришли поменьше — презентация не потратилась"
+
+
+def deck_ask_file(*, has_material: bool) -> Screen:
+    """Просьба прислать файл-материал; убрать материал — если он есть."""
+    buttons: tuple[str, ...] = (BUTTON_BACK,)
+    if has_material:
+        buttons = (BUTTON_DECK_NO_MATERIAL, BUTTON_BACK)
+    return Screen(text=DECK_ASK_FILE, buttons=buttons)
+
+
+def deck_file_topic() -> Screen:
+    """Файл пришёл вместо темы, а из его имени тема не выходит."""
+    return Screen(text=DECK_FILE_TOPIC, buttons=(BUTTON_CANCEL,))
+
+
+def deck_file_refused(*, too_big: bool, from_screen: bool) -> Screen:
+    """Файл не подошёл (В3): почему — и куда дальше. Ожидание файла остаётся."""
+    return Screen(
+        text=DECK_FILE_TOO_BIG if too_big else DECK_FILE_WRONG,
+        buttons=(BUTTON_BACK if from_screen else BUTTON_CANCEL,),
+    )
 
 
 DECK_GONE = "Эти параметры устарели — я их уже не помню 🤷\nНачни презентацию заново 👇"
@@ -1893,6 +1934,11 @@ def _all_screens() -> tuple[Screen, ...]:
         deck_pick(DECK_ASK_AUDIENCE, tuple(AUDIENCE_LABELS.values())),
         deck_pick(DECK_ASK_DESIGN, ("Графит светлая", "Лазурь")),
         deck_new_topic(),
+        deck_ask_file(has_material=False),
+        deck_ask_file(has_material=True),
+        deck_file_topic(),
+        deck_file_refused(too_big=False, from_screen=False),
+        deck_file_refused(too_big=True, from_screen=True),
         deck_gone(),
         deck_already_built(),
         presentation_working(),

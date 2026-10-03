@@ -402,7 +402,10 @@ def deck_screen(token: str) -> Keyboard:
     return Keyboard(
         rows=(
             (Button(text=texts.BUTTON_DECK_BUILD, action=deck_go_action(token)),),
-            (pick(texts.BUTTON_DECK_TOPIC, DeckField.TOPIC),),
+            (
+                pick(texts.BUTTON_DECK_TOPIC, DeckField.TOPIC),
+                pick(texts.BUTTON_DECK_MATERIAL, DeckField.MATERIAL),
+            ),
             (
                 pick(texts.BUTTON_DECK_LANGUAGE, DeckField.LANGUAGE),
                 pick(texts.BUTTON_DECK_SLIDES, DeckField.SLIDES),
@@ -441,6 +444,22 @@ def deck_options(
     ]
     rows.append((Button(text=texts.BUTTON_BACK, action=deck_back_action(token)),))
     return Keyboard(rows=tuple(rows))
+
+
+#: Значение «материала нет» в кнопке «Без материала».
+NO_MATERIAL = "none"
+
+
+def deck_material(token: str, *, has_material: bool) -> Keyboard:
+    """Под просьбой прислать файл: убрать материал, если он есть, и «Назад»."""
+    back = (Button(text=texts.BUTTON_BACK, action=deck_back_action(token)),)
+    if not has_material:
+        return Keyboard(rows=(back,))
+    clear = Button(
+        text=texts.BUTTON_DECK_NO_MATERIAL,
+        action=deck_set_action(token, DeckField.MATERIAL, NO_MATERIAL),
+    )
+    return Keyboard(rows=((clear,), back))
 
 
 def deck_back(token: str) -> Keyboard:

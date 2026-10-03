@@ -33,7 +33,8 @@ from app.core.models import (
     User,
     UserId,
 )
-from app.ports.payments import PaymentStatus, SubscriptionStatus
+from app.ports.payments import PaymentMethod, PaymentStatus, SubscriptionStatus
+from app.ports.storage import GrantOutcome
 
 
 class InMemoryStorage:
@@ -297,6 +298,46 @@ class InMemoryStorage:
         self._payments[payment_id] = replace(payment, external_id=external_id)
         return True
 
+    async def complete_payment(
+        self,
+        payment_id: str,
+        *,
+        tariff: TariffId,
+        expires_at: datetime,
+        seen_tariff: TariffId,
+        seen_expiry: datetime | None,
+        subscription: Subscription | None,
+    ) -> GrantOutcome:
+        # Ни одного await внутри: в памяти это и есть транзакция.
+        payment = self._payments.get(payment_id)
+        if payment is None or payment.status != PaymentStatus.PENDING.value:
+            return GrantOutcome.ALREADY
+        user = self._require_user(payment.user_id)
+        if user.tariff is not seen_tariff or user.tariff_expires_at != seen_expiry:
+            return GrantOutcome.STALE
+        self._payments[payment_id] = replace(
+            payment, status=PaymentStatus.PAID.value, paid_at=self._now()
+        )
+        self._users[user.id] = replace(
+            user, tariff=tariff, tariff_expires_at=expires_at
+        )
+        if subscription is not None:
+            self._subscriptions[subscription.user_id] = subscription
+        return GrantOutcome.GRANTED
+
+    async def payments_to_reconcile(
+        self, *, created_before: datetime, created_after: datetime, limit: int
+    ) -> list[Payment]:
+        due = [
+            payment
+            for payment in self._payments.values()
+            if payment.status == PaymentStatus.PENDING.value
+            and payment.external_id is not None
+            and payment.method == PaymentMethod.CARD.value
+            and created_after <= payment.created_at <= created_before
+        ]
+        return sorted(due, key=lambda payment: payment.created_at)[:limit]
+
     async def mark_paid(self, payment_id: str) -> bool:
         payment = self._payments.get(payment_id)
         if payment is None or payment.status != PaymentStatus.PENDING.value:
@@ -341,6 +382,7 @@ class InMemoryStorage:
         status: str,
         failed_since: datetime | None,
         amount: int | None = None,
+        same_charge: bool = False,
     ) -> bool:
         current = self._subscriptions.get(user_id)
         if current is None or current.status == SubscriptionStatus.CANCELLED.value:
@@ -351,8 +393,28 @@ class InMemoryStorage:
             status=status,
             failed_since=failed_since,
             amount=current.amount if amount is None else amount,
+            reminded_for=next_charge_at if same_charge else current.reminded_for,
+            price_checked_for=(
+                next_charge_at if same_charge else current.price_checked_for
+            ),
         )
         return True
+
+    async def hold_charge_order(self, user_id: UserId, order_id: str) -> bool:
+        current = self._subscriptions.get(user_id)
+        if (
+            current is None
+            or current.status == SubscriptionStatus.CANCELLED.value
+            or current.charge_order_id is not None
+        ):
+            return False
+        self._subscriptions[user_id] = replace(current, charge_order_id=order_id)
+        return True
+
+    async def release_charge_order(self, user_id: UserId, order_id: str) -> None:
+        current = self._subscriptions.get(user_id)
+        if current is not None and current.charge_order_id == order_id:
+            self._subscriptions[user_id] = replace(current, charge_order_id=None)
 
     async def cancel_subscription(self, user_id: UserId, at: datetime) -> bool:
         current = self._subscriptions.get(user_id)

@@ -36,7 +36,7 @@ from app.core.models import (
     User,
 )
 from app.ports.payments import PaymentStatus
-from app.ports.storage import Storage
+from app.ports.storage import GrantOutcome, Storage
 
 DAY = date(2026, 8, 28)
 NEXT_DAY = date(2026, 8, 29)
@@ -1162,6 +1162,91 @@ async def test_advancing_a_missing_subscription_is_false(storage: Storage) -> No
     )
 
 
+async def test_a_charge_order_is_held_until_released(storage: Storage) -> None:
+    """Один период — один заказ: пока исход неизвестен, второй не занять."""
+    user = await _make_user(storage, "sub-hold-1")
+    await _make_subscription(storage, user)
+    first = await _payment(storage, user)
+    second = await _payment(storage, user)
+
+    assert await storage.hold_charge_order(user.id, first.id) is True
+    assert await storage.hold_charge_order(user.id, second.id) is False
+    found = await storage.get_subscription(user.id)
+    assert found is not None and found.charge_order_id == first.id
+
+    # Отпустить можно только тот заказ, который держишь: чужой отпуск —
+    # это опоздавший проход, и он не должен освобождать место новому заказу.
+    await storage.release_charge_order(user.id, second.id)
+    found = await storage.get_subscription(user.id)
+    assert found is not None and found.charge_order_id == first.id
+
+    await storage.release_charge_order(user.id, first.id)
+    assert await storage.hold_charge_order(user.id, second.id) is True
+
+
+async def test_a_cancelled_subscription_holds_no_charge_order(
+    storage: Storage,
+) -> None:
+    user = await _make_user(storage, "sub-hold-2")
+    await _make_subscription(storage, user)
+    await storage.cancel_subscription(user.id, MOMENT)
+    order = await _payment(storage, user)
+
+    assert await storage.hold_charge_order(user.id, order.id) is False
+
+
+async def test_the_grant_releases_the_held_order(storage: Storage) -> None:
+    """Выдача периода закрывает и его заказ: следующий период — новый заказ."""
+    user = await _make_user(storage, "sub-hold-3")
+    await _make_subscription(storage, user)
+    order = await _payment(storage, user)
+    await storage.hold_charge_order(user.id, order.id)
+
+    await storage.complete_payment(
+        order.id,
+        tariff=TariffId.PRO,
+        expires_at=MOMENT + timedelta(days=30),
+        seen_tariff=user.tariff,
+        seen_expiry=user.tariff_expires_at,
+        subscription=_new_subscription(user),
+    )
+
+    found = await storage.get_subscription(user.id)
+    assert found is not None and found.charge_order_id is None
+
+
+async def test_retrying_the_same_charge_needs_no_new_reminder(
+    storage: Storage,
+) -> None:
+    """Повтор того же списания — не новое списание: человек уже предупреждён.
+
+    Без этого перенос срока на час выглядел бы для прохода напоминаний как
+    новое списание, и человек получал бы «завтра спишем» каждый час.
+    """
+    user = await _make_user(storage, "sub-hold-4")
+    await _make_subscription(storage, user)
+    await storage.mark_reminded(user.id, MOMENT)
+    later = MOMENT + timedelta(hours=1)
+
+    await storage.advance_subscription(
+        user.id,
+        next_charge_at=later,
+        status="active",
+        failed_since=None,
+        same_charge=True,
+    )
+
+    found = await storage.get_subscription(user.id)
+    assert found is not None
+    assert (found.reminded_for, found.price_checked_for) == (later, later)
+    assert (
+        await storage.subscriptions_to_remind(
+            MOMENT, MOMENT + timedelta(days=1), limit=10
+        )
+        == []
+    )
+
+
 # --- Имя пользователя ----------------------------------------------------
 
 
@@ -1245,3 +1330,142 @@ async def test_a_long_address_still_fits(storage: Storage) -> None:
     found = await storage.get_user_by_id(user.id)
     assert found is not None
     assert found.email == longest
+
+
+# --- Атомарная выдача (фаза 11, П4) --------------------------------------
+
+
+def _new_subscription(user: User, *, amount: int = 599) -> Subscription:
+    return Subscription(
+        user_id=user.id,
+        tariff=TariffId.PRO,
+        method="card",
+        status="active",
+        amount=amount,
+        currency="RUB",
+        next_charge_at=MOMENT + timedelta(days=30),
+        created_at=MOMENT,
+        payment_method_id="card-1",
+    )
+
+
+async def test_completing_a_payment_grants_once(storage: Storage) -> None:
+    """П4: заказ, тариф и подписка — одним шагом и ровно один раз."""
+    user = await _make_user(storage, "grant-1")
+    order = await _payment(storage, user)
+    until = MOMENT + timedelta(days=30)
+
+    first = await storage.complete_payment(
+        order.id,
+        tariff=TariffId.PRO,
+        expires_at=until,
+        seen_tariff=user.tariff,
+        seen_expiry=user.tariff_expires_at,
+        subscription=_new_subscription(user),
+    )
+    second = await storage.complete_payment(
+        order.id,
+        tariff=TariffId.PRO,
+        expires_at=until + timedelta(days=30),
+        seen_tariff=TariffId.PRO,
+        seen_expiry=until,
+        subscription=None,
+    )
+
+    assert (first, second) == (GrantOutcome.GRANTED, GrantOutcome.ALREADY)
+    paid = await storage.get_payment(order.id)
+    assert paid is not None and paid.status == PaymentStatus.PAID.value
+    fresh = await storage.get_user_by_id(user.id)
+    assert fresh is not None
+    assert (fresh.tariff, fresh.tariff_expires_at) == (TariffId.PRO, until)
+    subscription = await storage.get_subscription(user.id)
+    assert subscription is not None and subscription.next_charge_at == until
+
+
+async def test_two_notices_at_once_grant_once(storage: Storage) -> None:
+    """П4: два одновременных подтверждения — одна выдача, один срок."""
+    user = await _make_user(storage, "grant-2")
+    order = await _payment(storage, user)
+    until = MOMENT + timedelta(days=30)
+
+    outcomes = await asyncio.gather(
+        *(
+            storage.complete_payment(
+                order.id,
+                tariff=TariffId.PRO,
+                expires_at=until,
+                seen_tariff=user.tariff,
+                seen_expiry=user.tariff_expires_at,
+                subscription=None,
+            )
+            for _ in range(5)
+        )
+    )
+
+    assert outcomes.count(GrantOutcome.GRANTED) == 1
+
+
+async def test_a_stale_view_of_the_tariff_grants_nothing(storage: Storage) -> None:
+    """Срок поменялся, пока считали новый, — заказ остаётся ждать пересчёта.
+
+    Иначе два разных заказа одного человека, оплаченные почти одновременно,
+    продлили бы срок от одной и той же старой даты, и месяц потерялся бы.
+    """
+    user = await _make_user(storage, "grant-3")
+    order = await _payment(storage, user)
+
+    outcome = await storage.complete_payment(
+        order.id,
+        tariff=TariffId.PRO,
+        expires_at=MOMENT + timedelta(days=30),
+        seen_tariff=TariffId.PRO,
+        seen_expiry=MOMENT,
+        subscription=None,
+    )
+
+    assert outcome is GrantOutcome.STALE
+    pending = await storage.get_payment(order.id)
+    assert pending is not None and pending.status == PaymentStatus.PENDING.value
+    fresh = await storage.get_user_by_id(user.id)
+    assert fresh is not None and fresh.tariff is TariffId.FREE
+
+
+# --- Сверка зависших заказов (фаза 11, П5) -------------------------------
+
+
+async def test_reconciliation_picks_pending_card_orders_of_the_right_age(
+    storage: Storage,
+) -> None:
+    """Только pending, только с платежом у провайдера, только картой и в окне."""
+    user = await _make_user(storage, "rec-1")
+    due = await _payment(storage, user)
+    assert await storage.attach_external_id(due.id, "ext-due")
+    no_external = await _payment(storage, user)
+    paid = await _payment(storage, user)
+    assert await storage.attach_external_id(paid.id, "ext-paid")
+    assert await storage.mark_paid(paid.id)
+    stars = await storage.create_payment(
+        user_id=user.id,
+        tariff=TariffId.PRO,
+        method="stars",
+        amount=524,
+        currency="XTR",
+        docs_version="2026-08-31",
+    )
+    assert await storage.attach_external_id(stars.id, "charge-stars")
+
+    now = datetime.now(UTC)
+    found = await storage.payments_to_reconcile(
+        created_before=now + timedelta(minutes=1),
+        created_after=now - timedelta(days=3),
+        limit=10,
+    )
+    too_old = await storage.payments_to_reconcile(
+        created_before=now - timedelta(days=4),
+        created_after=now - timedelta(days=5),
+        limit=10,
+    )
+
+    assert [order.id for order in found] == [due.id]
+    assert no_external.id not in [order.id for order in found]
+    assert too_old == []

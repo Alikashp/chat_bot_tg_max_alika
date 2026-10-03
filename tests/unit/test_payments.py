@@ -8,8 +8,11 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import replace
 from datetime import timedelta
+
+import pytest
 
 from app.adapters.storage.memory import InMemoryStorage
 from app.core import support, texts
@@ -310,6 +313,76 @@ async def test_a_renewal_of_a_live_subscription_is_approved(
     assert stars.approvals == [("req-2", True)]
 
 
+# --- Одна подписка — один способ оплаты ----------------------------------
+
+
+async def test_a_star_subscriber_is_not_charged_by_card_too(
+    deps: Deps,
+    session: Session,
+    stars: FakeStars,
+    cards: FakeCards,
+    messenger: FakeMessenger,
+) -> None:
+    """Звёздную подписку Telegram продлевает сам, и наша карта её не отменит.
+
+    Купи человек поверх неё тариф картой — платил бы дважды за один период:
+    звёздами в Telegram и картой у нас.
+    """
+    await payments.start_stars(deps, session, PRO)
+    await payments.confirm(deps, stars.invoices[0].order_id, charge_id="charge-1")
+
+    await payments.start_card(deps, session, PRO)
+
+    assert cards.created == []
+    screen = texts.subscription_other_method(by_stars=True)
+    assert messenger.last_text.text == screen.text
+    assert messenger.last_text.keyboard is not None
+
+
+async def test_a_card_subscriber_is_not_charged_in_stars_too(
+    deps: Deps, session: Session, stars: FakeStars, messenger: FakeMessenger
+) -> None:
+    cards = FakeCards(recurring=True)
+    recurring = replace(deps, cards=cards)
+    await payments.start_card(recurring, session, PRO)
+    await payments.confirm(recurring, cards.created[0][0])
+
+    await payments.start_stars(recurring, session, PRO)
+
+    assert stars.invoices == []
+    screen = texts.subscription_other_method(by_stars=False)
+    assert messenger.last_text.text == screen.text
+
+
+async def test_a_cancelled_subscription_does_not_block_the_other_method(
+    deps: Deps, session: Session, stars: FakeStars, storage: InMemoryStorage
+) -> None:
+    """Продление отключено — второго списания не будет, платить можно чем угодно."""
+    cards = FakeCards(recurring=True)
+    recurring = replace(deps, cards=cards)
+    await payments.start_card(recurring, session, PRO)
+    await payments.confirm(recurring, cards.created[0][0])
+    await storage.cancel_subscription(session.user.id, deps.now())
+
+    await payments.start_stars(recurring, session, PRO)
+
+    assert len(stars.invoices) == 1
+
+
+async def test_the_same_method_can_change_the_tariff(
+    deps: Deps, session: Session
+) -> None:
+    """Смена тарифа картой при карточной подписке — та же подписка, не вторая."""
+    cards = FakeCards(recurring=True)
+    recurring = replace(deps, cards=cards)
+    await payments.start_card(recurring, session, PRO)
+    await payments.confirm(recurring, cards.created[0][0])
+
+    await payments.start_card(recurring, session, TariffId.MAX)
+
+    assert len(cards.created) == 2
+
+
 # --- Подтверждение -------------------------------------------------------
 
 
@@ -535,3 +608,82 @@ async def test_a_paid_tariff_without_a_date_does_not_last_forever(
 async def test_the_free_tariff_never_expires(session: Session) -> None:
     assert session.user.tariff is TariffId.FREE
     assert session.tariff.id is TariffId.FREE
+
+
+# --- Атомарная выдача (фаза 11, П4) --------------------------------------
+
+
+async def test_a_failure_inside_the_grant_leaves_the_order_to_retry(
+    deps: Deps,
+    session: Session,
+    storage: InMemoryStorage,
+    stars: FakeStars,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """П4: выдача упала — заказ не paid и тариф прежний; повтор доводит её."""
+    await payments.start_stars(deps, session, PRO)
+    order_id = stars.invoices[0].order_id
+    real = storage.complete_payment
+
+    async def broken(*args: object, **kwargs: object) -> object:
+        raise RuntimeError("база отвалилась посреди выдачи")
+
+    monkeypatch.setattr(storage, "complete_payment", broken)
+    with pytest.raises(RuntimeError):
+        await payments.confirm(deps, order_id)
+
+    order = await storage.get_payment(order_id)
+    assert order is not None and order.status == PaymentStatus.PENDING.value
+    user = await storage.get_user_by_id(session.user.id)
+    assert user is not None and user.tariff is TariffId.FREE
+
+    monkeypatch.setattr(storage, "complete_payment", real)
+    assert await payments.confirm(deps, order_id) is not None
+    assert await payments.confirm(deps, order_id) is None
+
+
+async def test_the_provider_is_asked_before_the_grant(
+    deps: Deps,
+    session: Session,
+    storage: InMemoryStorage,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Обращения к провайдеру — до транзакции выдачи, а не внутри неё."""
+    cards = FakeCards(recurring=True)
+    with_cards = replace(deps, cards=cards)
+    steps: list[str] = []
+    real_method, real_grant = cards.saved_method_of, storage.complete_payment
+
+    async def method(external_id: str) -> str | None:
+        steps.append("провайдер")
+        return await real_method(external_id)
+
+    async def grant(*args: object, **kwargs: object) -> object:
+        steps.append("выдача")
+        return await real_grant(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(cards, "saved_method_of", method)
+    monkeypatch.setattr(storage, "complete_payment", grant)
+    await payments.start_card(with_cards, session, PRO)
+    order_id = cards.created[0][0]
+
+    await payments.confirm(with_cards, order_id)
+
+    assert steps == ["провайдер", "выдача"]
+    subscription = await storage.get_subscription(session.user.id)
+    assert subscription is not None and subscription.payment_method_id == "card-1"
+
+
+async def test_a_concurrent_extension_is_recounted_not_lost(
+    deps: Deps, session: Session, storage: InMemoryStorage, stars: FakeStars
+) -> None:
+    """Два разных заказа почти разом: оба месяца на месте, а не один."""
+    await payments.start_stars(deps, session, PRO)
+    await payments.start_stars(deps, session, PRO)
+    first, second = (invoice.order_id for invoice in stars.invoices)
+
+    await asyncio.gather(payments.confirm(deps, first), payments.confirm(deps, second))
+
+    user = await storage.get_user_by_id(session.user.id)
+    assert user is not None
+    assert user.tariff_expires_at == deps.now() + timedelta(days=60)

@@ -34,6 +34,19 @@ def test_repeated_key_is_not_new() -> None:
     assert dedup.is_new("update-1") is False
 
 
+def test_a_forgotten_key_is_new_again() -> None:
+    """Забытое — то, что так и не взяли в работу: его повтор надо принять."""
+    dedup = Deduplicator(ttl_seconds=60, max_keys=100)
+    dedup.is_new("update-1")
+    dedup.is_new("update-2")
+
+    dedup.forget("update-1")
+    dedup.forget("never-seen")
+
+    assert dedup.is_new("update-1") is True
+    assert dedup.is_new("update-2") is False
+
+
 def test_different_keys_are_independent() -> None:
     dedup = Deduplicator(ttl_seconds=60, max_keys=100)
 

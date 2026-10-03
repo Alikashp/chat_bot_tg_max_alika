@@ -12,6 +12,8 @@ import contextlib
 from dataclasses import replace
 from datetime import timedelta
 
+import pytest
+
 from app.adapters.storage.memory import InMemoryStorage
 from app.core import support, texts
 from app.core.limits import current_day
@@ -19,8 +21,14 @@ from app.core.models import MessengerKind, Subscription, TariffId, User
 from app.core.scenarios import payments, profile, subscriptions
 from app.core.scenarios.deps import Deps, Session
 from app.core.tariffs import RUB, STARS, tariff_of
-from app.ports.payments import PaymentMethod, SubscriptionStatus
-from tests.fakes import FakeCards, FakeLogger, FakeMessenger, FakeStars
+from app.ports.payments import ChargeStatus, PaymentMethod, SubscriptionStatus
+from tests.fakes import (
+    FakeCards,
+    FakeLogger,
+    FakeMessenger,
+    FakeStars,
+    FrozenClock,
+)
 
 PRO = TariffId.PRO
 
@@ -527,6 +535,291 @@ async def test_the_paid_period_survives_a_failed_charge(
 
     after = await _read(storage, user)
     assert after.tariff_expires_at == until
+
+
+# --- Магазин не настроен -------------------------------------------------
+
+
+async def test_an_unconfigured_shop_does_not_end_the_subscription(
+    deps: Deps,
+    storage: InMemoryStorage,
+    user: User,
+    messenger: FakeMessenger,
+    logger: FakeLogger,
+) -> None:
+    """Ключи магазина пропали — это наша поломка, а не отказ человека.
+
+    Раньше подписка от этого прекращалась, а отмена ещё и стирает сохранённую
+    карту. Вернуть её после починки нечем: человеку пришлось бы платить
+    заново руками, и узнал бы он об этом из сообщения «подписка кончилась».
+    """
+    unconfigured = replace(deps, cards=None)
+    subscription = await _subscribe(unconfigured, user, charge_at=timedelta(0))
+
+    await subscriptions.charge(unconfigured, subscription)
+
+    kept = await storage.get_subscription(user.id)
+    assert kept is not None
+    assert kept.status == SubscriptionStatus.ACTIVE.value
+    assert kept.payment_method_id == "card-1"
+    assert messenger.texts_said() == []
+    assert "subscription_shop_not_configured" in logger.names()
+
+
+async def test_recurring_switched_off_does_not_end_the_subscription(
+    deps: Deps, storage: InMemoryStorage, user: User, messenger: FakeMessenger
+) -> None:
+    cards = FakeCards(recurring=False)
+    switched_off = replace(deps, cards=cards)
+    subscription = await _subscribe(switched_off, user, charge_at=timedelta(0))
+
+    await subscriptions.charge(switched_off, subscription)
+
+    kept = await storage.get_subscription(user.id)
+    assert kept is not None
+    assert kept.status == SubscriptionStatus.ACTIVE.value
+    assert kept.payment_method_id == "card-1"
+    assert cards.keys == []
+    assert messenger.texts_said() == []
+
+
+async def test_a_repaired_shop_charges_the_kept_subscription(
+    deps: Deps, storage: InMemoryStorage, user: User
+) -> None:
+    subscription = await _subscribe(
+        replace(deps, cards=None), user, charge_at=timedelta(0)
+    )
+    await subscriptions.charge(replace(deps, cards=None), subscription)
+
+    cards = FakeCards(recurring=True)
+    kept = await storage.get_subscription(user.id)
+    assert kept is not None
+    await subscriptions.charge(replace(deps, cards=cards), kept)
+
+    assert cards.charged[0][1:] == (599, "card-1")
+
+
+async def test_a_subscription_without_a_saved_card_ends(
+    deps: Deps, storage: InMemoryStorage, user: User, messenger: FakeMessenger
+) -> None:
+    """Списывать нечем у самого человека — такую подписку честно прекратить."""
+    cards = FakeCards(recurring=True)
+    recurring = replace(deps, cards=cards)
+    subscription = await _subscribe(recurring, user, charge_at=timedelta(0))
+    await storage.save_subscription(replace(subscription, payment_method_id=None))
+
+    await subscriptions.charge(recurring, subscription)
+
+    ended = await storage.get_subscription(user.id)
+    assert ended is not None and ended.status == SubscriptionStatus.CANCELLED.value
+    assert cards.keys == []
+    assert "вернули бесплатные лимиты" in messenger.last_text.text
+
+
+# --- Один период — один заказ (П8) ---------------------------------------
+
+
+async def test_a_lost_answer_is_repeated_with_the_same_order(
+    deps: Deps,
+    storage: InMemoryStorage,
+    user: User,
+    messenger: FakeMessenger,
+    clock: FrozenClock,
+) -> None:
+    """Деньги списаны, ответ потерялся — повтор не списывает второй раз.
+
+    Снаружи такой сбой неотличим от «провайдер не ответил». Новый заказ на
+    повторе значил бы новый ключ идемпотентности, и провайдер честно списал бы
+    ещё раз.
+    """
+    cards = FakeCards(recurring=True)
+    cards.error_after_charge = TimeoutError("ответ не дошёл")
+    recurring = replace(deps, cards=cards)
+    subscription = await _subscribe(recurring, user, charge_at=timedelta(0))
+
+    await subscriptions.charge(recurring, subscription)
+    assert messenger.texts_said() == []
+
+    cards.error_after_charge = None
+    clock.advance(hours=1)
+    due = await storage.get_subscription(user.id)
+    assert due is not None and due.next_charge_at <= clock.now
+    await subscriptions.charge(recurring, due)
+
+    assert len(cards.charged) == 1
+    assert len(set(cards.keys)) == 1
+    # Срок истёк час назад, и период отсчитывается от момента выдачи — но
+    # выдан он один раз.
+    after = await _read(storage, user)
+    assert after.tariff_expires_at == clock.now + timedelta(days=30)
+    assert "Продлили тариф" in messenger.last_text.text
+
+
+async def test_a_restart_after_the_charge_does_not_charge_again(
+    deps: Deps,
+    storage: InMemoryStorage,
+    user: User,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Перезапуск между ответом провайдера и выдачей не стоит второго списания."""
+    cards = FakeCards(recurring=True)
+    recurring = replace(deps, cards=cards)
+    subscription = await _subscribe(recurring, user, charge_at=timedelta(0))
+
+    async def crash(*_: object) -> bool:
+        raise RuntimeError("процесс остановлен")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(storage, "attach_external_id", crash)
+        with pytest.raises(RuntimeError):
+            await subscriptions.charge(recurring, subscription)
+
+    due = await storage.get_subscription(user.id)
+    assert due is not None
+    await subscriptions.charge(recurring, due)
+
+    assert len(cards.charged) == 1
+    assert len(set(cards.keys)) == 1
+    renewed = await storage.get_subscription(user.id)
+    assert renewed is not None and renewed.charge_order_id is None
+    assert renewed.next_charge_at > deps.now() + timedelta(days=29)
+
+
+async def test_a_pending_charge_is_asked_about_not_repeated(
+    deps: Deps,
+    storage: InMemoryStorage,
+    user: User,
+    messenger: FakeMessenger,
+    clock: FrozenClock,
+) -> None:
+    """Платёж в обработке ждут, а не создают заново."""
+    cards = FakeCards(recurring=True)
+    cards.charge_pending = True
+    recurring = replace(deps, cards=cards)
+    subscription = await _subscribe(recurring, user, charge_at=timedelta(0))
+
+    await subscriptions.charge(recurring, subscription)
+    waiting = await storage.get_subscription(user.id)
+    assert waiting is not None
+    assert waiting.status == SubscriptionStatus.ACTIVE.value
+    assert waiting.failed_since is None
+    assert messenger.texts_said() == []
+
+    cards.states["charge-1"] = ChargeStatus.CHARGED
+    clock.advance(hours=1)
+    await subscriptions.charge(recurring, waiting)
+
+    assert len(cards.keys) == 1
+    assert cards.status_asked == ["charge-1"]
+    assert "Продлили тариф" in messenger.last_text.text
+
+
+async def test_a_pending_charge_refused_later_is_a_refusal(
+    deps: Deps,
+    storage: InMemoryStorage,
+    user: User,
+    messenger: FakeMessenger,
+    clock: FrozenClock,
+) -> None:
+    cards = FakeCards(recurring=True)
+    cards.charge_pending = True
+    recurring = replace(deps, cards=cards)
+    subscription = await _subscribe(recurring, user, charge_at=timedelta(0))
+    await subscriptions.charge(recurring, subscription)
+
+    cards.states["charge-1"] = ChargeStatus.REFUSED
+    clock.advance(hours=1)
+    waiting = await storage.get_subscription(user.id)
+    assert waiting is not None
+    await subscriptions.charge(recurring, waiting)
+
+    refused = await storage.get_subscription(user.id)
+    assert refused is not None
+    assert refused.status == SubscriptionStatus.PAST_DUE.value
+    assert refused.charge_order_id is None
+    assert "Не вышло списать" in messenger.last_text.text
+
+
+async def test_only_an_explicit_refusal_opens_a_new_order(
+    deps: Deps, storage: InMemoryStorage, user: User, clock: FrozenClock
+) -> None:
+    """После отказа банка прежний заказ закрыт, и следующая попытка — новая."""
+    cards = FakeCards(recurring=True)
+    cards.charge_succeeds = False
+    recurring = replace(deps, cards=cards)
+    subscription = await _subscribe(recurring, user, charge_at=timedelta(0))
+    await subscriptions.charge(recurring, subscription)
+
+    cards.charge_succeeds = True
+    clock.advance(days=1)
+    retry = await storage.get_subscription(user.id)
+    assert retry is not None
+    await subscriptions.charge(recurring, retry)
+
+    assert len(cards.charged) == 2
+    assert cards.charged[0][0] != cards.charged[1][0]
+
+
+async def test_an_unknown_outcome_is_retried_inside_the_key_lifetime(
+    deps: Deps, storage: InMemoryStorage, user: User
+) -> None:
+    """Повтор приходит, пока провайдер ещё помнит ключ.
+
+    Раньше повтор шёл через сутки — ровно когда ЮKassa ключ забывает и
+    выполняет запрос заново. То есть «повтор» мог оказаться вторым платежом.
+    """
+    cards = FakeCards(recurring=True)
+    cards.error = RuntimeError("ЮKassa не ответила")
+    recurring = replace(deps, cards=cards)
+    subscription = await _subscribe(recurring, user, charge_at=timedelta(0))
+
+    await subscriptions.charge(recurring, subscription)
+
+    saved = await storage.get_subscription(user.id)
+    assert saved is not None and saved.charge_order_id is not None
+    order = await storage.get_payment(saved.charge_order_id)
+    assert order is not None
+    wait = saved.next_charge_at - deps.now()
+    assert timedelta(0) < wait <= cards.idempotence_window / 2
+    # Тот же заказ ещё и в том же виде: повтор с тем же ключом, но другими
+    # данными ЮKassa отвергнет, а мы снова ничего не узнаем.
+    assert saved.reminded_for == saved.next_charge_at
+
+
+async def test_a_forgotten_key_is_never_reused(
+    deps: Deps,
+    storage: InMemoryStorage,
+    user: User,
+    messenger: FakeMessenger,
+    clock: FrozenClock,
+    logger: FakeLogger,
+) -> None:
+    """Ключ истёк, исход неизвестен — ни повтора, ни нового заказа.
+
+    Повтор с забытым ключом провайдер выполнит как новый платёж, новый заказ —
+    тоже. Остаётся прекратить продление и оставить след для ручной сверки;
+    заказ при этом не закрывается — если деньги всё-таки дошли, его закроет
+    уведомление ЮKassa.
+    """
+    cards = FakeCards(recurring=True)
+    cards.error = RuntimeError("ЮKassa не ответила")
+    recurring = replace(deps, cards=cards)
+    subscription = await _subscribe(recurring, user, charge_at=timedelta(0))
+    await subscriptions.charge(recurring, subscription)
+    calls = len(cards.keys)
+
+    clock.advance(hours=23, minutes=30)
+    cards.error = None
+    stuck = await storage.get_subscription(user.id)
+    assert stuck is not None
+    await subscriptions.charge(recurring, stuck)
+
+    assert len(cards.keys) == calls
+    assert cards.charged == []
+    ended = await storage.get_subscription(user.id)
+    assert ended is not None and ended.status == SubscriptionStatus.CANCELLED.value
+    assert "subscription_charge_unresolved" in logger.names()
+    assert "вернули бесплатные лимиты" in messenger.last_text.text
 
 
 # --- Списание по звёздам --------------------------------------------------

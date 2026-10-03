@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from app.core.models import (
     Chat,
@@ -23,7 +23,7 @@ from app.core.models import (
 )
 from app.core.receipts import Receipt
 from app.ports.ai import Answer, ImageQuality
-from app.ports.payments import PaymentIntent
+from app.ports.payments import ChargeResult, ChargeStatus, PaymentIntent
 from app.ports.presentations import BuiltPresentation, PresentationTheme
 
 #: Минимальный настоящий PNG: восемь байт сигнатуры плюс немного тела.
@@ -245,12 +245,20 @@ class FakeLLM:
         #: измеренная длительность: с замороженным временем она всегда ноль.
         self.clock: FrozenClock | None = None
         self.takes_seconds = 0.0
+        #: Ворота, у которых вызов ждёт, пока тест их не откроет. Нужны, чтобы
+        #: занять обработчик надолго — как его занимает настоящий провайдер.
+        self.gate: asyncio.Event | None = None
+        #: Вызовы, дошедшие до закрытых ворот: тест ждёт их, а не опрашивает.
+        self.entered: asyncio.Queue[None] = asyncio.Queue()
 
     async def complete(
         self, turns: Sequence[ChatTurn], *, model: str, max_tokens: int = 0
     ) -> Answer:
         self.calls.append((tuple(turns), model))
         self.token_caps.append(max_tokens)
+        if self.gate is not None:
+            self.entered.put_nowait(None)
+            await self.gate.wait()
         if self.clock is not None and self.takes_seconds:
             self.clock.advance(seconds=self.takes_seconds)
         if self.error is not None:
@@ -345,8 +353,6 @@ class FrozenClock:
         return self.now
 
     def advance(self, **kwargs: float) -> None:
-        from datetime import timedelta
-
         self.now += timedelta(**kwargs)
 
 
@@ -433,6 +439,22 @@ class FakeCards:
         self.saved_method: str | None = "card-1"
         #: Проходит ли повторное списание.
         self.charge_succeeds: bool = True
+        #: Списание создано, но ещё не завершено (``pending`` у ЮKassa).
+        self.charge_pending: bool = False
+        #: Сбой, случившийся уже после того, как деньги списаны: ответ
+        #: потерялся по дороге. Самый опасный случай — снаружи он неотличим от
+        #: «провайдер не ответил», а деньги при этом уже ушли.
+        self.error_after_charge: Exception | None = None
+        #: Что провайдер помнит по ключу идемпотентности: повтор с тем же
+        #: ключом отдаёт прежний ответ и второй раз не списывает.
+        self.by_key: dict[str, ChargeResult] = {}
+        #: С какими ключами приходили — по одному на каждый вызов.
+        self.keys: list[str] = []
+        #: Что отвечает провайдер на вопрос «чем кончилось списание».
+        self.states: dict[str, ChargeStatus] = {}
+        #: О каких списаниях спрашивали исход.
+        self.status_asked: list[str] = []
+        self.idempotence_window = timedelta(hours=24)
         #: Просили ли сохранить способ оплаты при последнем платеже.
         self.saved_requested: bool = False
         #: Чеки, ушедшие вместе с платежами, — по одному на каждый вызов.
@@ -466,14 +488,32 @@ class FakeCards:
         description: str,
         payment_method_id: str,
         receipt: Receipt | None = None,
-    ) -> str | None:
+    ) -> ChargeResult:
+        self.keys.append(order_id)
         if self.error is not None:
             raise self.error
+        if order_id in self.by_key:
+            return self.by_key[order_id]
         self.receipts.append(receipt)
         self.charged.append((order_id, amount_rub, payment_method_id))
+        external_id = f"charge-{len(self.charged)}"
         if not self.charge_succeeds:
-            return None
-        return f"charge-{len(self.charged)}"
+            result = ChargeResult(ChargeStatus.REFUSED, external_id)
+        elif self.charge_pending:
+            result = ChargeResult(ChargeStatus.PENDING, external_id)
+        else:
+            result = ChargeResult(ChargeStatus.CHARGED, external_id)
+        self.by_key[order_id] = result
+        self.states[external_id] = result.status
+        if self.error_after_charge is not None:
+            raise self.error_after_charge
+        return result
+
+    async def charge_status(self, external_id: str) -> ChargeStatus:
+        self.status_asked.append(external_id)
+        if self.error is not None:
+            raise self.error
+        return self.states[external_id]
 
     async def saved_method_of(self, external_id: str) -> str | None:
         return self.saved_method

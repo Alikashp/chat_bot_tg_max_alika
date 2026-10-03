@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncGenerator, AsyncIterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -70,6 +71,8 @@ from tests.fakes import (
 SECRET = "integration-webhook-secret"
 PATH = "/webhook/telegram"
 CHAT_ID = 555
+#: Обработчиков общей очереди. Столько же людей нужно, чтобы занять их все.
+WORKERS = 2
 WebClient = TestClient[web.Request, web.Application]
 
 
@@ -84,6 +87,12 @@ class RecordingSession(BaseSession):
         #: Размер, который Telegram сообщает про файл.
         self.file_size: int | None = len(PNG_BYTES)
         self._next_message_id = 1000
+        #: События «такой вызов случился» — чтобы ждать его, а не опрашивать.
+        self._seen: dict[type, asyncio.Event] = {}
+
+    def seen(self, kind: type) -> asyncio.Event:
+        """Событие, которое взводится первым вызовом этого вида."""
+        return self._seen.setdefault(kind, asyncio.Event())
 
     async def make_request(
         self,
@@ -92,6 +101,7 @@ class RecordingSession(BaseSession):
         timeout: int | None = None,  # noqa: ASYNC109 — сигнатура из aiogram
     ) -> Any:
         self.calls.append(method)
+        self.seen(type(method)).set()
         self._next_message_id += 1
 
         if isinstance(method, SendMessage):
@@ -156,21 +166,23 @@ class RecordingSession(BaseSession):
 # --- Сборка обновлений ---------------------------------------------------
 
 
-def _message_update(update_id: int, **message: Any) -> dict[str, Any]:
+def _message_update(
+    update_id: int, *, chat_id: int = CHAT_ID, **message: Any
+) -> dict[str, Any]:
     return {
         "update_id": update_id,
         "message": {
             "message_id": update_id,
             "date": int(datetime.now(UTC).timestamp()),
-            "chat": {"id": CHAT_ID, "type": "private"},
-            "from": {"id": CHAT_ID, "is_bot": False, "first_name": "Тест"},
+            "chat": {"id": chat_id, "type": "private"},
+            "from": {"id": chat_id, "is_bot": False, "first_name": "Тест"},
             **message,
         },
     }
 
 
-def text_update(update_id: int, text: str) -> dict[str, Any]:
-    return _message_update(update_id, text=text)
+def text_update(update_id: int, text: str, *, chat_id: int = CHAT_ID) -> dict[str, Any]:
+    return _message_update(update_id, chat_id=chat_id, text=text)
 
 
 def photo_update(update_id: int, file_id: str = "incoming-photo") -> dict[str, Any]:
@@ -238,7 +250,7 @@ class Harness:
 
     client: WebClient
     session: RecordingSession
-    queue: JobQueue[dict[str, Any]]
+    queues: list[JobQueue[dict[str, Any]]]
     storage: InMemoryStorage
     llm: FakeLLM
     images: FakeImages
@@ -274,8 +286,9 @@ class Harness:
         return found
 
     async def settle(self) -> None:
-        """Ждёт, пока очередь опустеет, не останавливая воркеров."""
-        assert await self.queue.join(timeout=5.0)
+        """Ждёт, пока очереди опустеют, не останавливая воркеров."""
+        for queue in self.queues:
+            assert await queue.join(timeout=5.0)
 
     def messages(self) -> list[SendMessage]:
         return list(self.calls_of(SendMessage))
@@ -296,8 +309,7 @@ class Harness:
 
 @pytest.fixture
 async def harness() -> AsyncIterator[Harness]:
-    from app.adapters.telegram.intake import dedup_key
-    from app.main import build_intake
+    from app.main import build_telegram_intake
 
     session = RecordingSession()
     bot = Bot(token="42:TEST", session=session)
@@ -339,11 +351,13 @@ async def harness() -> AsyncIterator[Harness]:
     async def handle_update(raw: dict[str, Any]) -> None:
         await dispatcher.feed_raw_update(bot, raw)
 
-    queue: JobQueue[dict[str, Any]] = JobQueue(
-        "test-updates", handle_update, capacity=50, workers=2
-    )
-    queue.start()
+    # Очереди — той же сборкой, что и в бою: вопрос об оплате идёт своей.
     dedup = Deduplicator(ttl_seconds=600, max_keys=1000)
+    submit, queues = build_telegram_intake(
+        handle_update, dedup, capacity=50, workers=WORKERS
+    )
+    for queue in queues:
+        queue.start()
 
     app = create_app(
         webhooks=[
@@ -352,9 +366,7 @@ async def harness() -> AsyncIterator[Harness]:
                 path=PATH,
                 secret_header=TELEGRAM_SECRET_HEADER,
                 secret=SECRET,
-                submit=build_intake(
-                    queue, dedup, messenger="telegram", key_of=dedup_key
-                ),
+                submit=submit,
             ),
         ],
         health=lambda: {"status": "ok"},
@@ -365,7 +377,7 @@ async def harness() -> AsyncIterator[Harness]:
     yield Harness(
         client=client,
         session=session,
-        queue=queue,
+        queues=queues,
         storage=storage,
         llm=llm,
         images=images,
@@ -373,7 +385,8 @@ async def harness() -> AsyncIterator[Harness]:
         logger=logger,
     )
 
-    await queue.drain(timeout=2.0)
+    for queue in queues:
+        await queue.drain(timeout=2.0)
     await client.close()
 
 
@@ -701,6 +714,63 @@ async def test_paying_with_stars_turns_the_tariff_on(started: Harness) -> None:
     assert user.tariff is TariffId.PRO
     assert user.tariff_expires_at is not None
     assert "Про" in started.texts_said()[-1]
+
+
+async def test_a_payment_question_is_answered_while_every_worker_is_busy(
+    started: Harness,
+) -> None:
+    """Telegram ждёт ответа на pre_checkout десять секунд.
+
+    Все обработчики общей очереди заняты долгими ответами ИИ — так выглядит
+    вечер с наплывом людей. Вопрос об оплате при этом обязан получить ответ
+    сразу: иначе Telegram отменит платёж человека с открытой формой оплаты.
+    """
+    await started.press(buy_action(TariffId.PRO.value))
+    await started.press(method_action(PaymentMethod.STARS.value, TariffId.PRO.value))
+    order_id = started.calls_of(CreateInvoiceLink)[0].payload
+    started.forget()
+
+    gate = asyncio.Event()
+    started.llm.gate = gate
+    others = [CHAT_ID + number for number in range(1, WORKERS + 1)]
+    for chat_id in others:
+        assert (
+            await started.post(
+                text_update(started.next_id(), "/start", chat_id=chat_id)
+            )
+            == 200
+        )
+    for chat_id in others:
+        response = await started.client.post(
+            PATH,
+            json=text_update(started.next_id(), "Расскажи про море", chat_id=chat_id),
+            headers={TELEGRAM_SECRET_HEADER: SECRET},
+        )
+        assert response.status == 200
+
+    for _ in others:
+        await asyncio.wait_for(started.llm.entered.get(), timeout=5.0)
+
+    loop = asyncio.get_running_loop()
+    asked_at = loop.time()
+    response = await started.client.post(
+        PATH,
+        json=pre_checkout_update(started.next_id(), order_id),
+        headers={TELEGRAM_SECRET_HEADER: SECRET},
+    )
+    assert response.status == 200
+
+    await asyncio.wait_for(
+        started.session.seen(AnswerPreCheckoutQuery).wait(), timeout=10.0
+    )
+    assert loop.time() - asked_at < 10.0
+    assert started.calls_of(AnswerPreCheckoutQuery)[0].ok is True
+    # Ворота всё это время закрыты: ответ пришёл не потому, что освободился
+    # обработчик общей очереди.
+    assert not gate.is_set()
+
+    gate.set()
+    await started.settle()
 
 
 async def test_an_unknown_invoice_is_refused_before_the_money_moves(

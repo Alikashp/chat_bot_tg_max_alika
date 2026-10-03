@@ -386,7 +386,7 @@ DOCUMENT_READY = "Готово! Файлы выше — Word и PDF"
 DOCUMENT_READY_CUT = (
     "Готово, но текст вышел длинным и оборвался в конце.\nФайлы выше — Word и PDF"
 )
-DOCUMENT_ERROR = "Что-то пошло не так, попробуй ещё раз 🤷 Разбор не потратился."
+DOCUMENT_ERROR = "Что-то пошло не так, попробуй ещё раз 🤷 Доклад не потратился."
 
 #: Файл не открылся. Про пароль сказано отдельно: это самая частая причина, и
 #: человек её может исправить сам, а «не читается» звучит как приговор.
@@ -720,17 +720,20 @@ def preset_refused(preset_buttons: tuple[str, ...]) -> Screen:
 
 
 def paywall_documents(*, renews_tomorrow: bool) -> Screen:
-    """Разборы кончились.
+    """Доклады кончились.
 
     Ни канала, ни награды за друга здесь нет, и это не забывчивость: разовые
     подарки заведены под картинки и обещают картинки. Обещать за друга
-    разборы значило бы сказать неправду на экране, который человек читает
+    доклады значило бы сказать неправду на экране, который человек читает
     ровно в тот момент, когда решает, платить ли.
+
+    «Доклады», а не «разборы»: человек нажимал «Доклад / Реферат», и
+    «разбор» — внутреннее имя этой нормы — ему ничего не говорит.
     """
     first = (
-        "Разборы на сегодня кончились — завтра будут ещё"
+        "Доклады на сегодня кончились — завтра будут ещё"
         if renews_tomorrow
-        else "Бесплатные разборы кончились"
+        else "Бесплатные доклады кончились"
     )
     return Screen(
         text=f"{first}\nНа платном тарифе их больше 👇",
@@ -1284,6 +1287,25 @@ def subscription_cancel_failed() -> Screen:
     )
 
 
+def subscription_other_method(*, by_stars: bool) -> Screen:
+    """Подписка уже продлевается другим способом оплаты.
+
+    Второй способ — это вторая подписка: звёздную продлевает сам Telegram, и
+    наша оплата картой её не остановит, как и звёзды не остановят карту.
+    Человек платил бы дважды за один и тот же срок.
+    """
+    way = "звёздами" if by_stars else "картой"
+    return Screen(
+        text=(
+            f"Подписка уже продлевается {way} — второй способ означал бы "
+            "платить дважды за один срок 🙂\n"
+            "Чтобы сменить способ, отключи продление (оплаченное доработает) "
+            "и оформи подписку заново 👇"
+        ),
+        buttons=(BUTTON_SUBSCRIPTION_OFF, MENU_PROFILE),
+    )
+
+
 def subscription_reminder(
     tariff_id: TariffId, *, amount: int, currency: str, on: str
 ) -> Screen:
@@ -1331,16 +1353,23 @@ def subscription_renewed(
 
 
 def subscription_charge_failed(
-    tariff_id: TariffId, *, amount: int, currency: str, until: str
+    tariff_id: TariffId, *, amount: int, currency: str, next_try: str
 ) -> Screen:
-    """Списание не прошло, но оплаченный срок ещё идёт (§4.16 оферты)."""
+    """Списание не прошло; следующая попытка — тогда-то (§4.16 оферты).
+
+    Это же сообщение — предупреждение о следующей попытке (§4.13): в нём
+    сумма, дата и выход. Иначе перед каждым повтором уходило бы ещё и «завтра
+    спишем», а сам повтор переносился бы на сутки, чтобы это «завтра»
+    наступило, — и три попытки растягивались бы на пять дней.
+    """
     return Screen(
         text=(
             f"Не вышло списать {_price(amount, currency)} "
             f"за тариф «{TARIFF_TITLES[tariff_id]}» 🤷\n"
-            f"Проверь карту — попробуем ещё раз. Тариф работает до {until}."
+            f"Проверь карту — попробуем ещё раз {next_try}. "
+            "Не нужно? Отключи продление 👇"
         ),
-        buttons=(MENU_TARIFFS, MENU_PROFILE),
+        buttons=(BUTTON_SUBSCRIPTION_OFF, MENU_PROFILE),
     )
 
 
@@ -1542,6 +1571,8 @@ def _all_screens() -> tuple[Screen, ...]:
         subscription_stopped(TariffId.PRO, until="30 сентября"),
         subscription_cancelled(TariffId.PRO, until="30 сентября"),
         subscription_cancel_failed(),
+        subscription_other_method(by_stars=True),
+        subscription_other_method(by_stars=False),
         subscription_reminder(TariffId.PRO, amount=599, currency=RUB, on="30 сентября"),
         subscription_price_changed(
             TariffId.PRO, was=599, now=699, currency=RUB, on="30 сентября"
@@ -1550,7 +1581,7 @@ def _all_screens() -> tuple[Screen, ...]:
             TariffId.PRO, amount=599, currency=RUB, until="30 октября"
         ),
         subscription_charge_failed(
-            TariffId.PRO, amount=599, currency=RUB, until="30 сентября"
+            TariffId.PRO, amount=599, currency=RUB, next_try="1 октября"
         ),
         subscription_ended(TariffId.PRO),
         too_busy(),

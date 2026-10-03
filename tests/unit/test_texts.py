@@ -472,3 +472,24 @@ def test_the_order_screen_declares_the_change_email_button() -> None:
 
     assert texts.BUTTON_EMAIL_CHANGE in with_address.buttons
     assert texts.BUTTON_EMAIL_CHANGE not in without.buttons
+
+
+def test_no_screen_says_razbor() -> None:
+    """Ф11-0б: «разбор» — внутреннее имя нормы раздела документов.
+
+    Человек нажимает «Доклад / Реферат», и ни пейволл, ни ошибка не должны
+    называть это иначе.
+    """
+    said = [screen.text.lower() for screen in texts.SCREENS]
+
+    assert not [text for text in said if "разбор" in text]
+    assert texts.paywall_documents(renews_tomorrow=False).text == (
+        "Бесплатные доклады кончились\nНа платном тарифе их больше 👇"
+    )
+    assert texts.paywall_documents(renews_tomorrow=True).text == (
+        "Доклады на сегодня кончились — завтра будут ещё\n"
+        "На платном тарифе их больше 👇"
+    )
+    assert texts.document_error().text == (
+        "Что-то пошло не так, попробуй ещё раз 🤷 Доклад не потратился."
+    )

@@ -8,19 +8,21 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import fields, replace
 from datetime import timedelta
+from zoneinfo import ZoneInfo
 
 import pytest
 
 from app.adapters.storage.memory import InMemoryStorage
-from app.core import support
+from app.core import support, texts
 from app.core.billing import Billing
 from app.core.models import MessengerKind, Subscription, TariffId, User
 from app.core.scenarios.deps import Deps
+from app.core.settings import CoreSettings
 from app.core.tariffs import RUB
 from app.ports.payments import PaymentMethod, SubscriptionStatus
-from tests.fakes import FakeCards, FakeLogger, FakeMessenger
+from tests.fakes import FakeCards, FakeLogger, FakeMessenger, FrozenClock
 
 PRO = TariffId.PRO
 
@@ -217,3 +219,73 @@ async def test_the_deferred_charge_goes_through_next_time(
     await _billing(later).charge()
 
     assert len(cards.charged) == 1
+
+
+async def test_the_calendar_of_a_refused_card(
+    deps: Deps,
+    user: User,
+    messenger: FakeMessenger,
+    clock: FrozenClock,
+) -> None:
+    """П9 по календарю: настройки по умолчанию, проход каждый час, неделя.
+
+    Банк отказывает всякий раз. Ожидание по §4.16 оферты: три попытки с
+    суточным шагом, о каждой человек узнаёт, после третьей — ни одного
+    списания. Календарь ниже — фактический: время каждого обращения к
+    провайдеру и каждого сообщения, по Москве.
+    """
+    cards = FakeCards(recurring=True)
+    cards.charge_succeeds = False
+    recurring = replace(deps, cards=cards)
+    _assert_default_timing(recurring.settings)
+    # Срок списания — послезавтра, напоминания ещё не было.
+    await _subscribe(recurring, user, charge_at=timedelta(days=2), reminded=False)
+    billing = _billing(recurring)
+    zone = ZoneInfo(recurring.settings.timezone)
+
+    calendar: list[tuple[str, str]] = []
+    for _ in range(7 * 24):
+        charges, said = len(cards.keys), len(messenger.texts_said())
+        await billing.run()
+        moment = clock.now.astimezone(zone).strftime("%d.%m %H:%M")
+        calendar += [(moment, "списание")] * (len(cards.keys) - charges)
+        calendar += [(moment, text) for text in messenger.texts_said()[said:]]
+        clock.advance(hours=1)
+
+    failed = texts.subscription_charge_failed
+    assert calendar == [
+        (
+            "29.08 15:00",
+            texts.subscription_reminder(
+                PRO, amount=599, currency=RUB, on="30 августа"
+            ).text,
+        ),
+        ("30.08 15:00", "списание"),
+        (
+            "30.08 15:00",
+            failed(PRO, amount=599, currency=RUB, next_try="31 августа").text,
+        ),
+        ("31.08 15:00", "списание"),
+        (
+            "31.08 15:00",
+            failed(PRO, amount=599, currency=RUB, next_try="1 сентября").text,
+        ),
+        ("01.09 15:00", "списание"),
+        ("01.09 15:00", texts.subscription_ended(PRO).text),
+    ]
+
+
+def _assert_default_timing(settings: CoreSettings) -> None:
+    """Всё, что задаёт время денег, — как в бою по умолчанию."""
+    timing = {
+        "reminder_hours",
+        "charge_retry_days",
+        "charge_retry_hours",
+        "charge_unknown_retry_minutes",
+        "price_notice_days",
+        "subscription_days",
+        "timezone",
+    }
+    for field in fields(CoreSettings):
+        if field.name in timing:
+            assert getattr(settings, field.name) == field.default, field.name

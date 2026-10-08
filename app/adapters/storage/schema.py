@@ -88,6 +88,10 @@ users = Table(
     # Отметка и есть защита от повторной выдачи: начисление ставит её тем же
     # UPDATE, который добавляет картинки, и условие NULL стоит в его WHERE.
     Column("channel_bonus_at", DateTime(timezone=True), nullable=True),
+    # Когда человек остановил бота (заблокировал, остановил, удалил) — по
+    # событию мессенджера или по отказу доставки. NULL — бот до него
+    # достаёт. Для будущей рассылки и статистики (сессия 8).
+    Column("stopped_at", DateTime(timezone=True), nullable=True),
     Column("tariff_expires_at", DateTime(timezone=True), nullable=True),
     # Чего бот ждёт от пользователя следующим сообщением (см. core/pending.py).
     # Text, а не String: у приколов с двумя фото ожидание несёт ещё и ссылки

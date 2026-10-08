@@ -8,7 +8,8 @@ MAX-адаптеру достаточно будет собрать такой �
 from __future__ import annotations
 
 from aiogram import Dispatcher
-from aiogram.types import CallbackQuery, Message, PreCheckoutQuery
+from aiogram.enums import ChatMemberStatus
+from aiogram.types import CallbackQuery, ChatMemberUpdated, Message, PreCheckoutQuery
 
 from app.core import router, texts
 from app.core.models import Chat, IncomingMessage, MessengerKind
@@ -35,6 +36,13 @@ def build_dispatcher(deps: Deps) -> Dispatcher:
     @dispatcher.callback_query()
     async def on_callback(callback: CallbackQuery) -> None:
         incoming = callback_to_incoming(callback)
+        if incoming is not None:
+            await _dispatch(deps, incoming)
+
+    @dispatcher.my_chat_member()
+    async def on_my_chat_member(update: ChatMemberUpdated) -> None:
+        """Человек заблокировал или удалил бота (сессия 8)."""
+        incoming = stopped_to_incoming(update)
         if incoming is not None:
             await _dispatch(deps, incoming)
 
@@ -82,7 +90,11 @@ def to_incoming(message: Message) -> IncomingMessage | None:
     if message.chat.type != _PRIVATE:
         return None
 
-    chat = Chat(messenger=MessengerKind.TELEGRAM, chat_id=str(message.chat.id))
+    chat = Chat(
+        messenger=MessengerKind.TELEGRAM,
+        chat_id=str(message.chat.id),
+        person=str(message.from_user.id),
+    )
 
     if message.successful_payment is not None:
         # Деньги списаны. Заказ опознаём по payload, который сами же и
@@ -138,7 +150,11 @@ def callback_to_incoming(callback: CallbackQuery) -> IncomingMessage | None:
         if callback.message is not None
         else str(callback.from_user.id)
     )
-    chat = Chat(messenger=MessengerKind.TELEGRAM, chat_id=chat_id)
+    chat = Chat(
+        messenger=MessengerKind.TELEGRAM,
+        chat_id=chat_id,
+        person=str(callback.from_user.id),
+    )
 
     return IncomingMessage(
         chat=chat,
@@ -149,13 +165,41 @@ def callback_to_incoming(callback: CallbackQuery) -> IncomingMessage | None:
     )
 
 
+def stopped_to_incoming(update: ChatMemberUpdated) -> IncomingMessage | None:
+    """Бота заблокировали в личной переписке; None — это не то событие.
+
+    Telegram сообщает об этом сменой статуса бота на «kicked»: так выглядят
+    и «Остановить бота», и удаление переписки с блокировкой. Разблокировку
+    («member») не разбираем: отметку снимает первое действие человека, а
+    разблокировавший бота человек обязательно что-то нажмёт.
+    """
+    if update.chat.type != _PRIVATE or update.from_user.is_bot:
+        return None
+    if update.new_chat_member.status != ChatMemberStatus.KICKED:
+        return None
+    person = str(update.from_user.id)
+    return IncomingMessage(
+        chat=Chat(
+            messenger=MessengerKind.TELEGRAM,
+            chat_id=str(update.chat.id),
+            person=person,
+        ),
+        external_user_id=person,
+        stopped=True,
+    )
+
+
 def pre_checkout_to_incoming(query: PreCheckoutQuery) -> IncomingMessage:
     """Переводит запрос перед списанием в общий вид.
 
     Чата у запроса нет: Telegram спрашивает про платёж, а не про переписку.
     Бот личный, поэтому идентификатор чата совпадает с пользователем.
     """
-    chat = Chat(messenger=MessengerKind.TELEGRAM, chat_id=str(query.from_user.id))
+    chat = Chat(
+        messenger=MessengerKind.TELEGRAM,
+        chat_id=str(query.from_user.id),
+        person=str(query.from_user.id),
+    )
     return IncomingMessage(
         chat=chat,
         external_user_id=str(query.from_user.id),

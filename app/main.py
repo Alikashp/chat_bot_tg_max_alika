@@ -58,6 +58,7 @@ from app.core.referral import MAX_HOST, TELEGRAM_HOST
 from app.core.scenarios import keyboards as core_keyboards
 from app.core.scenarios import payments
 from app.core.scenarios.deps import Deps, session_for
+from app.core.scenarios.reach import WatchedMessenger
 from app.core.settings import CoreSettings
 from app.infra.antiflood import FloodGuard
 from app.infra.dedup import Deduplicator
@@ -91,14 +92,19 @@ TELEGRAM_API_TIMEOUT = 15.0
 #: доходят, и это выглядит как «кнопки не работают».
 #: pre_checkout_query здесь так же обязателен, как callback_query: без него
 #: Telegram не дождётся ответа и не проведёт оплату звёздами.
-ALLOWED_UPDATES = ["message", "callback_query", "pre_checkout_query"]
+#: my_chat_member — блокировка бота человеком (сессия 8): без него отметку
+#: «остановил бота» можно было бы поставить только по отказу доставки.
+ALLOWED_UPDATES = ["message", "callback_query", "pre_checkout_query", "my_chat_member"]
 
-#: То же для MAX. Три типа против четырнадцати возможных
-#: (docs/research.md §1.4): остальные события боту не нужны.
+#: То же для MAX. Пять типов против четырнадцати возможных
+#: (docs/research.md §1.4): остальные события боту не нужны. Остановка бота
+#: и удаление переписки — для отметки «остановил бота» (сессия 8).
 MAX_UPDATE_TYPES = [
     MaxUpdateType.MESSAGE_CREATED,
     MaxUpdateType.MESSAGE_CALLBACK,
     MaxUpdateType.BOT_STARTED,
+    MaxUpdateType.BOT_STOPPED,
+    MaxUpdateType.DIALOG_REMOVED,
 ]
 
 
@@ -519,7 +525,14 @@ async def build_wiring(settings: Settings) -> Wiring:
         """Одни и те же зависимости, разный мессенджер и его настройки."""
         return Deps(
             storage=storage,
-            messenger=messenger,
+            # Отказ доставки «человек остановил бота» отмечается здесь, один
+            # раз для всех сценариев и обоих мессенджеров (сессия 8).
+            messenger=WatchedMessenger(
+                messenger,
+                storage=storage,
+                logger=get_logger("reach"),
+                now=_utc_now,
+            ),
             llm=llm,
             images=images,
             settings=core_settings,

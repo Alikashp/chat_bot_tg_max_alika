@@ -653,6 +653,27 @@ async def test_channel_bonus_survives_a_double_tap(storage: Storage) -> None:
     assert updated.bonus_images == 2
 
 
+async def test_the_stopped_mark_keeps_its_first_moment(storage: Storage) -> None:
+    """Сессия 8: отметка «остановил бота» — когда это случилось впервые.
+
+    Повторные отказы доставки не двигают её вперёд; любое действие человека
+    снимает её целиком.
+    """
+    user = await _make_user(storage)
+    assert user.stopped_at is None
+
+    await storage.mark_stopped(user.id, MOMENT)
+    await storage.mark_stopped(user.id, MOMENT + timedelta(hours=1))
+    marked = await storage.get_user_by_id(user.id)
+    assert marked is not None
+    assert marked.stopped_at == MOMENT
+
+    await storage.clear_stopped(user.id)
+    cleared = await storage.get_user_by_id(user.id)
+    assert cleared is not None
+    assert cleared.stopped_at is None
+
+
 async def test_a_fresh_user_has_no_channel_bonus_mark(storage: Storage) -> None:
     user = await _make_user(storage)
 

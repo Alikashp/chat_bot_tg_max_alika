@@ -23,6 +23,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from maxapi.enums.chat_type import ChatType
 from maxapi.enums.upload_type import UploadType
+from maxapi.exceptions.max import MaxApiError
 from maxapi.methods.types.sended_message import SendedMessage
 from maxapi.types import Message, MessageBody, Recipient
 from maxapi.types.attachments.upload import AttachmentPayload, AttachmentUpload
@@ -40,6 +41,7 @@ from app.core.models import MessengerKind, Payment, TariffId
 from app.core.referral import MAX_HOST
 from app.core.scenarios import payments
 from app.core.scenarios.deps import Deps, session_for
+from app.core.scenarios.reach import WatchedMessenger
 from app.core.settings import CoreSettings
 from app.infra.antiflood import FloodGuard
 from app.infra.dedup import Deduplicator
@@ -111,6 +113,8 @@ class StubMaxBot:
         #: («user», номер человека). Разница видна только здесь.
         self.addressed: list[tuple[str, int | None]] = []
         self._next_id = 0
+        #: Человек остановил бота: MAX отвечает на отправку 403.
+        self.blocked = False
 
     async def send_message(
         self,
@@ -125,6 +129,8 @@ class StubMaxBot:
         assert (chat_id is None) != (user_id is None), (
             "MAX принимает либо номер переписки, либо номер человека"
         )
+        if self.blocked:
+            raise MaxApiError(code=403, raw={"code": "chat.denied"})
         self.addressed.append(
             ("chat" if chat_id is not None else "user", chat_id or user_id)
         )
@@ -280,7 +286,13 @@ async def harness() -> AsyncIterator[Harness]:
     http = httpx.AsyncClient(transport=httpx.MockTransport(photo_response))
     deps = Deps(
         storage=storage,
-        messenger=MaxMessenger(bot, http),  # type: ignore[arg-type]
+        # Обёртка — та же, что в app/main.py: отказ доставки ставит отметку.
+        messenger=WatchedMessenger(
+            MaxMessenger(bot, http),  # type: ignore[arg-type]
+            storage=storage,
+            logger=FakeLogger(),
+            now=clock,
+        ),
         llm=llm,
         images=images,
         document_reader=LocalDocumentReader(),
@@ -464,6 +476,44 @@ async def test_a_followup_press_in_max_reworks_the_answer(started: Harness) -> N
     assert len(started.llm.calls) == calls + 1
     turns, _ = started.llm.calls[-1]
     assert turns[-2].content == "Свет рассеивается, синий сильнее."
+
+
+def stopped_update(kind: str, timestamp: int = 7) -> dict[str, Any]:
+    return {
+        "update_type": kind,
+        "timestamp": timestamp,
+        "chat_id": CHAT_ID,
+        "user": {"user_id": USER_ID, "first_name": "Тест", "is_bot": False},
+    }
+
+
+@pytest.mark.parametrize("kind", ["bot_stopped", "dialog_removed"])
+async def test_stopping_the_bot_in_max_sets_the_mark(
+    started: Harness, kind: str
+) -> None:
+    """О1 в MAX: остановка бота и удаление переписки — события мессенджера."""
+    started.forget()
+
+    assert await started.post(stopped_update(kind)) == 200
+
+    assert (await started.user()).stopped_at is not None
+    assert started.bot.sent == [], "отвечать остановившему некому"
+
+    await started.send_text("я снова тут")
+    assert (await started.user()).stopped_at is None
+
+
+async def test_a_refused_delivery_in_max_sets_the_mark(started: Harness) -> None:
+    """Событие пропустили — отметку ставит отказ MAX доставить ответ."""
+    started.bot.blocked = True
+
+    await started.send_text("привет")
+
+    assert (await started.user()).stopped_at is not None
+
+    started.bot.blocked = False
+    await started.press(Action.MENU_PROFILE)
+    assert (await started.user()).stopped_at is None
 
 
 async def test_a_menu_button_press_opens_its_screen(started: Harness) -> None:

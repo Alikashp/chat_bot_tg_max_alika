@@ -592,3 +592,69 @@ async def test_the_same_album_is_not_uploaded_twice(
     first, second = (call for call in session.calls if isinstance(call, SendMediaGroup))
     assert not isinstance(first.media[0].media, str), "первый раз — байтами"
     assert second.media[0].media == "album-0", "второй раз — ссылкой"
+
+
+# --- Остановка бота (сессия 8) ------------------------------------------
+
+
+def _member_update(status: str, chat_type: str = "private") -> Any:
+    from aiogram.types import ChatMemberUpdated
+
+    bot_user = {"id": 42, "is_bot": True, "first_name": "Бот"}
+    new: dict[str, Any] = {"status": status, "user": bot_user}
+    if status == "kicked":
+        new["until_date"] = 0
+    return ChatMemberUpdated.model_validate(
+        {
+            "chat": {"id": 7, "type": chat_type},
+            "from": {"id": 7, "is_bot": False, "first_name": "Тест"},
+            "date": 1,
+            "old_chat_member": {"status": "member", "user": bot_user},
+            "new_chat_member": new,
+        }
+    )
+
+
+def test_blocking_the_bot_becomes_a_stop_event() -> None:
+    from app.adapters.telegram.router import stopped_to_incoming
+
+    incoming = stopped_to_incoming(_member_update("kicked"))
+
+    assert incoming is not None
+    assert incoming.stopped
+    assert incoming.external_user_id == "7"
+    assert incoming.chat.person == "7"
+
+
+@pytest.mark.parametrize(
+    ("status", "chat_type"), [("member", "private"), ("kicked", "group")]
+)
+def test_other_member_changes_are_not_a_stop(status: str, chat_type: str) -> None:
+    """Разблокировку снимает первое действие человека; группа — не человек."""
+    from app.adapters.telegram.router import stopped_to_incoming
+
+    assert stopped_to_incoming(_member_update(status, chat_type)) is None
+
+
+async def test_forbidden_means_the_person_stopped_the_bot() -> None:
+    from aiogram.exceptions import TelegramForbiddenError
+
+    from app.ports.messenger import RecipientGoneError
+
+    class Refusing(BaseSession):
+        async def make_request(self, bot: Bot, method: Any, timeout: Any = None) -> Any:  # noqa: ASYNC109
+            raise TelegramForbiddenError(method=method, message="Forbidden")
+
+        async def stream_content(
+            self, *args: Any, **kwargs: Any
+        ) -> AsyncGenerator[bytes, None]:
+            yield b""
+
+        async def close(self) -> None:
+            return None
+
+    messenger = TelegramMessenger(Bot(token="42:TEST", session=Refusing()))
+    chat = CoreChat(messenger=MessengerKind.TELEGRAM, chat_id="7")
+
+    with pytest.raises(RecipientGoneError):
+        await messenger.send_text(chat, "текст")

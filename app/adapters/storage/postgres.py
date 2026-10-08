@@ -432,6 +432,21 @@ class PostgresStorage:
         async with self._session() as session, session.begin():
             await session.execute(query)
 
+    async def mark_stopped(self, user_id: UserId, at: datetime) -> None:
+        """Условие «ещё не отмечен» — в самом UPDATE: первая отметка остаётся."""
+        query = (
+            update(users)
+            .where(users.c.id == user_id, users.c.stopped_at.is_(None))
+            .values(stopped_at=at)
+        )
+        async with self._session() as session, session.begin():
+            await session.execute(query)
+
+    async def clear_stopped(self, user_id: UserId) -> None:
+        query = update(users).where(users.c.id == user_id).values(stopped_at=None)
+        async with self._session() as session, session.begin():
+            await session.execute(query)
+
     async def grant_channel_bonus(self, user_id: UserId, *, images: int) -> bool:
         """Начисление и отметка о нём — одним UPDATE.
 
@@ -1014,6 +1029,7 @@ def _to_user(row: Any) -> User:
         bonus_documents=row["bonus_documents"],
         bonus_presentations=row["bonus_presentations"],
         channel_bonus_at=row["channel_bonus_at"],
+        stopped_at=row["stopped_at"],
         tariff_expires_at=row["tariff_expires_at"],
         email=row["email"],
         pending=row["pending"],

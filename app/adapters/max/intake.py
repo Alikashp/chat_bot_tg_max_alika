@@ -19,6 +19,12 @@ from typing import Any
 MESSAGE_CREATED = "message_created"
 MESSAGE_CALLBACK = "message_callback"
 BOT_STARTED = "bot_started"
+#: Человек остановил бота или удалил с ним переписку (сессия 8). Удаление
+#: бота из группового чата (bot_removed) сюда не входит: бот личный, и
+#: группа — не человек.
+BOT_STOPPED = "bot_stopped"
+DIALOG_REMOVED = "dialog_removed"
+STOPPED_TYPES = frozenset({BOT_STOPPED, DIALOG_REMOVED})
 
 
 def dedup_key(raw_update: dict[str, Any]) -> str | None:
@@ -50,6 +56,13 @@ def dedup_key(raw_update: dict[str, Any]) -> str | None:
             if chat_id is None or timestamp is None:
                 return None
             return f"max:start:{chat_id}:{timestamp}"
+        case "bot_stopped" | "dialog_removed":
+            # Тоже без своего идентификатора — то же правило, что у запуска.
+            chat_id = raw_update.get("chat_id")
+            timestamp = raw_update.get("timestamp")
+            if chat_id is None or timestamp is None:
+                return None
+            return f"max:{update_type}:{chat_id}:{timestamp}"
         case _:
             return None
 

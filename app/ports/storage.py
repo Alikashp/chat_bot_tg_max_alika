@@ -259,6 +259,15 @@ class Storage(Protocol):
         """
         ...
 
+    async def mark_stopped(self, user_id: UserId, at: datetime) -> None:
+        """Отмечает, что человек остановил бота. Уже отмеченное не трогает:
+        важно, когда бот перестал до человека доставать впервые."""
+        ...
+
+    async def clear_stopped(self, user_id: UserId) -> None:
+        """Снимает отметку: человек снова что-то сделал в боте."""
+        ...
+
     async def grant_channel_bonus(self, user_id: UserId, *, images: int) -> bool:
         """Разово начисляет бонус за подписку на канал.
 

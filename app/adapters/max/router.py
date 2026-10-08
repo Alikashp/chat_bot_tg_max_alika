@@ -12,7 +12,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.adapters.max.intake import BOT_STARTED, MESSAGE_CALLBACK, MESSAGE_CREATED
+from app.adapters.max.intake import (
+    BOT_STARTED,
+    MESSAGE_CALLBACK,
+    MESSAGE_CREATED,
+    STOPPED_TYPES,
+)
 from app.core import router, texts
 from app.core.models import Chat, IncomingMessage, MessengerKind
 from app.infra.logging import get_logger
@@ -70,6 +75,8 @@ def to_incoming(raw_update: dict[str, Any]) -> IncomingMessage | None:
             return _from_message(raw_update)
         case _ if update_type == MESSAGE_CALLBACK:
             return _from_callback(raw_update)
+        case _ if update_type in STOPPED_TYPES:
+            return _from_stopped(raw_update)
         case _:
             return None
 
@@ -95,10 +102,23 @@ def _from_bot_started(raw: dict[str, Any]) -> IncomingMessage | None:
     # /start» — разные случаи, и путать их нельзя.
     payload = raw.get("payload")
     return IncomingMessage(
-        chat=_chat(chat_id),
+        chat=_chat(chat_id, user_id),
         external_user_id=str(user_id),
         username=_username(raw, "user"),
         start_payload=payload if isinstance(payload, str) else "",
+    )
+
+
+def _from_stopped(raw: dict[str, Any]) -> IncomingMessage | None:
+    """Человек остановил бота или удалил переписку с ним (сессия 8)."""
+    chat_id = raw.get("chat_id")
+    user_id = _dig(raw, "user", "user_id")
+    if chat_id is None or user_id is None:
+        return None
+    return IncomingMessage(
+        chat=_chat(chat_id, user_id),
+        external_user_id=str(user_id),
+        stopped=True,
     )
 
 
@@ -121,7 +141,7 @@ def _from_message(raw: dict[str, Any]) -> IncomingMessage | None:
     text = text if isinstance(text, str) and text else None
 
     return IncomingMessage(
-        chat=_chat(chat_id),
+        chat=_chat(chat_id, user_id),
         external_user_id=str(user_id),
         username=_username(message, "sender"),
         text=text,
@@ -161,7 +181,7 @@ def _from_callback(raw: dict[str, Any]) -> IncomingMessage | None:
         chat_id = _dig(raw, "chat", "chat_id")
 
     return IncomingMessage(
-        chat=_chat(chat_id if chat_id is not None else user_id),
+        chat=_chat(chat_id if chat_id is not None else user_id, user_id),
         external_user_id=str(user_id),
         username=_username(callback, "user"),
         action=payload,
@@ -224,8 +244,9 @@ def _first_file(attachments: Any) -> tuple[str, str] | None:
     return None
 
 
-def _chat(chat_id: Any) -> Chat:
-    return Chat(messenger=MessengerKind.MAX, chat_id=str(chat_id))
+def _chat(chat_id: Any, person: Any) -> Chat:
+    """Переписка и её хозяин: в MAX это разные числа (см. Chat.person)."""
+    return Chat(messenger=MessengerKind.MAX, chat_id=str(chat_id), person=str(person))
 
 
 def _dig(payload: Any, *path: str) -> Any:

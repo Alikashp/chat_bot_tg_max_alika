@@ -278,6 +278,15 @@ class InMemoryStorage:
         self._require_user(generation.user_id)
         self.generations.append(generation)
 
+    async def mark_stopped(self, user_id: UserId, at: datetime) -> None:
+        user = self._require_user(user_id)
+        if user.stopped_at is None:
+            self._users[user_id] = replace(user, stopped_at=at)
+
+    async def clear_stopped(self, user_id: UserId) -> None:
+        user = self._require_user(user_id)
+        self._users[user_id] = replace(user, stopped_at=None)
+
     async def grant_channel_bonus(self, user_id: UserId, *, images: int) -> bool:
         user = self._require_user(user_id)
         if user.channel_bonus_at is not None:

@@ -21,6 +21,7 @@ from typing import Any
 import pytest
 from aiogram import Bot
 from aiogram.client.session.base import BaseSession
+from aiogram.exceptions import TelegramForbiddenError
 from aiogram.methods import (
     AnswerCallbackQuery,
     AnswerPreCheckoutQuery,
@@ -28,6 +29,7 @@ from aiogram.methods import (
     DeleteMessage,
     EditMessageText,
     GetFile,
+    SendChatAction,
     SendDocument,
     SendMessage,
     SendPhoto,
@@ -61,6 +63,7 @@ from app.core.actions import (
 from app.core.limits import norm_period
 from app.core.models import MessengerKind, TariffId
 from app.core.scenarios.deps import Deps
+from app.core.scenarios.reach import WatchedMessenger
 from app.core.settings import CoreSettings
 from app.infra.antiflood import FloodGuard
 from app.infra.dedup import Deduplicator
@@ -97,6 +100,8 @@ class RecordingSession(BaseSession):
         self._next_message_id = 1000
         #: События «такой вызов случился» — чтобы ждать его, а не опрашивать.
         self._seen: dict[type, asyncio.Event] = {}
+        #: Человек заблокировал бота: отправка отвечает 403 Forbidden.
+        self.blocked = False
 
     def seen(self, kind: type) -> asyncio.Event:
         """Событие, которое взводится первым вызовом этого вида."""
@@ -111,6 +116,14 @@ class RecordingSession(BaseSession):
         self.calls.append(method)
         self.seen(type(method)).set()
         self._next_message_id += 1
+
+        if self.blocked and isinstance(
+            method, SendMessage | SendPhoto | SendChatAction
+        ):
+            refused: TelegramMethod[Any] = method
+            raise TelegramForbiddenError(
+                method=refused, message="Forbidden: bot was blocked by the user"
+            )
 
         if isinstance(method, SendMessage):
             return Message(
@@ -334,7 +347,10 @@ async def harness() -> AsyncIterator[Harness]:
 
     deps = Deps(
         storage=storage,
-        messenger=TelegramMessenger(bot),
+        # Обёртка — та же, что в app/main.py: отказ доставки ставит отметку.
+        messenger=WatchedMessenger(
+            TelegramMessenger(bot), storage=storage, logger=logger, now=clock
+        ),
         llm=llm,
         images=images,
         settings=CoreSettings(
@@ -666,6 +682,55 @@ async def test_a_redelivered_followup_press_answers_once(started: Harness) -> No
     assert len(started.llm.calls) == calls + 1
     after = (await started.storage.get_usage(user.id, _today())).messages_used
     assert after == used + 1
+
+
+# --- Отметка «остановил бота» (сессия 8, О1) ---------------------------
+
+
+def blocked_update(update_id: int) -> dict[str, Any]:
+    bot_user = {"id": 42, "is_bot": True, "first_name": "Бот"}
+    return {
+        "update_id": update_id,
+        "my_chat_member": {
+            "chat": {"id": CHAT_ID, "type": "private"},
+            "from": {"id": CHAT_ID, "is_bot": False, "first_name": "Тест"},
+            "date": 1,
+            "old_chat_member": {"status": "member", "user": bot_user},
+            "new_chat_member": {
+                "status": "kicked",
+                "user": bot_user,
+                "until_date": 0,
+            },
+        },
+    }
+
+
+async def test_blocking_the_bot_sets_the_mark_and_a_message_clears_it(
+    started: Harness,
+) -> None:
+    started.forget()
+
+    assert await started.post(blocked_update(started.next_id())) == 200
+
+    assert (await started.user()).stopped_at is not None
+    assert started.messages() == [], "отвечать заблокировавшему некому"
+
+    await started.send_text("я снова тут")
+    assert (await started.user()).stopped_at is None
+
+
+async def test_a_refused_delivery_sets_the_mark(started: Harness) -> None:
+    """Блокировку пропустили — отметку ставит отказ Telegram доставить ответ."""
+    started.session.blocked = True
+
+    await started.send_text("привет")
+
+    assert (await started.user()).stopped_at is not None
+    assert texts.INTERNAL_ERROR not in started.texts_said()
+
+    started.session.blocked = False
+    await started.press(Action.MENU_PROFILE)
+    assert (await started.user()).stopped_at is None
 
 
 # --- Пресеты -------------------------------------------------------------

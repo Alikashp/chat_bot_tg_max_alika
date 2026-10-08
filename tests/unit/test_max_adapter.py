@@ -7,6 +7,7 @@ MAX понадобились другие проверки продуктово�
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
 import httpx
@@ -83,7 +84,8 @@ def test_bot_started_carries_the_deeplink_payload() -> None:
 
     assert incoming is not None
     assert incoming.start_payload == "ref_abc123"
-    assert incoming.chat == CORE_CHAT
+    # Хозяин переписки — отправитель: по нему отмечается «остановил бота».
+    assert incoming.chat == replace(CORE_CHAT, person=incoming.external_user_id)
     assert incoming.external_user_id == "9"
 
 
@@ -102,7 +104,8 @@ def test_a_text_message_is_parsed() -> None:
 
     assert incoming is not None
     assert incoming.text == "привет"
-    assert incoming.chat == CORE_CHAT
+    # Хозяин переписки — отправитель: по нему отмечается «остановил бота».
+    assert incoming.chat == replace(CORE_CHAT, person=incoming.external_user_id)
 
 
 def test_a_message_from_a_bot_is_ignored() -> None:
@@ -164,7 +167,8 @@ def test_a_button_press_becomes_an_action() -> None:
     assert incoming is not None
     assert incoming.action == "m:me"
     assert incoming.callback_id == "cb1"
-    assert incoming.chat == CORE_CHAT
+    # Хозяин переписки — отправитель: по нему отмечается «остановил бота».
+    assert incoming.chat == replace(CORE_CHAT, person=incoming.external_user_id)
 
 
 def test_a_press_on_a_lost_message_still_reaches_the_right_chat() -> None:
@@ -314,3 +318,54 @@ def test_the_delivered_photo_reference_is_a_token() -> None:
     attachment = _by_token("tok-1")
 
     assert attachment.payload.token == "tok-1"
+
+
+# --- Остановка бота (сессия 8) ------------------------------------------
+
+
+@pytest.mark.parametrize("kind", ["bot_stopped", "dialog_removed"])
+def test_stopping_the_bot_is_parsed_and_deduplicated(kind: str) -> None:
+    raw = {
+        "update_type": kind,
+        "timestamp": 1700,
+        "chat_id": CHAT_ID,
+        "user": {"user_id": 9, "first_name": "Тест", "is_bot": False},
+    }
+
+    incoming = to_incoming(raw)
+
+    assert incoming is not None
+    assert incoming.stopped
+    assert incoming.external_user_id == "9"
+    assert incoming.chat == replace(CORE_CHAT, person="9")
+    assert dedup_key(raw) == f"max:{kind}:{CHAT_ID}:1700"
+
+
+def test_a_bot_removed_from_a_group_is_not_a_person_stopping_it() -> None:
+    raw = {
+        "update_type": "bot_removed",
+        "timestamp": 1,
+        "chat_id": CHAT_ID,
+        "user": {"user_id": 9},
+        "is_channel": False,
+    }
+
+    assert to_incoming(raw) is None
+
+
+@pytest.mark.parametrize(("code", "gone"), [(403, True), (500, False)])
+async def test_only_a_403_means_the_person_stopped_the_bot(
+    code: int, gone: bool
+) -> None:
+    from maxapi.exceptions.max import MaxApiError
+
+    from app.ports.messenger import RecipientGoneError
+
+    class Refusing:
+        async def send_message(self, **kwargs: Any) -> Any:
+            raise MaxApiError(code=code, raw={})
+
+    messenger = MaxMessenger(Refusing(), httpx.AsyncClient())  # type: ignore[arg-type]
+
+    with pytest.raises(RecipientGoneError if gone else MaxApiError):
+        await messenger.send_text(CORE_CHAT, "текст")

@@ -16,12 +16,14 @@ from app.core import texts
 from app.core.actions import (
     Action,
     DeckField,
+    Followup,
     buy_action,
     deck_back_action,
     deck_go_action,
     deck_pick_action,
     deck_set_action,
     document_action,
+    followup_action,
     presentation_from_action,
     preset_action,
     report_from_action,
@@ -114,47 +116,76 @@ def new_dialog() -> Keyboard:
     )
 
 
-def chat_answer(*, truncated: bool, offer_new_dialog: bool) -> Keyboard | None:
+def chat_answer(*, mark: str, truncated: bool, offer_new_dialog: bool) -> Keyboard:
     """Кнопки под ответом в чате.
 
     «Продолжить» появляется, только когда ответ правда оборван: предлагать
-    досказать законченную мысль значит обещать то, чего нет.
+    досказать законченную мысль значит обещать то, чего нет. Она первой —
+    оборванный ответ сперва дослушивают.
 
-    Обе кнопки рядом уживаются: они про разное — дослушать этот ответ и
-    забыть весь разговор.
+    Кнопки продолжения (сессия 8) несут отпечаток ответа ``mark``: под
+    давним ответом они работают по нему, а не по последнему. Три подписи в
+    строку на телефоне обрезаются — поэтому два ряда.
+
+    «Новый диалог» — последней: она про весь разговор, а не про этот ответ.
     """
+
+    def followup(label: str, kind: Followup) -> Button:
+        return Button(text=label, action=followup_action(kind, mark))
+
     rows: list[tuple[Button, ...]] = []
     if truncated:
         rows.append((Button(text=texts.BUTTON_CONTINUE, action=Action.CHAT_CONTINUE),))
+    rows.append(
+        (
+            followup(texts.BUTTON_SIMPLER, Followup.SIMPLER),
+            followup(texts.BUTTON_SHORTER, Followup.SHORTER),
+        )
+    )
+    rows.append((followup(texts.BUTTON_DRAW_THIS, Followup.DRAW),))
     if offer_new_dialog:
         rows.append(
             (Button(text=texts.BUTTON_NEW_DIALOG, action=Action.CHAT_NEW_DIALOG),)
         )
-    return Keyboard(rows=tuple(rows)) if rows else None
+    return Keyboard(rows=tuple(rows))
+
+
+def followup_retry(action: str) -> Keyboard:
+    """«Повторить» под сбоем кнопки продолжения: то же нажатие ещё раз."""
+    return Keyboard.row(Button(text=texts.BUTTON_RETRY, action=action))
 
 
 def image_result() -> Keyboard:
-    """Кнопки под нарисованной картинкой (§2.3)."""
-    return Keyboard.row(
-        Button(text=texts.BUTTON_DRAW_AGAIN, action=Action.IMAGE_AGAIN),
-        Button(text=texts.BUTTON_SHARE, action=Action.IMAGE_SHARE),
+    """Кнопки под нарисованной картинкой (§2.3, сессия 8).
+
+    Два ряда, а не один: три подписи в строку на телефоне обрезаются.
+    «Другой прикол» ведёт в список приколов.
+    """
+    return Keyboard(
+        rows=(
+            (
+                Button(text=texts.BUTTON_ANOTHER_VARIANT, action=Action.IMAGE_AGAIN),
+                Button(text=texts.BUTTON_ANOTHER_PRESET, action=Action.PRESET_ANOTHER),
+            ),
+            (Button(text=texts.BUTTON_SHARE, action=Action.IMAGE_SHARE),),
+        )
     )
 
 
 def preset_result() -> Keyboard:
-    """Кнопки под обработанным фото (§2.4).
+    """Кнопки под обработанным фото (§2.4, сессия 8).
 
     Два ряда, а не один: три подписи в строку на телефоне не помещаются и
-    обрезаются до «Отп…другу» и «Др…рикол». Лишний ряд дешевле обрезанной
-    подписи — по ней не понять, что делает кнопка.
+    обрезаются. Лишний ряд дешевле обрезанной подписи — по ней не понять,
+    что делает кнопка.
     """
     return Keyboard(
         rows=(
             (
                 Button(text=texts.BUTTON_DRAW_AGAIN, action=Action.PRESET_AGAIN),
-                Button(text=texts.BUTTON_SEND_TO_FRIEND, action=Action.PRESET_SHARE),
+                Button(text=texts.BUTTON_ANOTHER_PRESET, action=Action.PRESET_ANOTHER),
             ),
-            (Button(text=texts.BUTTON_ANOTHER_PRESET, action=Action.PRESET_ANOTHER),),
+            (Button(text=texts.BUTTON_TO_FRIEND, action=Action.PRESET_SHARE),),
         )
     )
 
@@ -194,7 +225,7 @@ def presets_menu(presets: tuple[tuple[str, str], ...]) -> Keyboard:
     )
 
 
-def paywall(invite_label: str = "", channel_label: str = "") -> Keyboard:
+def paywall(invite_label: str = "") -> Keyboard:
     """Выходы с экрана исчерпания (§2.5). Тупика быть не должно.
 
     Кнопка канала появляется только тогда, когда бонус за него человеку ещё
@@ -210,29 +241,19 @@ def paywall(invite_label: str = "", channel_label: str = "") -> Keyboard:
     # не дадут, — это обещание, которое экран не выполнит.
     if invite_label:
         rows.append((Button(text=invite_label, action=Action.INVITE_FRIEND),))
-    if channel_label:
-        rows.append((Button(text=channel_label, action=Action.CHANNEL_OFFER),))
     return Keyboard(rows=tuple(rows))
 
 
-def channel_offer(url: str) -> Keyboard:
-    """Уйти в канал и вернуться с проверкой.
+def channel_required(url: str) -> Keyboard:
+    """Уйти в канал и вернуться с проверкой (сессия 8).
 
     Ссылка кнопкой, а не текстом в сообщении: по тексту надо попасть пальцем,
     а кнопка открывает канал сразу и оставляет человека в переписке с ботом,
-    куда ему возвращаться за бонусом.
+    куда ему возвращаться.
     """
     return Keyboard.row(
         Button(text=texts.BUTTON_OPEN_CHANNEL, url=url),
         Button(text=texts.BUTTON_CHANNEL_CHECK, action=Action.CHANNEL_CHECK),
-    )
-
-
-def channel_retry() -> Keyboard:
-    """Проверить ещё раз — и выход на тарифы, если надоело."""
-    return Keyboard.row(
-        Button(text=texts.BUTTON_CHANNEL_CHECK, action=Action.CHANNEL_CHECK),
-        Button(text=texts.BUTTON_OPEN_TARIFFS, action=Action.OPEN_TARIFFS),
     )
 
 
@@ -460,6 +481,21 @@ def deck_material(token: str, *, has_material: bool) -> Keyboard:
         action=deck_set_action(token, DeckField.MATERIAL, NO_MATERIAL),
     )
     return Keyboard(rows=((clear,), back))
+
+
+def deck_file_failed(token: str) -> Keyboard:
+    """Файл не дался при сборке: прислать заново или вернуться к экрану."""
+    return Keyboard(
+        rows=(
+            (
+                Button(
+                    text=texts.BUTTON_DECK_MATERIAL,
+                    action=deck_pick_action(token, DeckField.MATERIAL),
+                ),
+            ),
+            (Button(text=texts.BUTTON_BACK, action=deck_back_action(token)),),
+        )
+    )
 
 
 def deck_back(token: str) -> Keyboard:

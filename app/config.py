@@ -11,7 +11,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Annotated, Literal
 
-from pydantic import Field, HttpUrl, field_validator
+from pydantic import Field, HttpUrl, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.core.channel import channel_username
@@ -226,7 +226,7 @@ class Settings(BaseSettings):
     #: Потолок наград в сутки на одного пригласившего. Ноль — без потолка.
     referral_daily_reward_limit: Annotated[int, Field(ge=0, le=1000)] = 20
 
-    #: Канал, за подписку на который дают разовый бонус. Пусто — бонуса нет.
+    #: Наш канал в Telegram. Пусто — канала нет.
     #:
     #: Имя канала выводится из ссылки, отдельной переменной для него нет:
     #: две переменные про одно и то же однажды разойдутся, и бот станет
@@ -235,8 +235,13 @@ class Settings(BaseSettings):
     #: Чтобы проверка работала, бот должен быть администратором канала.
     channel_url: str = ""
 
-    #: Сколько картинок даём за подписку на канал. Разово.
-    channel_bonus_images: Annotated[int, Field(ge=0, le=100)] = 2
+    #: Обязательная подписка на канал для бесплатных пользователей Telegram
+    #: (сессия 8). По умолчанию выключена; включённая требует CHANNEL_URL.
+    channel_required: bool = False
+
+    #: Сколько минут помнить, что человек подписан: в эти минуты Telegram
+    #: заново не спрашивают. Отписавшийся остановится не позже.
+    channel_check_minutes: Annotated[int, Field(ge=1, le=1440)] = 10
 
     # --- Продуктовые ограничения ------------------------------------------
 
@@ -509,6 +514,17 @@ class Settings(BaseSettings):
                 "вида https://t.me/имя"
             )
         return cleaned
+
+    @model_validator(mode="after")
+    def _channel_needs_a_link(self) -> Settings:
+        """Обязательная подписка без канала — проверять не на что.
+
+        Ловим на старте: иначе настройка молча ничего бы не делала, и это
+        было бы видно только по тому, что подписчиков не прибавилось.
+        """
+        if self.channel_required and not self.channel_url:
+            raise ValueError("CHANNEL_REQUIRED=true требует CHANNEL_URL")
+        return self
 
     @field_validator("public_url")
     @classmethod

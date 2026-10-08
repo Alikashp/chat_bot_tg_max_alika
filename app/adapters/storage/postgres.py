@@ -432,25 +432,25 @@ class PostgresStorage:
         async with self._session() as session, session.begin():
             await session.execute(query)
 
-    async def grant_channel_bonus(self, user_id: UserId, *, images: int) -> bool:
-        """Начисление и отметка о нём — одним UPDATE.
-
-        Условие «отметки ещё нет» стоит в самом запросе, поэтому два
-        одновременных нажатия кнопки приводят к одному начислению: второй
-        UPDATE не найдёт строки под условие и вернёт пусто.
-        """
+    async def mark_stopped(self, user_id: UserId, at: datetime) -> None:
+        """Условие «ещё не отмечен» — в самом UPDATE: первая отметка остаётся."""
         query = (
             update(users)
-            .where(users.c.id == user_id, users.c.channel_bonus_at.is_(None))
-            .values(
-                bonus_images=users.c.bonus_images + images,
-                channel_bonus_at=self._now(),
-            )
-            .returning(users.c.id)
+            .where(users.c.id == user_id, users.c.stopped_at.is_(None))
+            .values(stopped_at=at)
         )
         async with self._session() as session, session.begin():
-            granted = (await session.execute(query)).one_or_none()
-        return granted is not None
+            await session.execute(query)
+
+    async def clear_stopped(self, user_id: UserId) -> None:
+        query = update(users).where(users.c.id == user_id).values(stopped_at=None)
+        async with self._session() as session, session.begin():
+            await session.execute(query)
+
+    async def remember_channel_check(self, user_id: UserId, at: datetime) -> None:
+        query = update(users).where(users.c.id == user_id).values(channel_checked_at=at)
+        async with self._session() as session, session.begin():
+            await session.execute(query)
 
     # --- Оплата --------------------------------------------------------
 
@@ -1013,7 +1013,8 @@ def _to_user(row: Any) -> User:
         bonus_images=row["bonus_images"],
         bonus_documents=row["bonus_documents"],
         bonus_presentations=row["bonus_presentations"],
-        channel_bonus_at=row["channel_bonus_at"],
+        channel_checked_at=row["channel_checked_at"],
+        stopped_at=row["stopped_at"],
         tariff_expires_at=row["tariff_expires_at"],
         email=row["email"],
         pending=row["pending"],

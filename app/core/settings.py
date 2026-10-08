@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from datetime import timedelta
 
 from app.core import referral
 from app.core.receipts import FiscalSettings
@@ -82,12 +83,16 @@ class CoreSettings:
     #: стоит денег. Ноль означает «без потолка».
     referral_daily_reward_limit: int = 20
 
-    #: Ссылка на канал, за подписку на который дают разовый бонус.
-    #: Пусто — предложения нет вовсе.
+    #: Ссылка на наш канал в Telegram. Пусто — канала нет.
     channel_url: str = ""
 
-    #: Сколько картинок даём за подписку на канал. Разово.
-    channel_bonus_images: int = 2
+    #: Обязательна ли подписка на канал для бесплатных пользователей
+    #: Telegram (сессия 8). По умолчанию — нет.
+    channel_required: bool = False
+
+    #: Сколько помнить, что человек подписан: в это время Telegram заново
+    #: не спрашивают, а отписавшийся остановится не позже.
+    channel_check_ttl: timedelta = timedelta(minutes=10)
 
     #: Во сколько раз дороже оплата звёздами Telegram (§2.8: на 40% выше).
     stars_markup: float = 1.4

@@ -48,7 +48,6 @@ from app.adapters.telegram.intake import dedup_key, is_pre_checkout
 from app.adapters.telegram.messenger import TelegramMessenger
 from app.adapters.telegram.stars import TelegramStars
 from app.config import Settings, get_settings
-from app.core import decks
 from app.core.billing import Billing
 from app.core.channel import channel_username
 from app.core.decks import Draft
@@ -59,6 +58,7 @@ from app.core.referral import MAX_HOST, TELEGRAM_HOST
 from app.core.scenarios import keyboards as core_keyboards
 from app.core.scenarios import payments
 from app.core.scenarios.deps import Deps, session_for
+from app.core.scenarios.reach import WatchedMessenger
 from app.core.settings import CoreSettings
 from app.infra.antiflood import FloodGuard
 from app.infra.dedup import Deduplicator
@@ -92,14 +92,19 @@ TELEGRAM_API_TIMEOUT = 15.0
 #: доходят, и это выглядит как «кнопки не работают».
 #: pre_checkout_query здесь так же обязателен, как callback_query: без него
 #: Telegram не дождётся ответа и не проведёт оплату звёздами.
-ALLOWED_UPDATES = ["message", "callback_query", "pre_checkout_query"]
+#: my_chat_member — блокировка бота человеком (сессия 8): без него отметку
+#: «остановил бота» можно было бы поставить только по отказу доставки.
+ALLOWED_UPDATES = ["message", "callback_query", "pre_checkout_query", "my_chat_member"]
 
-#: То же для MAX. Три типа против четырнадцати возможных
-#: (docs/research.md §1.4): остальные события боту не нужны.
+#: То же для MAX. Пять типов против четырнадцати возможных
+#: (docs/research.md §1.4): остальные события боту не нужны. Остановка бота
+#: и удаление переписки — для отметки «остановил бота» (сессия 8).
 MAX_UPDATE_TYPES = [
     MaxUpdateType.MESSAGE_CREATED,
     MaxUpdateType.MESSAGE_CALLBACK,
     MaxUpdateType.BOT_STARTED,
+    MaxUpdateType.BOT_STOPPED,
+    MaxUpdateType.DIALOG_REMOVED,
 ]
 
 
@@ -222,12 +227,6 @@ def build_intake(
 #: быстрые — одно чтение заказа, — но два обработчика не дают одному
 #: зависшему запросу к базе остановить все оплаты.
 _PAYMENT_QUESTION_WORKERS = 2
-
-#: Сколько памяти могут занять черновики экрана презентации. Под черновиком
-#: бывает присланный файл до 20 МБ; десяток таких одновременно — обычное
-#: дело, сотня — уже повод вытеснять старшие: их кнопки честно скажут, что
-#: данных нет.
-DRAFTS_MAX_BYTES = 200 * 1024 * 1024
 
 
 def build_telegram_intake(
@@ -419,7 +418,8 @@ def build_core_settings(
         referral_bonus_presentations=settings.referral_bonus_presentations,
         referral_daily_reward_limit=settings.referral_daily_reward_limit,
         channel_url=settings.channel_url,
-        channel_bonus_images=settings.channel_bonus_images,
+        channel_required=settings.channel_required,
+        channel_check_ttl=timedelta(minutes=settings.channel_check_minutes),
         stars_markup=settings.stars_markup,
         rub_per_star=settings.rub_per_star,
         subscription_days=settings.subscription_days,
@@ -499,11 +499,9 @@ async def build_wiring(settings: Settings) -> Wiring:
     # жетон выдаётся в одном процессе, и забрать его надо там же.
     handoff: MemoryHandoff[Carried] = MemoryHandoff()
     # Черновики экрана параметров презентации: тема, материал, параметры — в
-    # памяти, под жетоном (сессия 7, В6). Предел по объёму — под присланные
-    # файлы: двадцать мегабайт каждый.
-    drafts: MemoryHandoff[Draft] = MemoryHandoff(
-        weigh=decks.weight, max_weight=DRAFTS_MAX_BYTES
-    )
+    # памяти, под жетоном (сессия 7, В6). Присланный файл в черновике —
+    # ссылкой, поэтому хватает предела по числу (сессия 8, М1).
+    drafts: MemoryHandoff[Draft] = MemoryHandoff()
     if presentations_client is not None:
         http_clients = (*http_clients, presentations_client)
 
@@ -528,7 +526,14 @@ async def build_wiring(settings: Settings) -> Wiring:
         """Одни и те же зависимости, разный мессенджер и его настройки."""
         return Deps(
             storage=storage,
-            messenger=messenger,
+            # Отказ доставки «человек остановил бота» отмечается здесь, один
+            # раз для всех сценариев и обоих мессенджеров (сессия 8).
+            messenger=WatchedMessenger(
+                messenger,
+                storage=storage,
+                logger=get_logger("reach"),
+                now=_utc_now,
+            ),
             llm=llm,
             images=images,
             settings=core_settings,

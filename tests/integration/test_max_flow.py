@@ -23,6 +23,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from maxapi.enums.chat_type import ChatType
 from maxapi.enums.upload_type import UploadType
+from maxapi.exceptions.max import MaxApiError
 from maxapi.methods.types.sended_message import SendedMessage
 from maxapi.types import Message, MessageBody, Recipient
 from maxapi.types.attachments.upload import AttachmentPayload, AttachmentUpload
@@ -40,6 +41,7 @@ from app.core.models import MessengerKind, Payment, TariffId
 from app.core.referral import MAX_HOST
 from app.core.scenarios import payments
 from app.core.scenarios.deps import Deps, session_for
+from app.core.scenarios.reach import WatchedMessenger
 from app.core.settings import CoreSettings
 from app.infra.antiflood import FloodGuard
 from app.infra.dedup import Deduplicator
@@ -111,6 +113,8 @@ class StubMaxBot:
         #: («user», номер человека). Разница видна только здесь.
         self.addressed: list[tuple[str, int | None]] = []
         self._next_id = 0
+        #: Человек остановил бота: MAX отвечает на отправку 403.
+        self.blocked = False
 
     async def send_message(
         self,
@@ -125,6 +129,8 @@ class StubMaxBot:
         assert (chat_id is None) != (user_id is None), (
             "MAX принимает либо номер переписки, либо номер человека"
         )
+        if self.blocked:
+            raise MaxApiError(code=403, raw={"code": "chat.denied"})
         self.addressed.append(
             ("chat" if chat_id is not None else "user", chat_id or user_id)
         )
@@ -280,7 +286,13 @@ async def harness() -> AsyncIterator[Harness]:
     http = httpx.AsyncClient(transport=httpx.MockTransport(photo_response))
     deps = Deps(
         storage=storage,
-        messenger=MaxMessenger(bot, http),  # type: ignore[arg-type]
+        # Обёртка — та же, что в app/main.py: отказ доставки ставит отметку.
+        messenger=WatchedMessenger(
+            MaxMessenger(bot, http),  # type: ignore[arg-type]
+            storage=storage,
+            logger=FakeLogger(),
+            now=clock,
+        ),
         llm=llm,
         images=images,
         document_reader=LocalDocumentReader(),
@@ -414,6 +426,94 @@ async def test_a_question_is_answered(started: Harness) -> None:
     await started.send_text("какая столица Франции?")
 
     assert started.texts_said() == ["Париж."]
+
+
+def _labels(message: Any) -> list[str]:
+    return [button.text for row in message.buttons for button in row]
+
+
+async def test_followups_stand_under_every_result(started: Harness) -> None:
+    """Ч1 в MAX: под ответом, картинкой и приколом — свои три кнопки.
+
+    Последней MAX сам дописывает «☰ В меню» — она не из этих трёх.
+    """
+    await started.send_text("почему небо голубое?")
+    answer = started.bot.sent[-1]
+    assert _labels(answer)[:3] == [
+        texts.BUTTON_SIMPLER,
+        texts.BUTTON_SHORTER,
+        texts.BUTTON_DRAW_THIS,
+    ]
+
+    await started.press(Action.MENU_IMAGES)
+    await started.send_text("кот-космонавт")
+    assert _labels(started.bot.edits[-1])[:3] == [
+        texts.BUTTON_ANOTHER_VARIANT,
+        texts.BUTTON_ANOTHER_PRESET,
+        texts.BUTTON_SHARE,
+    ]
+
+    await started.press(preset_action("lego"))
+    await started.send_photo()
+    assert _labels(started.bot.edits[-1])[:3] == [
+        texts.BUTTON_DRAW_AGAIN,
+        texts.BUTTON_ANOTHER_PRESET,
+        texts.BUTTON_TO_FRIEND,
+    ]
+
+
+async def test_a_followup_press_in_max_reworks_the_answer(started: Harness) -> None:
+    """Ч2 в MAX: «Короче» — новый запрос по тому же ответу, одно списание."""
+    started.llm.answer = "Свет рассеивается, синий сильнее."
+    await started.send_text("почему небо голубое?")
+    shorter = started.bot.sent[-1].buttons[0][1].payload
+    calls = len(started.llm.calls)
+
+    update = press_update("cb-shorter", shorter)
+    assert await started.post(update) == 200
+    assert await started.post(update) == 200
+
+    assert len(started.llm.calls) == calls + 1
+    turns, _ = started.llm.calls[-1]
+    assert turns[-2].content == "Свет рассеивается, синий сильнее."
+
+
+def stopped_update(kind: str, timestamp: int = 7) -> dict[str, Any]:
+    return {
+        "update_type": kind,
+        "timestamp": timestamp,
+        "chat_id": CHAT_ID,
+        "user": {"user_id": USER_ID, "first_name": "Тест", "is_bot": False},
+    }
+
+
+@pytest.mark.parametrize("kind", ["bot_stopped", "dialog_removed"])
+async def test_stopping_the_bot_in_max_sets_the_mark(
+    started: Harness, kind: str
+) -> None:
+    """О1 в MAX: остановка бота и удаление переписки — события мессенджера."""
+    started.forget()
+
+    assert await started.post(stopped_update(kind)) == 200
+
+    assert (await started.user()).stopped_at is not None
+    assert started.bot.sent == [], "отвечать остановившему некому"
+
+    await started.send_text("я снова тут")
+    assert (await started.user()).stopped_at is None
+
+
+async def test_a_refused_delivery_in_max_sets_the_mark(started: Harness) -> None:
+    """Событие пропустили — отметку ставит отказ MAX доставить ответ."""
+    started.bot.blocked = True
+
+    await started.send_text("привет")
+
+    assert (await started.user()).stopped_at is not None
+
+    started.bot.blocked = False
+    await started.press(Action.MENU_PROFILE)
+    assert (await started.user()).stopped_at is None
 
 
 async def test_a_menu_button_press_opens_its_screen(started: Harness) -> None:

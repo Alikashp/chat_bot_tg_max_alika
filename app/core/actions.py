@@ -65,7 +65,8 @@ class Action(StrEnum):
     MY_LINK = "r:link"
     REFERRAL_SEND = "r:send"
 
-    # Разовый бонус за подписку на канал
+    # Подписка на канал. CHANNEL_OFFER — кнопка бонуса из старой переписки:
+    # бонус убран (сессия 8), а кнопки живут в чатах вечно.
     CHANNEL_OFFER = "n:show"
     CHANNEL_CHECK = "n:check"
 
@@ -153,6 +154,45 @@ def parse_presentation_from_action(action: str) -> str | None:
 
 
 # --- Экран параметров презентации (сессия 7) -----------------------------
+
+# --- Кнопки продолжения под ответом чата (сессия 8, Ч1–Ч3) ---------------
+#
+# Кнопка несёт отпечаток своего ответа: «Объясни проще» под давним ответом
+# должна работать по нему, а не по последнему, а под забытым — честно
+# сказать, что его уже нет. Сам текст в данные кнопки не влезет (64 байта у
+# Telegram) и там ему не место.
+
+FOLLOWUP_PREFIX = "c:f:"
+
+
+class Followup(StrEnum):
+    """Что сделать с ответом чата."""
+
+    SIMPLER = "s"
+    SHORTER = "k"
+    DRAW = "d"
+
+
+@dataclass(frozen=True, slots=True)
+class FollowupAction:
+    kind: Followup
+    mark: str
+
+
+def followup_action(kind: Followup, mark: str) -> str:
+    """Кнопка продолжения под ответом с этим отпечатком."""
+    return f"{FOLLOWUP_PREFIX}{kind.value}:{mark}"
+
+
+def parse_followup_action(action: str) -> FollowupAction | None:
+    """Разбирает кнопку продолжения; None — это не она или она испорчена."""
+    if not action.startswith(FOLLOWUP_PREFIX):
+        return None
+    kind, _, mark = action.removeprefix(FOLLOWUP_PREFIX).partition(":")
+    if kind not in {item.value for item in Followup} or not mark:
+        return None
+    return FollowupAction(kind=Followup(kind), mark=mark)
+
 
 DECK_GO_PREFIX = "v:go:"
 DECK_PICK_PREFIX = "v:opt:"

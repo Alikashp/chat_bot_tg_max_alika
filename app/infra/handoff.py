@@ -34,13 +34,7 @@ class _Entry[T]:
 
 
 class MemoryHandoff[T]:
-    """Реализация порта Tokens (и Handoff как его частного случая).
-
-    ``weigh`` и ``max_weight`` — предел по объёму, а не только по числу. Под
-    жетоном экрана презентации бывает присланный файл до 20 МБ, и тысяча
-    таких — это двадцать гигабайт. Сверх предела старшие жетоны вытесняются,
-    а их кнопки честно говорят, что данных уже нет.
-    """
+    """Реализация порта Tokens (и Handoff как его частного случая)."""
 
     def __init__(
         self,
@@ -48,14 +42,10 @@ class MemoryHandoff[T]:
         ttl_seconds: float = TTL_SECONDS,
         max_items: int = MAX_ITEMS,
         clock: Callable[[], float] = time.monotonic,
-        weigh: Callable[[T], int] | None = None,
-        max_weight: int | None = None,
     ) -> None:
         self._ttl = ttl_seconds
         self._max = max_items
         self._clock = clock
-        self._weigh = weigh
-        self._max_weight = max_weight
         self._entries: OrderedDict[str, _Entry[T]] = OrderedDict()
 
     def put(self, carried: T) -> str:
@@ -99,21 +89,9 @@ class MemoryHandoff[T]:
         self._fit()
 
     def _fit(self) -> None:
-        """Вытесняет старшие жетоны, пока не уложимся в число и объём."""
+        """Вытесняет старшие жетоны, пока не уложимся в число."""
         while len(self._entries) > self._max:
             self._entries.popitem(last=False)
-        if self._weigh is None or self._max_weight is None:
-            return
-        weigh = self._weigh
-        total = sum(
-            weigh(entry.carried)
-            for entry in self._entries.values()
-            if entry.carried is not None
-        )
-        while total > self._max_weight and self._entries:
-            _, oldest = self._entries.popitem(last=False)
-            if oldest.carried is not None:
-                total -= weigh(oldest.carried)
 
     def _alive(self, token: str) -> _Entry[T] | None:
         entry = self._entries.get(token)

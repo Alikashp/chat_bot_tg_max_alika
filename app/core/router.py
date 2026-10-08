@@ -14,15 +14,18 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from dataclasses import replace
 
 from app.core import pending, texts
 from app.core.actions import (
     TRIAL_TARGET,
     Action,
+    Followup,
     parse_buy_action,
     parse_deck_action,
     parse_document_action,
     parse_email_action,
+    parse_followup_action,
     parse_method_action,
     parse_presentation_from_action,
     parse_preset_action,
@@ -52,6 +55,7 @@ from app.core.scenarios import (
 )
 from app.core.scenarios.deps import Deps, Session
 from app.core.tariffs import TRIAL
+from app.ports.messenger import RecipientGoneError
 from app.ports.payments import PaymentMethod
 from config import documents as document_registry
 from config import presets as registry
@@ -91,10 +95,39 @@ async def handle(deps: Deps, incoming: IncomingMessage) -> None:
 
     Единственная точка входа для обоих адаптеров.
     """
+    try:
+        await _handle(deps, incoming)
+    except RecipientGoneError:
+        # Человек остановил бота посреди ответа. Отметку поставил порт
+        # мессенджера (scenarios/reach.py); извиняться некому — и незачем
+        # считать это сбоем обработки.
+        return
+
+
+async def _handle(deps: Deps, incoming: IncomingMessage) -> None:
     if incoming.callback_id is not None:
         # Гасим «часики» на кнопке до всякой работы: она может занять
         # пятнадцать секунд, и всё это время кнопка выглядела бы зависшей.
         await _answer_callback(deps, incoming.callback_id)
+
+    user = await deps.storage.get_user(
+        incoming.chat.messenger, incoming.external_user_id
+    )
+
+    if incoming.stopped:
+        # Человек остановил бота. Отвечать некому; незнакомца не заводим —
+        # отмечать у него нечего.
+        if user is not None:
+            await deps.storage.mark_stopped(user.id, deps.now())
+            deps.logger.info("user_stopped_bot", user_id=int(user.id), source="event")
+        return
+
+    if user is not None and user.stopped_at is not None:
+        # Любое действие человека — сообщение, кнопка, /start, оплата —
+        # значит, что бот до него снова достаёт.
+        await deps.storage.clear_stopped(user.id)
+        user = replace(user, stopped_at=None)
+        deps.logger.info("user_returned", user_id=int(user.id))
 
     if incoming.start_payload is not None:
         await onboarding.start(
@@ -106,10 +139,6 @@ async def handle(deps: Deps, incoming: IncomingMessage) -> None:
             incoming.username,
         )
         return
-
-    user = await deps.storage.get_user(
-        incoming.chat.messenger, incoming.external_user_id
-    )
 
     if incoming.pre_checkout_id is not None:
         # Мессенджер спрашивает, готовы ли мы принять оплату, и ждёт ответа
@@ -164,6 +193,15 @@ async def _dispatch(deps: Deps, session: Session, incoming: IncomingMessage) -> 
         return
 
     action = incoming.action or keyboards.action_for_label(incoming.text)
+    # Обязательная подписка (сессия 8): до сценария, поэтому за
+    # остановленное ею ничего не списывается.
+    if (
+        channel.active(deps, session)
+        and channel.is_paid_work(session, incoming, action)
+        and not await channel.allows(deps, session)
+    ):
+        return
+
     if action is not None:
         await _route_action(deps, session, action)
         return
@@ -228,6 +266,24 @@ async def _route_action(deps: Deps, session: Session, action: str) -> None:
     if deck_token is not None:
         await _clear_pending(deps, session)
         await presentations.from_report(deps, session, deck_token)
+        return
+
+    followup = parse_followup_action(action)
+    if followup is not None:
+        # «Проще» и «короче» стоят сообщения, картинка — картинки: ключ
+        # ограничителя тот же, что у обычного запроса того же вида.
+        await _clear_pending(deps, session)
+        key = (
+            _image_key(session)
+            if followup.kind is Followup.DRAW
+            else _text_key(session)
+        )
+        await _guarded(
+            deps,
+            session,
+            key,
+            lambda d, s: chat.follow_up(d, s, followup.kind, followup.mark),
+        )
         return
 
     repeat_kind = _REPEAT_KINDS.get(action)
@@ -328,8 +384,10 @@ async def _route_action(deps: Deps, session: Session, action: str) -> None:
         case Action.REFERRAL_SEND:
             await referral.send_invitation(deps, session)
         case Action.CHANNEL_OFFER:
+            # «📣 Канал → +2 картинки» из старой переписки: бонус убран
+            # (сессия 8), обещать его нельзя, тупика быть не должно.
             await _clear_pending(deps, session)
-            await channel.show_offer(deps, session)
+            await channel.show_menu(deps, session)
         case Action.CHANNEL_CHECK:
             await _clear_pending(deps, session)
             await channel.check(deps, session)

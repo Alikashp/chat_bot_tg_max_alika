@@ -85,9 +85,16 @@ users = Table(
     # пробного периода не было. Отметка — та же, что «один раз на человека».
     Column("trial_order_id", String(36), nullable=True),
     # Когда выдали разовый бонус за подписку на канал. NULL — не выдавали.
-    # Отметка и есть защита от повторной выдачи: начисление ставит её тем же
-    # UPDATE, который добавляет картинки, и условие NULL стоит в его WHERE.
+    # Бонус убран в сессии 8; отметки остались как история и больше не
+    # ставятся, а начисленные картинки так и лежат в bonus_images.
     Column("channel_bonus_at", DateTime(timezone=True), nullable=True),
+    # Когда Telegram в последний раз подтвердил подписку на канал (сессия 8):
+    # в пределах CHANNEL_CHECK_MINUTES заново не спрашиваем.
+    Column("channel_checked_at", DateTime(timezone=True), nullable=True),
+    # Когда человек остановил бота (заблокировал, остановил, удалил) — по
+    # событию мессенджера или по отказу доставки. NULL — бот до него
+    # достаёт. Для будущей рассылки и статистики (сессия 8).
+    Column("stopped_at", DateTime(timezone=True), nullable=True),
     Column("tariff_expires_at", DateTime(timezone=True), nullable=True),
     # Чего бот ждёт от пользователя следующим сообщением (см. core/pending.py).
     # Text, а не String: у приколов с двумя фото ожидание несёт ещё и ссылки

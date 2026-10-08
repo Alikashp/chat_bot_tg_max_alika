@@ -33,11 +33,11 @@ from datetime import datetime, timedelta
 
 from app.core import decks, pending, retry_context, texts
 from app.core.actions import Action, DeckAction, DeckField
-from app.core.decks import MAX_TOPIC, MIN_TOPIC, Draft, with_theme
+from app.core.decks import MAX_TOPIC, MIN_TOPIC, Draft, MaterialFile, with_theme
 from app.core.documents import DocumentTooLargeError
 from app.core.generations import GenerationKind, error_code
 from app.core.limits import LimitKind
-from app.core.models import Document
+from app.core.models import Document, MessageRef
 from app.core.retry_context import RetryContext, RetryKind
 from app.core.scenarios import keyboards, paywall, spending, telemetry
 from app.core.scenarios.deps import Deps, Session
@@ -152,23 +152,26 @@ async def receive_file(
     Тип проверяется по имени ещё до скачивания — чужое не тянем вовсе, —
     размер мессенджер сообщает до загрузки байтов, содержимое сверяется с
     расширением после. Отказ оставляет ожидание файла: можно прислать
-    другой, презентация не тратится. Байты живут только в черновике в
-    памяти — ни в базе, ни в логе их нет (В6).
+    другой, презентация не тратится.
+
+    Скачанное нужно только для проверки и сразу забывается: в черновик
+    ложится ссылка, а сам файл скачивается ещё раз в момент сборки (М1).
+    Байтов нет ни в базе, ни в логе, ни в памяти между шагами.
     """
     if deps.presentations is None or deps.drafts is None:
         await _unavailable(deps, session)
         return
 
     token = pending.parse_await_deck_file(session.user.pending)
-    document = await _download_material(deps, session, document_ref, filename, token)
-    if document is None:
+    material = MaterialFile(ref=document_ref, filename=filename)
+    if not await _material_checked(deps, session, material, token):
         return
 
     if token is None:
-        # Тема по имени файла; не вышла — экран сам её спросит, а файл
-        # подождёт в черновике.
+        # Тема по имени файла; не вышла — экран сам её спросит, а ссылка на
+        # файл подождёт в черновике.
         topic = decks.topic_from_filename(filename) or ""
-        await _open_screen(deps, session, Draft(topic=topic, file=document))
+        await _open_screen(deps, session, Draft(topic=topic, file=material))
         return
 
     current = deps.drafts.peek(token)
@@ -178,36 +181,24 @@ async def receive_file(
         return
     # API берёт материал одним видом: файл вытесняет доклад.
     deps.drafts.update(
-        token, replace(current, file=document, material="", report_token=None)
+        token, replace(current, file=material, material="", report_token=None)
     )
     await show_screen(deps, session, token)
 
 
-async def _download_material(
-    deps: Deps,
-    session: Session,
-    document_ref: str,
-    filename: str,
-    token: str | None,
-) -> Document | None:
-    """Скачивает файл-материал, если он годится; иначе — отказ с выходом."""
+async def _material_checked(
+    deps: Deps, session: Session, material: MaterialFile, token: str | None
+) -> bool:
+    """Годится ли файл в материал; не годится — отказ с выходом."""
     too_big = False
-    document: Document | None = None
-    if decks.material_extension(filename) is not None:
+    fine = False
+    if decks.material_extension(material.filename) is not None:
         try:
-            downloaded = await deps.messenger.download_document(
-                document_ref, max_bytes=MATERIAL_MAX_BYTES
-            )
+            fine = await _fetch_material(deps, material) is not None
         except DocumentTooLargeError:
             too_big = True
-        else:
-            # Имя — из сообщения: Telegram отдаёт своё служебное, а человеку
-            # на экране нужно его собственное, и тип API берёт по нему же.
-            document = replace(downloaded, filename=filename)
-            if not decks.material_ok(document):
-                document = None
-    if document is not None:
-        return document
+    if fine:
+        return True
 
     deps.logger.info(
         "presentation_file_refused", user_id=int(session.user.id), too_big=too_big
@@ -222,7 +213,22 @@ async def _download_material(
             else keyboards.presentation_cancel()
         ),
     )
-    return None
+    return False
+
+
+async def _fetch_material(deps: Deps, material: MaterialFile) -> Document | None:
+    """Скачивает файл-материал по ссылке; None — содержимое не то.
+
+    Размер — свой предел из docs/API.md, а не общий предел раздела «Файлы».
+    Слишком большой — DocumentTooLargeError, недоступный — ошибка адаптера.
+    """
+    downloaded = await deps.messenger.download_document(
+        material.ref, max_bytes=MATERIAL_MAX_BYTES
+    )
+    # Имя — из сообщения: Telegram отдаёт своё служебное, а человеку на
+    # экране нужно его собственное, и тип API берёт по нему же.
+    document = replace(downloaded, filename=material.filename)
+    return document if decks.material_ok(document) else None
 
 
 async def from_report(deps: Deps, session: Session, token: str) -> None:
@@ -636,9 +642,15 @@ async def _build_claimed(
         audience=draft.audience,
     )
 
+    file: Document | None = None
+    if draft.file is not None:
+        file = await _material_for_build(deps, session, token, draft.file, waiting)
+        if file is None:
+            return False
+
     started = deps.now()
     try:
-        built = await deps.presentations.build(draft.request())
+        built = await deps.presentations.build(draft.request(file))
     except PresentationBusyError as busy:
         if busy.reached_api:
             await _record(deps, session, theme_id, started=started, error=busy)
@@ -710,6 +722,43 @@ async def _build_claimed(
         keyboard=keyboards.presentation_result(report_token),
     )
     return True
+
+
+async def _material_for_build(
+    deps: Deps,
+    session: Session,
+    token: str,
+    material: MaterialFile,
+    waiting: MessageRef,
+) -> Document | None:
+    """Файл-материал — в момент сборки. Не дался — честный ответ, не сборка.
+
+    Ссылка мессенджера живёт не вечно, а в MAX по ней могут отдать уже
+    другое. Проверки те же, что при получении, и всё — до провайдера:
+    презентация не тратится, черновик остаётся, файл можно прислать заново.
+    """
+    too_big = wrong = False
+    try:
+        file = await _fetch_material(deps, material)
+        wrong = file is None
+    except DocumentTooLargeError:
+        file, too_big = None, True
+    except Exception as error:
+        file = None
+        deps.logger.warning(
+            "presentation_file_unavailable",
+            user_id=int(session.user.id),
+            error=error_code(error),
+        )
+    if file is not None:
+        return file
+
+    await deps.messenger.edit_text(
+        waiting,
+        texts.deck_file_failed(too_big=too_big, wrong=wrong).text,
+        keyboard=keyboards.deck_file_failed(token),
+    )
+    return None
 
 
 def _documents(topic: str, built: BuiltPresentation) -> tuple[Document, ...]:

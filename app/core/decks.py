@@ -34,6 +34,20 @@ MAX_TOPIC = 200
 
 
 @dataclass(frozen=True, slots=True)
+class MaterialFile:
+    """Присланный файл-материал — ссылкой, а не байтами (сессия 8, М1).
+
+    ``ref`` — ссылка мессенджера, по которой адаптер скачает файл в момент
+    сборки; ``filename`` — имя из сообщения: его видит человек на экране, и по
+    его расширению API определяет тип. Содержимого здесь нет: между
+    получением и сборкой бот файл не держит.
+    """
+
+    ref: str
+    filename: str
+
+
+@dataclass(frozen=True, slots=True)
 class Draft:
     """Параметры будущей колоды."""
 
@@ -46,16 +60,19 @@ class Draft:
     theme_id: str = ""
     #: Текст доклада, по которому собирать. Пусто — доклада нет.
     material: str = ""
-    #: Присланный файл-материал. Вместе с текстом не бывает: API принимает
-    #: что-то одно.
-    file: Document | None = None
+    #: Присланный файл-материал — ссылкой. Вместе с текстом не бывает: API
+    #: принимает что-то одно.
+    file: MaterialFile | None = None
     #: Жетон кнопки «Сделать презентацию по докладу», с которой пришёл
     #: черновик. Забирается, когда колода доставлена: кнопка под докладом
     #: тогда честно скажет «уже сделано».
     report_token: str | None = None
 
-    def request(self) -> DeckRequest:
-        """Запрос на сборку ровно по тому, что показано на экране."""
+    def request(self, file: Document | None = None) -> DeckRequest:
+        """Запрос на сборку ровно по тому, что показано на экране.
+
+        ``file`` — файл-материал, скачанный по ссылке перед самой сборкой.
+        """
         return DeckRequest(
             topic=self.topic,
             theme_id=self.theme_id,
@@ -63,7 +80,7 @@ class Draft:
             slides=self.slides,
             audience=self.audience,
             material=self.material if self.file is None else "",
-            file=self.file,
+            file=file,
         )
 
 
@@ -157,8 +174,3 @@ def topic_from_filename(filename: str) -> str | None:
     stem, dot, _ = filename.rpartition(".")
     cleaned = " ".join((stem if dot else filename).replace("_", " ").split())
     return cleaned if MIN_TOPIC <= len(cleaned) <= MAX_TOPIC else None
-
-
-def weight(draft: Draft) -> int:
-    """Сколько памяти держит черновик: файл и текст доклада."""
-    return len(draft.file.data if draft.file is not None else b"") + len(draft.material)

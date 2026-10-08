@@ -117,15 +117,14 @@ def test_paywall_names_the_reward_it_actually_gives() -> None:
     )
 
 
-def test_the_channel_button_appears_only_when_the_bonus_is_still_owed() -> None:
-    """Кнопка, ведущая на «бонус уже получен», — это тупик наоборот."""
-    without = texts.paywall_images(renews_on="27 сентября", invite_images=2)
-    with_channel = texts.paywall_images(
-        renews_on="27 сентября", invite_images=2, channel_images=2
-    )
+def test_the_paywall_promises_nothing_for_the_channel() -> None:
+    """Бонус за канал убран (сессия 8, Г6) — и кнопки за него нет."""
+    screen = texts.paywall_images(renews_on="27 сентября", invite_images=2)
 
-    assert len(without.buttons) == 2
-    assert with_channel.buttons[-1] == "📣 Канал → +2 картинки"
+    assert screen.buttons == (
+        "⭐ Открыть тарифы",
+        "🎁 Позвать друга → +2 картинки сразу",
+    )
 
 
 def test_profile_shows_every_number() -> None:
@@ -468,11 +467,11 @@ def test_no_row_of_buttons_is_too_wide_for_a_phone() -> None:
         "меню": scenario_keyboards.main_menu(),
         "картинка": scenario_keyboards.image_result(),
         "прикол": scenario_keyboards.preset_result(),
-        "пейволл": scenario_keyboards.paywall(
-            texts.button_invite_for_images(2), texts.button_channel_bonus(2)
+        "пейволл": scenario_keyboards.paywall(texts.button_invite_for_images(2)),
+        "канал": scenario_keyboards.channel_required("https://t.me/channel"),
+        "ответ чата": scenario_keyboards.chat_answer(
+            mark="0123456789ab", truncated=True, offer_new_dialog=True
         ),
-        "канал": scenario_keyboards.channel_offer("https://t.me/channel"),
-        "проверка канала": scenario_keyboards.channel_retry(),
         "профиль": scenario_keyboards.profile(),
         "оплата": scenario_keyboards.payments_soon(),
     }

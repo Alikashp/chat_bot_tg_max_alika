@@ -8,11 +8,12 @@
 from __future__ import annotations
 
 import contextlib
-from collections.abc import Mapping, Sequence
+import functools
+from collections.abc import Callable, Coroutine, Mapping, Sequence
 from typing import Any
 
 from aiogram import Bot
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.types import (
     BufferedInputFile,
     InlineKeyboardMarkup,
@@ -30,6 +31,7 @@ from app.core import texts
 from app.core.documents import DocumentTooLargeError
 from app.core.models import Chat, Document, Keyboard, MessageRef, Photo
 from app.core.photos import PhotoTooLargeError
+from app.ports.messenger import RecipientGoneError
 
 #: По сколько байт читаем файл. Больше смысла нет: фото у нас в пределах
 #: пяти мегабайт, а меньше — лишние обращения к сети.
@@ -37,6 +39,26 @@ _DOWNLOAD_CHUNK = 64 * 1024
 
 #: Таймаут скачивания файла. Явный, как требует §3.4.6.
 _DOWNLOAD_TIMEOUT = 30
+
+
+def _reachable[**P, R](
+    method: Callable[P, Coroutine[Any, Any, R]],
+) -> Callable[P, Coroutine[Any, Any, R]]:
+    """Отказ «Forbidden» — человек остановил бота (сессия 8).
+
+    Telegram отвечает им на заблокированного бота, удалённый аккаунт и чат,
+    который человек не начинал: во всех трёх писать ему бот не может.
+    Остальные ошибки — сеть, лимиты, неверный запрос — проходят как были.
+    """
+
+    @functools.wraps(method)
+    async def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+        try:
+            return await method(*args, **kwargs)
+        except TelegramForbiddenError as error:
+            raise RecipientGoneError() from error
+
+    return wrapper
 
 
 class TelegramMessenger:
@@ -69,6 +91,7 @@ class TelegramMessenger:
 
     # --- Отправка ------------------------------------------------------
 
+    @_reachable
     async def send_text(
         self,
         chat: Chat,
@@ -85,6 +108,7 @@ class TelegramMessenger:
         )
         return _ref(chat, message)
 
+    @_reachable
     async def send_photo(
         self,
         chat: Chat,
@@ -102,6 +126,7 @@ class TelegramMessenger:
         )
         return _ref(chat, message)
 
+    @_reachable
     async def send_photo_by_ref(
         self,
         chat: Chat,
@@ -124,6 +149,7 @@ class TelegramMessenger:
         )
         return _ref(chat, message)
 
+    @_reachable
     async def send_album(self, chat: Chat, photos: Sequence[Photo]) -> None:
         """Отправляет альбом. Второй раз — ссылками, а не байтами.
 
@@ -177,6 +203,7 @@ class TelegramMessenger:
 
     # --- Замена уже отправленного --------------------------------------
 
+    @_reachable
     async def edit_text(
         self,
         ref: MessageRef,
@@ -192,6 +219,7 @@ class TelegramMessenger:
             reply_markup=self._inline(keyboard),
         )
 
+    @_reachable
     async def edit_to_photo(
         self,
         ref: MessageRef,
@@ -230,6 +258,7 @@ class TelegramMessenger:
 
     # --- Прочее --------------------------------------------------------
 
+    @_reachable
     async def send_typing(self, chat: Chat) -> None:
         await self._bot.send_chat_action(chat_id=chat.chat_id, action="typing")
 
@@ -240,6 +269,7 @@ class TelegramMessenger:
             callback_query_id=callback_id, text=notification
         )
 
+    @_reachable
     async def refresh_menu(self, chat: Chat) -> None:
         """Отправляет постоянное меню, если ответ не принёс его сам.
 
@@ -331,6 +361,7 @@ class TelegramMessenger:
             mime_type="application/octet-stream",
         )
 
+    @_reachable
     async def send_document(self, chat: Chat, document: Document) -> None:
         """Отправляет готовый файл."""
         await self._bot.send_document(

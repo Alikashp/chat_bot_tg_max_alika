@@ -11,12 +11,15 @@ webhook-интеграции не используются: роутинг у н
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import functools
+from collections.abc import Callable, Coroutine, Sequence
+from typing import Any
 
 import httpx
 from maxapi import Bot
 from maxapi.enums.sender_action import SenderAction
 from maxapi.enums.upload_type import UploadType
+from maxapi.exceptions.max import MaxApiError
 from maxapi.types import Attachment, InputMedia, InputMediaBuffer
 from maxapi.types.attachments.image import Image
 from maxapi.types.attachments.upload import AttachmentPayload, AttachmentUpload
@@ -25,6 +28,7 @@ from app.adapters.max import keyboards as max_keyboards
 from app.core.documents import DocumentTooLargeError
 from app.core.models import Chat, Document, Keyboard, MessageRef, Photo
 from app.core.photos import PhotoTooLargeError
+from app.ports.messenger import RecipientGoneError
 
 #: По сколько байт читаем присланное фото.
 _DOWNLOAD_CHUNK = 64 * 1024
@@ -37,6 +41,31 @@ _DOWNLOAD_CHUNK = 64 * 1024
 #: этого годится: в адресе она означает конец самого адреса, и всё, что за
 #: ней, сервером не запрашивается.
 _NAME_MARK = "#"
+
+
+#: Чем MAX отказывает в отправке человеку, остановившему бота.
+_FORBIDDEN = 403
+
+
+def _reachable[**P, R](
+    method: Callable[P, Coroutine[Any, Any, R]],
+) -> Callable[P, Coroutine[Any, Any, R]]:
+    """Отказ 403 — человек остановил бота (сессия 8).
+
+    Остальные ошибки MAX — сеть, перегрузка, неверный запрос — проходят как
+    были: по ним отметку «остановил бота» ставить нельзя.
+    """
+
+    @functools.wraps(method)
+    async def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+        try:
+            return await method(*args, **kwargs)
+        except MaxApiError as error:
+            if error.code == _FORBIDDEN:
+                raise RecipientGoneError() from error
+            raise
+
+    return wrapper
 
 
 class MaxMessengerError(RuntimeError):
@@ -58,6 +87,7 @@ class MaxMessenger:
 
     # --- Отправка ------------------------------------------------------
 
+    @_reachable
     async def send_text(
         self,
         chat: Chat,
@@ -68,6 +98,7 @@ class MaxMessenger:
     ) -> MessageRef:
         return await self._send(chat, text=text, keyboard=keyboard, show_menu=show_menu)
 
+    @_reachable
     async def send_photo(
         self,
         chat: Chat,
@@ -86,6 +117,7 @@ class MaxMessenger:
             image=uploaded,
         )
 
+    @_reachable
     async def send_photo_by_ref(
         self,
         chat: Chat,
@@ -108,6 +140,7 @@ class MaxMessenger:
             image=_by_token(photo_ref),
         )
 
+    @_reachable
     async def send_album(self, chat: Chat, photos: Sequence[Photo]) -> None:
         """Отправляет альбом. Второй раз — токенами, а не байтами.
 
@@ -136,6 +169,7 @@ class MaxMessenger:
 
     # --- Замена уже отправленного --------------------------------------
 
+    @_reachable
     async def edit_text(
         self,
         ref: MessageRef,
@@ -149,6 +183,7 @@ class MaxMessenger:
             attachments=_attachments(keyboard, show_menu=True),
         )
 
+    @_reachable
     async def edit_to_photo(
         self,
         ref: MessageRef,
@@ -177,6 +212,7 @@ class MaxMessenger:
 
     # --- Прочее --------------------------------------------------------
 
+    @_reachable
     async def send_typing(self, chat: Chat) -> None:
         if chat.is_person:
             # «Печатает…» показывается в переписке, а её номера у нас нет:
@@ -265,6 +301,7 @@ class MaxMessenger:
             mime_type="application/octet-stream",
         )
 
+    @_reachable
     async def send_document(self, chat: Chat, document: Document) -> None:
         """Отправляет готовый файл вложением."""
         uploaded = await self._bot.upload_media(

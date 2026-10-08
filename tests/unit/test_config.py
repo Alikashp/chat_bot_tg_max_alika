@@ -136,7 +136,7 @@ def test_a_channel_link_is_accepted() -> None:
 
 
 def test_no_channel_is_the_normal_case() -> None:
-    """Пустая ссылка означает «бонуса за подписку нет»."""
+    """Пустая ссылка означает «канала нет»; подписка не обязательна."""
     assert Settings.model_validate(VALID_ENV).channel_url == ""
 
 
@@ -151,10 +151,28 @@ def test_no_channel_is_the_normal_case() -> None:
     ],
 )
 def test_a_link_we_cannot_check_stops_the_start(link: str) -> None:
-    """Иначе кнопка висела бы и обещала картинки, которых не выдадут.
+    """Иначе бот требовал бы подписку на канал, которую не может проверить.
 
     Опечатку в ссылке иначе видно только по жалобе человека, который
-    подписался и бонуса не получил.
+    подписался и дальше не прошёл.
     """
     with pytest.raises(ValidationError):
         Settings.model_validate({**VALID_ENV, "channel_url": link})
+
+
+def test_the_channel_requirement_is_off_by_default() -> None:
+    settings = Settings.model_validate({**VALID_ENV, "channel_url": "https://t.me/c"})
+
+    assert settings.channel_required is False
+    assert settings.channel_check_minutes == 10
+
+
+def test_a_required_channel_needs_a_link() -> None:
+    """Обязательная подписка без канала молча ничего бы не делала."""
+    with pytest.raises(ValidationError):
+        Settings.model_validate({**VALID_ENV, "channel_required": True})
+
+    settings = Settings.model_validate(
+        {**VALID_ENV, "channel_required": True, "channel_url": "https://t.me/chan"}
+    )
+    assert settings.channel_required is True

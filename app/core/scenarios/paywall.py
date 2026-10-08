@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from app.core import texts
 from app.core.limits import LimitKind
-from app.core.scenarios import channel, keyboards, spending
+from app.core.scenarios import keyboards, spending
 from app.core.scenarios.deps import Deps, Session
 
 
@@ -61,18 +61,11 @@ async def show(deps: Deps, session: Session, kind: LimitKind) -> None:
         return
 
     bonus = deps.settings.referral_bonus_images
-    for_channel = channel.available(deps, session)
     screen = texts.paywall_images(
-        renews_on=renews_on,
-        by_charge=by_charge,
-        invite_images=bonus,
-        channel_images=for_channel,
+        renews_on=renews_on, by_charge=by_charge, invite_images=bonus
     )
     await deps.messenger.send_text(
         session.chat,
         screen.text,
-        keyboard=keyboards.paywall(
-            texts.button_invite_for_images(bonus),
-            texts.button_channel_bonus(for_channel) if for_channel else "",
-        ),
+        keyboard=keyboards.paywall(texts.button_invite_for_images(bonus)),
     )

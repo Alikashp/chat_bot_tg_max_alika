@@ -100,18 +100,6 @@ def test_nothing_is_updated_under_a_taken_or_unknown_token() -> None:
     assert handoff.peek(token) is None
 
 
-def test_the_weight_limit_pushes_the_oldest_out() -> None:
-    """Под черновиком бывает файл в 20 МБ — память ограничена и объёмом."""
-    handoff: MemoryHandoff[Carried] = MemoryHandoff(
-        weigh=lambda carried: len(carried.material), max_weight=10
-    )
-    old = handoff.put(Carried(topic="Старый", material="x" * 6))
-    new = handoff.put(Carried(topic="Новый", material="y" * 6))
-
-    assert handoff.peek(old) is None
-    assert handoff.peek(new) is not None
-
-
 def test_an_updated_entry_is_the_freshest() -> None:
     """Обновлённый черновик вытесняется последним — им сейчас пользуются."""
     handoff: MemoryHandoff[Carried] = MemoryHandoff(max_items=2)

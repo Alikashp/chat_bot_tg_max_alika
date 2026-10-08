@@ -462,6 +462,21 @@ def deck_material(token: str, *, has_material: bool) -> Keyboard:
     return Keyboard(rows=((clear,), back))
 
 
+def deck_file_failed(token: str) -> Keyboard:
+    """Файл не дался при сборке: прислать заново или вернуться к экрану."""
+    return Keyboard(
+        rows=(
+            (
+                Button(
+                    text=texts.BUTTON_DECK_MATERIAL,
+                    action=deck_pick_action(token, DeckField.MATERIAL),
+                ),
+            ),
+            (Button(text=texts.BUTTON_BACK, action=deck_back_action(token)),),
+        )
+    )
+
+
 def deck_back(token: str) -> Keyboard:
     """Одна «Назад» на экран — под вопросом о новой теме."""
     return Keyboard.row(Button(text=texts.BUTTON_BACK, action=deck_back_action(token)))

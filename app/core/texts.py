@@ -684,6 +684,10 @@ DECK_FILE_WRONG = (
     "презентация не потратилась"
 )
 DECK_FILE_TOO_BIG = "Файл больше 20 МБ 🙅 Пришли поменьше — презентация не потратилась"
+#: К сборке файла не стало: ссылка мессенджера протухла (сессия 8, М1).
+DECK_FILE_GONE = (
+    "Файл уже недоступен 🤷 Пришли его ещё раз — презентация не потратилась"
+)
 
 
 def deck_ask_file(*, has_material: bool) -> Screen:
@@ -705,6 +709,16 @@ def deck_file_refused(*, too_big: bool, from_screen: bool) -> Screen:
         text=DECK_FILE_TOO_BIG if too_big else DECK_FILE_WRONG,
         buttons=(BUTTON_BACK if from_screen else BUTTON_CANCEL,),
     )
+
+
+def deck_file_failed(*, too_big: bool, wrong: bool) -> Screen:
+    """Файл не дался при сборке: колода не собиралась, презентация цела."""
+    text = DECK_FILE_GONE
+    if too_big:
+        text = DECK_FILE_TOO_BIG
+    elif wrong:
+        text = DECK_FILE_WRONG
+    return Screen(text=text, buttons=(BUTTON_DECK_MATERIAL, BUTTON_BACK))
 
 
 DECK_GONE = "Эти параметры устарели — я их уже не помню 🤷\nНачни презентацию заново 👇"
@@ -1939,6 +1953,7 @@ def _all_screens() -> tuple[Screen, ...]:
         deck_file_topic(),
         deck_file_refused(too_big=False, from_screen=False),
         deck_file_refused(too_big=True, from_screen=True),
+        deck_file_failed(too_big=False, wrong=False),
         deck_gone(),
         deck_already_built(),
         presentation_working(),

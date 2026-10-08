@@ -48,7 +48,6 @@ from app.adapters.telegram.intake import dedup_key, is_pre_checkout
 from app.adapters.telegram.messenger import TelegramMessenger
 from app.adapters.telegram.stars import TelegramStars
 from app.config import Settings, get_settings
-from app.core import decks
 from app.core.billing import Billing
 from app.core.channel import channel_username
 from app.core.decks import Draft
@@ -222,12 +221,6 @@ def build_intake(
 #: быстрые — одно чтение заказа, — но два обработчика не дают одному
 #: зависшему запросу к базе остановить все оплаты.
 _PAYMENT_QUESTION_WORKERS = 2
-
-#: Сколько памяти могут занять черновики экрана презентации. Под черновиком
-#: бывает присланный файл до 20 МБ; десяток таких одновременно — обычное
-#: дело, сотня — уже повод вытеснять старшие: их кнопки честно скажут, что
-#: данных нет.
-DRAFTS_MAX_BYTES = 200 * 1024 * 1024
 
 
 def build_telegram_intake(
@@ -499,11 +492,9 @@ async def build_wiring(settings: Settings) -> Wiring:
     # жетон выдаётся в одном процессе, и забрать его надо там же.
     handoff: MemoryHandoff[Carried] = MemoryHandoff()
     # Черновики экрана параметров презентации: тема, материал, параметры — в
-    # памяти, под жетоном (сессия 7, В6). Предел по объёму — под присланные
-    # файлы: двадцать мегабайт каждый.
-    drafts: MemoryHandoff[Draft] = MemoryHandoff(
-        weigh=decks.weight, max_weight=DRAFTS_MAX_BYTES
-    )
+    # памяти, под жетоном (сессия 7, В6). Присланный файл в черновике —
+    # ссылкой, поэтому хватает предела по числу (сессия 8, М1).
+    drafts: MemoryHandoff[Draft] = MemoryHandoff()
     if presentations_client is not None:
         http_clients = (*http_clients, presentations_client)
 

@@ -1,10 +1,11 @@
-"""Презентация по файлу (сессия 7, В3, В6).
+"""Презентация по файлу (сессия 7, В3, В6; сессия 8, М1).
 
 Файл можно прислать вместо темы или кнопкой «Материал» на экране
 параметров. Форматы и размер — по docs/API.md: pdf, docx, pptx, txt до
 20 МБ. Тип и размер проверяются до провайдера; неподходящий файл — понятный
-отказ с выходом, презентация не тратится. Содержимое файла — только в
-памяти, не в базе и не в логах.
+отказ с выходом, презентация не тратится. Содержимого файла нет ни в базе,
+ни в логах, ни в памяти между получением и сборкой: черновик держит ссылку
+на файл в мессенджере, а сам файл скачивается в момент сборки (М1).
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ import pytest
 
 from app.adapters.storage.memory import InMemoryStorage
 from app.core import texts
-from app.core.actions import Action
+from app.core.actions import Action, parse_deck_action
 from app.core.documents import DocumentTooLargeError
 from app.core.models import Chat, Document, IncomingMessage, MessengerKind, User
 from app.core.router import handle
@@ -275,6 +276,120 @@ async def test_after_a_refusal_another_file_is_still_welcome(
     await handle(enabled, sent_file(TXT.filename))
 
     assert "файл «заметки.txt»" in messenger.last_text.text
+
+
+# --- М1: между получением и сборкой — только ссылка -------------------------
+
+
+def draft_token(messenger: FakeMessenger) -> str:
+    """Жетон черновика — из кнопки «Собрать» под экраном параметров."""
+    for text, action in buttons(messenger):
+        if text == texts.BUTTON_DECK_BUILD and action is not None:
+            parsed = parse_deck_action(action)
+            assert parsed is not None
+            return parsed.token
+    raise AssertionError("под сообщением нет экрана параметров")
+
+
+async def test_the_draft_keeps_a_reference_not_the_file(
+    enabled: Deps,
+    owner: User,
+    messenger: FakeMessenger,
+) -> None:
+    messenger.incoming_document = DOCX
+    await handle(enabled, incoming(action=Action.MENU_PRESENTATIONS))
+
+    await handle(enabled, sent_file(DOCX.filename))
+
+    assert enabled.drafts is not None
+    draft = enabled.drafts.peek(draft_token(messenger))
+    assert draft is not None and draft.file is not None
+    assert draft.file.ref == "file-ref"
+    assert draft.file.filename == DOCX.filename
+    assert SECRET not in repr(draft)
+    assert not any(isinstance(value, bytes) for value in vars_of(draft.file))
+
+
+def vars_of(value: object) -> list[object]:
+    return [getattr(value, name) for name in value.__slots__]  # type: ignore[attr-defined]
+
+
+async def test_the_file_is_downloaded_at_build_time(
+    enabled: Deps,
+    owner: User,
+    messenger: FakeMessenger,
+    presentations: FakePresentations,
+) -> None:
+    """Скачан при получении — чтобы проверить; ещё раз — чтобы собрать."""
+    messenger.incoming_document = DOCX
+    await handle(enabled, incoming(action=Action.MENU_PRESENTATIONS))
+    await handle(enabled, sent_file(DOCX.filename))
+    assert messenger.downloads_limited_to == [MATERIAL_MAX_BYTES]
+
+    await press(enabled, messenger, texts.BUTTON_DECK_BUILD)
+
+    assert messenger.downloads_limited_to == [MATERIAL_MAX_BYTES] * 2
+    assert presentations.requests[0].file == DOCX
+
+
+@pytest.mark.parametrize(
+    ("failure", "answer"),
+    [
+        (RuntimeError("файл удалён"), texts.DECK_FILE_GONE),
+        (DocumentTooLargeError(), texts.DECK_FILE_TOO_BIG),
+        (None, texts.DECK_FILE_WRONG),
+    ],
+)
+async def test_a_file_gone_by_build_time_costs_nothing(
+    enabled: Deps,
+    owner: User,
+    messenger: FakeMessenger,
+    presentations: FakePresentations,
+    storage: InMemoryStorage,
+    failure: Exception | None,
+    answer: str,
+) -> None:
+    """К сборке файла может не стать: ссылка протухла или он подменился."""
+    messenger.incoming_document = DOCX
+    await handle(enabled, incoming(action=Action.MENU_PRESENTATIONS))
+    await handle(enabled, sent_file(DOCX.filename))
+    if failure is None:
+        messenger.incoming_document = replace(DOCX, data=b"%PDF- not a docx")
+    else:
+        messenger.fail_download_document = failure
+
+    await press(enabled, messenger, texts.BUTTON_DECK_BUILD)
+
+    assert presentations.requests == []
+    assert await _left(storage, owner) == 1
+    assert any(call.text == answer for call in messenger.text_edits), (
+        "ответ должен прийти на месте «Готовлю…»"
+    )
+    labels = [text for text, _ in edited_buttons(messenger)]
+    assert labels == [texts.BUTTON_DECK_MATERIAL, texts.BUTTON_BACK]
+
+    # Выход рабочий: новый файл — и колода собирается.
+    messenger.fail_download_document = None
+    messenger.incoming_document = TXT
+    await press_edited(enabled, messenger, texts.BUTTON_DECK_MATERIAL)
+    await handle(enabled, sent_file(TXT.filename))
+    await press(enabled, messenger, texts.BUTTON_DECK_BUILD)
+    assert presentations.requests[0].file == TXT
+    assert await _left(storage, owner) == 0
+
+
+def edited_buttons(messenger: FakeMessenger) -> list[tuple[str, str | None]]:
+    keyboard = messenger.text_edits[-1].keyboard
+    assert keyboard is not None
+    return [(b.text, b.action) for row in keyboard.rows for b in row]
+
+
+async def press_edited(enabled: Deps, messenger: FakeMessenger, label: str) -> None:
+    for text, action in edited_buttons(messenger):
+        if text == label and action is not None:
+            await handle(enabled, incoming(action=action))
+            return
+    raise AssertionError(f"нет кнопки «{label}»")
 
 
 # --- В6: содержимое файла — только в памяти ---------------------------------

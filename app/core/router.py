@@ -19,10 +19,12 @@ from app.core import pending, texts
 from app.core.actions import (
     TRIAL_TARGET,
     Action,
+    Followup,
     parse_buy_action,
     parse_deck_action,
     parse_document_action,
     parse_email_action,
+    parse_followup_action,
     parse_method_action,
     parse_presentation_from_action,
     parse_preset_action,
@@ -228,6 +230,24 @@ async def _route_action(deps: Deps, session: Session, action: str) -> None:
     if deck_token is not None:
         await _clear_pending(deps, session)
         await presentations.from_report(deps, session, deck_token)
+        return
+
+    followup = parse_followup_action(action)
+    if followup is not None:
+        # «Проще» и «короче» стоят сообщения, картинка — картинки: ключ
+        # ограничителя тот же, что у обычного запроса того же вида.
+        await _clear_pending(deps, session)
+        key = (
+            _image_key(session)
+            if followup.kind is Followup.DRAW
+            else _text_key(session)
+        )
+        await _guarded(
+            deps,
+            session,
+            key,
+            lambda d, s: chat.follow_up(d, s, followup.kind, followup.mark),
+        )
         return
 
     repeat_kind = _REPEAT_KINDS.get(action)

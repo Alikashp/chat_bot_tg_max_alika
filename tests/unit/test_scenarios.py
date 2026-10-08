@@ -160,13 +160,18 @@ async def test_new_dialog_button_appears_exactly_on_the_tenth_message(
     deps: Deps, session: Session, messenger: FakeMessenger
 ) -> None:
     """§2.2: ровно с десятого — под девятым кнопки ещё нет."""
+
+    def labels() -> list[str]:
+        keyboard = messenger.last_text.keyboard
+        assert keyboard is not None
+        return [button.text for row in keyboard.rows for button in row]
+
     for _ in range(9):
         await chat.handle_message(deps, session, "вопрос")
-    assert messenger.last_text.keyboard is None
+    assert texts.BUTTON_NEW_DIALOG not in labels()
 
     await chat.handle_message(deps, session, "вопрос")
-    assert messenger.last_text.keyboard is not None
-    assert messenger.last_text.keyboard.rows[0][0].text == texts.BUTTON_NEW_DIALOG
+    assert labels()[-1] == texts.BUTTON_NEW_DIALOG
 
 
 async def test_new_dialog_button_stays_after_the_tenth(
@@ -235,7 +240,11 @@ async def test_picture_comes_with_its_buttons(
         for row in messenger.photo_edits[0].keyboard.rows  # type: ignore[union-attr]
         for button in row
     ]
-    assert labels == [texts.BUTTON_DRAW_AGAIN, texts.BUTTON_SHARE]
+    assert labels == [
+        texts.BUTTON_ANOTHER_VARIANT,
+        texts.BUTTON_ANOTHER_PRESET,
+        texts.BUTTON_SHARE,
+    ]
 
 
 async def test_drawing_uses_the_quality_of_the_tariff(
@@ -297,8 +306,8 @@ async def test_preset_result_has_all_three_buttons(
     ]
     assert labels == [
         texts.BUTTON_DRAW_AGAIN,
-        texts.BUTTON_SEND_TO_FRIEND,
         texts.BUTTON_ANOTHER_PRESET,
+        texts.BUTTON_TO_FRIEND,
     ]
 
 

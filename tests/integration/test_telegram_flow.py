@@ -614,6 +614,60 @@ async def test_share_sends_the_delivered_photo_with_a_referral_link(
     assert (await started.user()).referral_code in (photos[0].caption or "")
 
 
+# --- Кнопки продолжения (сессия 8, Ч1, Ч2) ------------------------------
+
+
+def _labels(markup: Any) -> list[str]:
+    assert isinstance(markup, InlineKeyboardMarkup)
+    return [button.text for row in markup.inline_keyboard for button in row]
+
+
+async def test_followups_stand_under_every_result(started: Harness) -> None:
+    """Ч1 в Telegram: под ответом, картинкой и приколом — свои три кнопки."""
+    await started.send_text("почему небо голубое?")
+    assert _labels(started.messages()[-1].reply_markup) == [
+        texts.BUTTON_SIMPLER,
+        texts.BUTTON_SHORTER,
+        texts.BUTTON_DRAW_THIS,
+    ]
+
+    await started.send_text(texts.MENU_IMAGES)
+    await started.send_text("кот-космонавт")
+    assert _labels(started.photos()[-1].reply_markup) == [
+        texts.BUTTON_ANOTHER_VARIANT,
+        texts.BUTTON_ANOTHER_PRESET,
+        texts.BUTTON_SHARE,
+    ]
+
+    await started.press(preset_action("lego"))
+    await started.send_photo()
+    assert _labels(started.photos()[-1].reply_markup) == [
+        texts.BUTTON_DRAW_AGAIN,
+        texts.BUTTON_ANOTHER_PRESET,
+        texts.BUTTON_TO_FRIEND,
+    ]
+
+
+async def test_a_redelivered_followup_press_answers_once(started: Harness) -> None:
+    """Ч2: повторная доставка нажатия — один ответ и одно списание."""
+    await started.send_text("почему небо голубое?")
+    markup = started.messages()[-1].reply_markup
+    assert isinstance(markup, InlineKeyboardMarkup)
+    simpler = markup.inline_keyboard[0][0].callback_data
+    assert simpler is not None
+    user = await started.user()
+    used = (await started.storage.get_usage(user.id, _today())).messages_used
+    calls = len(started.llm.calls)
+
+    update = callback_update(900, simpler)
+    assert await started.post(update) == 200
+    assert await started.post(update) == 200
+
+    assert len(started.llm.calls) == calls + 1
+    after = (await started.storage.get_usage(user.id, _today())).messages_used
+    assert after == used + 1
+
+
 # --- Пресеты -------------------------------------------------------------
 
 
@@ -882,7 +936,10 @@ async def test_an_answer_that_carries_the_menu_needs_no_extra_message(
         bonus_documents=0,
     )
 
-    await harness.send_text("привет")
+    # Ответ чата теперь всегда с кнопками продолжения (сессия 8), а
+    # «Начали заново» — по-прежнему без кнопок под собой.
+    await harness.press(Action.CHAT_NEW_DIALOG)
 
     assert texts.MENU_UPDATED not in harness.texts_said()
+    assert harness.messages()[-1].text == texts.NEW_DIALOG_STARTED
     assert isinstance(harness.messages()[-1].reply_markup, ReplyKeyboardMarkup)

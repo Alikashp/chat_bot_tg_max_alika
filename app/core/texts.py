@@ -168,6 +168,11 @@ BUTTON_RETRY = "Повторить"
 BUTTON_NEW_DIALOG = "🔄 Новый диалог"
 BUTTON_CONTINUE = "▶️ Продолжить"
 BUTTON_DRAW_AGAIN = "🔄 Ещё раз"
+BUTTON_ANOTHER_VARIANT = "🔄 Ещё вариант"
+BUTTON_TO_FRIEND = "📤 Другу"
+BUTTON_SIMPLER = "🤔 Объясни проще"
+BUTTON_SHORTER = "📝 Короче"
+BUTTON_DRAW_THIS = "🎨 Нарисуй к этому"
 BUTTON_SHARE = "📤 Поделиться"
 BUTTON_SEND_TO_FRIEND = "📤 Отправить другу"
 BUTTON_ANOTHER_PRESET = "🎭 Другой прикол"
@@ -307,6 +312,9 @@ def chat_answer(
     """
     buttons = (
         *((BUTTON_CONTINUE,) if truncated else ()),
+        BUTTON_SIMPLER,
+        BUTTON_SHORTER,
+        BUTTON_DRAW_THIS,
         *((BUTTON_NEW_DIALOG,) if offer_new_dialog else ()),
     )
     return Screen(
@@ -314,6 +322,15 @@ def chat_answer(
         buttons=buttons,
         next_step="ответ на вопрос, меню под рукой",
     )
+
+
+#: Кнопка продолжения под ответом, которого бот уже не помнит: разговор
+#: начат заново или ушёл дальше окна памяти (сессия 8, Ч3).
+CHAT_ANSWER_GONE = "Этого ответа я уже не помню 🤷\nСпроси ещё раз — отвечу заново 👇"
+
+
+def chat_answer_gone() -> Screen:
+    return Screen(text=CHAT_ANSWER_GONE, buttons=_menu_buttons())
 
 
 NEW_DIALOG_STARTED = "Начали заново. О чём поговорим? 👇"
@@ -352,7 +369,7 @@ def image_error() -> Screen:
 def image_result() -> Screen:
     return Screen(
         text="",
-        buttons=(BUTTON_DRAW_AGAIN, BUTTON_SHARE),
+        buttons=(BUTTON_ANOTHER_VARIANT, BUTTON_ANOTHER_PRESET, BUTTON_SHARE),
         next_step="сама картинка, подписи не нужно",
     )
 
@@ -906,7 +923,7 @@ def photo_rejected(reason: str) -> Screen:
 def preset_result() -> Screen:
     return Screen(
         text="",
-        buttons=(BUTTON_DRAW_AGAIN, BUTTON_SEND_TO_FRIEND, BUTTON_ANOTHER_PRESET),
+        buttons=(BUTTON_DRAW_AGAIN, BUTTON_ANOTHER_PRESET, BUTTON_TO_FRIEND),
         next_step="сама картинка, подписи не нужно",
     )
 
@@ -1755,6 +1772,7 @@ def _all_screens() -> tuple[Screen, ...]:
             "Ответ оборвался на полусло", offer_new_dialog=True, truncated=True
         ),
         chat_error(),
+        chat_answer_gone(),
         new_dialog_started(),
         image_ask(),
         image_drawing(),

@@ -416,6 +416,56 @@ async def test_a_question_is_answered(started: Harness) -> None:
     assert started.texts_said() == ["Париж."]
 
 
+def _labels(message: Any) -> list[str]:
+    return [button.text for row in message.buttons for button in row]
+
+
+async def test_followups_stand_under_every_result(started: Harness) -> None:
+    """Ч1 в MAX: под ответом, картинкой и приколом — свои три кнопки.
+
+    Последней MAX сам дописывает «☰ В меню» — она не из этих трёх.
+    """
+    await started.send_text("почему небо голубое?")
+    answer = started.bot.sent[-1]
+    assert _labels(answer)[:3] == [
+        texts.BUTTON_SIMPLER,
+        texts.BUTTON_SHORTER,
+        texts.BUTTON_DRAW_THIS,
+    ]
+
+    await started.press(Action.MENU_IMAGES)
+    await started.send_text("кот-космонавт")
+    assert _labels(started.bot.edits[-1])[:3] == [
+        texts.BUTTON_ANOTHER_VARIANT,
+        texts.BUTTON_ANOTHER_PRESET,
+        texts.BUTTON_SHARE,
+    ]
+
+    await started.press(preset_action("lego"))
+    await started.send_photo()
+    assert _labels(started.bot.edits[-1])[:3] == [
+        texts.BUTTON_DRAW_AGAIN,
+        texts.BUTTON_ANOTHER_PRESET,
+        texts.BUTTON_TO_FRIEND,
+    ]
+
+
+async def test_a_followup_press_in_max_reworks_the_answer(started: Harness) -> None:
+    """Ч2 в MAX: «Короче» — новый запрос по тому же ответу, одно списание."""
+    started.llm.answer = "Свет рассеивается, синий сильнее."
+    await started.send_text("почему небо голубое?")
+    shorter = started.bot.sent[-1].buttons[0][1].payload
+    calls = len(started.llm.calls)
+
+    update = press_update("cb-shorter", shorter)
+    assert await started.post(update) == 200
+    assert await started.post(update) == 200
+
+    assert len(started.llm.calls) == calls + 1
+    turns, _ = started.llm.calls[-1]
+    assert turns[-2].content == "Свет рассеивается, синий сильнее."
+
+
 async def test_a_menu_button_press_opens_its_screen(started: Harness) -> None:
     await started.press(Action.MENU_IMAGES)
 

@@ -65,7 +65,8 @@ class Action(StrEnum):
     MY_LINK = "r:link"
     REFERRAL_SEND = "r:send"
 
-    # Разовый бонус за подписку на канал
+    # Подписка на канал. CHANNEL_OFFER — кнопка бонуса из старой переписки:
+    # бонус убран (сессия 8), а кнопки живут в чатах вечно.
     CHANNEL_OFFER = "n:show"
     CHANNEL_CHECK = "n:check"
 

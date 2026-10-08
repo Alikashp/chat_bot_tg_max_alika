@@ -287,16 +287,9 @@ class InMemoryStorage:
         user = self._require_user(user_id)
         self._users[user_id] = replace(user, stopped_at=None)
 
-    async def grant_channel_bonus(self, user_id: UserId, *, images: int) -> bool:
+    async def remember_channel_check(self, user_id: UserId, at: datetime) -> None:
         user = self._require_user(user_id)
-        if user.channel_bonus_at is not None:
-            return False
-        self._users[user_id] = replace(
-            user,
-            bonus_images=user.bonus_images + images,
-            channel_bonus_at=self._now(),
-        )
-        return True
+        self._users[user_id] = replace(user, channel_checked_at=at)
 
     # --- Оплата --------------------------------------------------------
 

@@ -193,6 +193,15 @@ async def _dispatch(deps: Deps, session: Session, incoming: IncomingMessage) -> 
         return
 
     action = incoming.action or keyboards.action_for_label(incoming.text)
+    # Обязательная подписка (сессия 8): до сценария, поэтому за
+    # остановленное ею ничего не списывается.
+    if (
+        channel.active(deps, session)
+        and channel.is_paid_work(session, incoming, action)
+        and not await channel.allows(deps, session)
+    ):
+        return
+
     if action is not None:
         await _route_action(deps, session, action)
         return
@@ -375,8 +384,10 @@ async def _route_action(deps: Deps, session: Session, action: str) -> None:
         case Action.REFERRAL_SEND:
             await referral.send_invitation(deps, session)
         case Action.CHANNEL_OFFER:
+            # «📣 Канал → +2 картинки» из старой переписки: бонус убран
+            # (сессия 8), обещать его нельзя, тупика быть не должно.
             await _clear_pending(deps, session)
-            await channel.show_offer(deps, session)
+            await channel.show_menu(deps, session)
         case Action.CHANNEL_CHECK:
             await _clear_pending(deps, session)
             await channel.check(deps, session)

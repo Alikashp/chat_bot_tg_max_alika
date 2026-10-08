@@ -152,7 +152,8 @@ async def test_created_user_is_found_by_external_id(storage: Storage) -> None:
     assert found.bonus_messages == 0
     # Картинки при регистрации кладутся в бонус той же вставкой.
     assert found.bonus_images == 3
-    assert found.channel_bonus_at is None
+    assert found.channel_checked_at is None
+    assert found.stopped_at is None
 
 
 async def test_unknown_user_is_none(storage: Storage) -> None:
@@ -622,35 +623,16 @@ async def test_an_abandoned_build_can_be_claimed_again(storage: Storage) -> None
     assert await storage.claim_presentation(user.id, later, stale_after=window)
 
 
-async def test_channel_bonus_is_granted_once(storage: Storage) -> None:
-    """Разовый — значит разовый.
-
-    Иначе бесплатные картинки печатались бы кнопкой: подписаться, забрать,
-    отписаться, подписаться снова.
-    """
+async def test_a_channel_check_is_remembered(storage: Storage) -> None:
+    """Сессия 8: подтверждение подписки помнится — Telegram не спрашиваем."""
     user = await _make_user(storage)
+    assert user.channel_checked_at is None
 
-    assert await storage.grant_channel_bonus(user.id, images=2) is True
-    assert await storage.grant_channel_bonus(user.id, images=2) is False
+    await storage.remember_channel_check(user.id, MOMENT)
 
     updated = await storage.get_user_by_id(user.id)
     assert updated is not None
-    assert updated.bonus_images == 2
-    assert updated.channel_bonus_at is not None
-
-
-async def test_channel_bonus_survives_a_double_tap(storage: Storage) -> None:
-    """Десять одновременных нажатий дают ровно одно начисление."""
-    user = await _make_user(storage)
-
-    results = await asyncio.gather(
-        *(storage.grant_channel_bonus(user.id, images=2) for _ in range(10))
-    )
-
-    assert sum(results) == 1
-    updated = await storage.get_user_by_id(user.id)
-    assert updated is not None
-    assert updated.bonus_images == 2
+    assert updated.channel_checked_at == MOMENT
 
 
 async def test_the_stopped_mark_keeps_its_first_moment(storage: Storage) -> None:
@@ -672,15 +654,6 @@ async def test_the_stopped_mark_keeps_its_first_moment(storage: Storage) -> None
     cleared = await storage.get_user_by_id(user.id)
     assert cleared is not None
     assert cleared.stopped_at is None
-
-
-async def test_a_fresh_user_has_no_channel_bonus_mark(storage: Storage) -> None:
-    user = await _make_user(storage)
-
-    assert user.channel_bonus_at is None
-
-
-# --- Учёт обращений к провайдерам ----------------------------------------
 
 
 async def test_a_generation_is_written_as_it_was_given(storage: Storage) -> None:

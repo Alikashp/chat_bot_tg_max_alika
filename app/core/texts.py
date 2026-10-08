@@ -203,11 +203,6 @@ def button_invite_for_presentations(bonus: int) -> str:
     return f"🎁 Позвать друга → +{_presentations(bonus)}"
 
 
-def button_channel_bonus(bonus: int) -> str:
-    """Кнопка «получить картинки за подписку на канал»."""
-    return f"📣 Канал → +{_images(bonus)}"
-
-
 # --- Названия тарифов ----------------------------------------------------
 
 TARIFF_TITLES: dict[TariffId, str] = {
@@ -962,7 +957,6 @@ def paywall_images(
     *,
     renews_on: str | None,
     invite_images: int,
-    channel_images: int = 0,
     by_charge: bool = False,
 ) -> Screen:
     """Показывается только при исчерпании и всегда даёт выход.
@@ -972,10 +966,6 @@ def paywall_images(
     прождал бы сутки впустую. ``renews_on`` в None — новая норма сама не
     придёт; при нынешних тарифах такого не бывает (у бесплатного три
     картинки в месяц), но экран к этому готов.
-
-    ``channel_images`` в нуле означает, что бонус за канал предлагать нечего:
-    канал не настроен, человек его уже получил или пришёл из мессенджера, где
-    канала у нас нет.
     """
     if renews_on is None:
         text = "Картинки закончились 😔\nМожно взять ещё бесплатно или открыть тарифы:"
@@ -985,8 +975,6 @@ def paywall_images(
         BUTTON_OPEN_TARIFFS,
         button_invite_for_images(invite_images),
     )
-    if channel_images:
-        buttons = (*buttons, button_channel_bonus(channel_images))
     return Screen(text=text, buttons=buttons)
 
 
@@ -1133,31 +1121,20 @@ def referral_reward(*, messages: int, images: int, presentations: int = 0) -> Sc
     )
 
 
-# --- Бонус за подписку на канал ------------------------------------------
+# --- Обязательная подписка на канал (сессия 8) ---------------------------
+
+#: Экран вместо платного результата, пока бесплатный человек не подписан.
+#: Одна-две строки и две кнопки: в канал и «проверь». Меню при этом под
+#: рукой — профиль, тарифы и оплата открыты всегда.
+CHANNEL_REQUIRED = (
+    "Чтобы продолжить, подпишись на наш канал 📣\n"
+    "Потом нажми «✅ Я подписался» — и сразу продолжим"
+)
 
 
-def channel_offer(*, bonus_images: int) -> Screen:
-    """Предложение подписаться на канал за разовый бонус.
-
-    Отдельным экраном, а не парой кнопок в пейволле: у ссылки на канал и у
-    проверки подписки разное назначение, и человеку надо один раз объяснить,
-    за что именно ему дадут картинки. Двух кнопок под текстом хватает —
-    сначала уйти в канал, потом вернуться и нажать проверку.
-    """
+def channel_required() -> Screen:
     return Screen(
-        text=(
-            f"Подпишись на канал — и получишь +{_images(bonus_images)} 🎁\n"
-            "Там новые приколы с фото и всё, чему бот научился."
-        ),
-        buttons=(BUTTON_OPEN_CHANNEL, BUTTON_CHANNEL_CHECK),
-    )
-
-
-def channel_granted(*, bonus_images: int) -> Screen:
-    """Подписка нашлась, картинки начислены."""
-    return Screen(
-        text=f"Спасибо! +{_images(bonus_images)} уже на балансе 🎁",
-        buttons=_menu_buttons(),
+        text=CHANNEL_REQUIRED, buttons=(BUTTON_OPEN_CHANNEL, BUTTON_CHANNEL_CHECK)
     )
 
 
@@ -1172,28 +1149,13 @@ def channel_not_subscribed() -> Screen:
     )
 
 
-def channel_already_taken(*, invite_images: int) -> Screen:
-    """Бонус за канал разовый, и второй раз его не дают.
-
-    Тупика тут быть не должно, поэтому экран сразу называет то, чем ещё можно
-    добрать картинки.
-    """
-    return Screen(
-        text="Бонус за канал ты уже получил 🎁 Картинки можно взять ещё так:",
-        buttons=(BUTTON_OPEN_TARIFFS, button_invite_for_images(invite_images)),
-    )
+#: После проверки. Ни слова о том, что подписка «найдена»: если Telegram не
+#: дал проверить, человека тоже пропускаем, и обещать тут нечего.
+CHANNEL_PASSED = "Готово, спасибо! 🙌\nПродолжай — напиши вопрос или выбери в меню 👇"
 
 
-def channel_check_failed() -> Screen:
-    """Проверить не удалось — и это не то же самое, что «не подписан».
-
-    Отказать здесь молча значило бы не выдать заслуженный бонус и оставить
-    человека думать, что его обманули.
-    """
-    return Screen(
-        text="Не получилось проверить подписку 🤷 Попробуй ещё раз.",
-        buttons=(BUTTON_CHANNEL_CHECK, BUTTON_OPEN_TARIFFS),
-    )
+def channel_passed() -> Screen:
+    return Screen(text=CHANNEL_PASSED, buttons=_menu_buttons())
 
 
 # --- Тарифы (§2.8) -------------------------------------------------------
@@ -1793,14 +1755,11 @@ def _all_screens() -> tuple[Screen, ...]:
         preset_result(),
         paywall_images(renews_on="27 сентября", invite_images=2),
         paywall_images(renews_on=None, invite_images=2),
-        paywall_images(renews_on="27 сентября", invite_images=2, channel_images=2),
         paywall_images(renews_on="27 сентября", invite_images=2, by_charge=True),
         paywall_messages(invite_messages=50),
-        channel_offer(bonus_images=2),
-        channel_granted(bonus_images=2),
+        channel_required(),
         channel_not_subscribed(),
-        channel_already_taken(invite_images=2),
-        channel_check_failed(),
+        channel_passed(),
         profile(
             tariff_id=TariffId.FREE,
             messages_used=12,

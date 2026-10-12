@@ -31,6 +31,7 @@ from app.adapters.storage.schema import (
     payments,
     referrals,
     star_cancels,
+    star_ledger,
     subscriptions,
     usage,
     users,
@@ -878,6 +879,20 @@ class PostgresStorage:
         async with self._session() as session, session.begin():
             await session.execute(query)
 
+    async def star_ledger_offset(self) -> int:
+        query = select(star_ledger.c.offset).where(star_ledger.c.id == _LEDGER_ROW)
+        async with self._session() as session:
+            found = (await session.execute(query)).scalar_one_or_none()
+        return int(found) if found is not None else 0
+
+    async def set_star_ledger_offset(self, offset: int) -> None:
+        statement = insert(star_ledger).values(id=_LEDGER_ROW, offset=offset)
+        query = statement.on_conflict_do_update(
+            index_elements=[star_ledger.c.id], set_={"offset": offset}
+        )
+        async with self._session() as session, session.begin():
+            await session.execute(query)
+
     # --- Диалог --------------------------------------------------------
 
     async def get_dialog(self, user_id: UserId) -> DialogState:
@@ -1031,6 +1046,9 @@ def _utc_now() -> datetime:
 
 
 #: Статусы заказа, при которых деньги у человека были взяты.
+#: Единственная строка таблицы ``star_ledger``.
+_LEDGER_ROW = 1
+
 _MONEY_TAKEN = (PaymentStatus.PAID.value, PaymentStatus.REFUNDED.value)
 
 

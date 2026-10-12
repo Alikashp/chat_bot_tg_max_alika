@@ -658,3 +658,88 @@ async def test_forbidden_means_the_person_stopped_the_bot() -> None:
 
     with pytest.raises(RecipientGoneError):
         await messenger.send_text(chat, "текст")
+
+
+# --- Журнал звёздных транзакций (сессия 10) ------------------------------
+
+
+class _LedgerSession(BaseSession):
+    """Отдаёт заранее заданную страницу журнала и запоминает запрос."""
+
+    def __init__(self, page: Any) -> None:
+        super().__init__()
+        self.page = page
+        self.asked: list[Any] = []
+
+    async def make_request(
+        self,
+        bot: Bot,
+        method: Any,
+        timeout: int | None = None,  # noqa: ASYNC109 — сигнатура из aiogram
+    ) -> Any:
+        self.asked.append(method)
+        return self.page
+
+    async def stream_content(
+        self, *args: Any, **kwargs: Any
+    ) -> AsyncGenerator[bytes, None]:
+        yield b""
+
+    async def close(self) -> None:
+        return None
+
+
+async def test_the_star_ledger_keeps_only_payments_for_our_invoices() -> None:
+    from aiogram.methods import GetStarTransactions
+    from aiogram.types import (
+        StarTransaction,
+        StarTransactions,
+        TransactionPartnerOther,
+        TransactionPartnerUser,
+        User,
+    )
+
+    from app.adapters.telegram.stars import TelegramStars
+
+    when = datetime(2026, 10, 12, 12, 0, tzinfo=UTC)
+    buyer = User(id=555, is_bot=False, first_name="Аня")
+    page = StarTransactions(
+        transactions=[
+            StarTransaction(
+                id="charge-1",
+                amount=300,
+                date=when,
+                source=TransactionPartnerUser(
+                    transaction_type="invoice_payment",
+                    user=buyer,
+                    invoice_payload="order-1",
+                    subscription_period=2592000,
+                ),
+            ),
+            # Исходящая — вывод звёзд: оплатой не считается.
+            StarTransaction(
+                id="out-1", amount=100, date=when, receiver=TransactionPartnerOther()
+            ),
+            # Входящая, но без нашего счёта — подарок.
+            StarTransaction(
+                id="gift-1",
+                amount=10,
+                date=when,
+                source=TransactionPartnerUser(
+                    transaction_type="gift_purchase", user=buyer
+                ),
+            ),
+        ]
+    )
+    session = _LedgerSession(page)
+    stars = TelegramStars(Bot(token="42:TEST", session=session))
+
+    found = await stars.ledger(offset=40, limit=100)
+
+    asked = session.asked[0]
+    assert isinstance(asked, GetStarTransactions)
+    assert (asked.offset, asked.limit) == (40, 100)
+    assert found.read == 3
+    assert [
+        (p.charge_id, p.user_id, p.order_id, p.paid_at) for p in found.payments
+    ] == [("charge-1", "555", "order-1", when)]

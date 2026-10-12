@@ -82,6 +82,7 @@ class InMemoryStorage:
         self._payments: dict[str, Payment] = {}
         self._subscriptions: dict[UserId, Subscription] = {}
         self._star_cancels: dict[str, StarCancel] = {}
+        self._star_ledger_offset = 0
 
     # --- Пользователи --------------------------------------------------
 
@@ -555,6 +556,12 @@ class InMemoryStorage:
 
     async def star_cancel_done(self, charge_id: str) -> None:
         self._star_cancels.pop(charge_id, None)
+
+    async def star_ledger_offset(self) -> int:
+        return self._star_ledger_offset
+
+    async def set_star_ledger_offset(self, offset: int) -> None:
+        self._star_ledger_offset = offset
 
     # --- Диалог --------------------------------------------------------
 

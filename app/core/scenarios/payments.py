@@ -536,6 +536,19 @@ async def confirm(
         deps.logger.info("payment_already_confirmed", user_id=int(order.user_id))
         return None
 
+    if (
+        not renewal
+        and charge_id is not None
+        and order.method == PaymentMethod.STARS.value
+        and order.external_id != charge_id
+        and not await deps.storage.attach_external_id(order.id, charge_id)
+    ):
+        # Первый звёздный платёж запоминает своё списание: по нему сверка
+        # журнала узнаёт, что эта транзакция — не продление (сессия 10).
+        # Списание уже числится за другим заказом — второй выдачи не будет.
+        deps.logger.error("payment_charge_taken", user_id=int(order.user_id))
+        return None
+
     # Всё, что спрашивается у провайдера, — до выдачи. Выдача — одна
     # транзакция хранилища (П4), и ждать в ней чужую сеть нельзя.
     previous = await deps.storage.get_subscription(order.user_id)
@@ -805,10 +818,17 @@ async def _renewal_order(
     по идентификатору списания: он уникален в таблице заказов, поэтому
     попытка привязать его второй раз проваливается на уровне базы — то есть
     надёжно, а не «мы вроде бы проверили».
+
+    Заказ на это списание уже есть, но не оплачен — выдача упала посреди
+    обработки. Тогда доводится он же, а не заводится второй (сессия 10).
     """
     if charge_id is None:
         deps.logger.warning("renewal_without_charge_id", user_id=int(first.user_id))
         return None
+
+    started = await _unfinished_renewal(deps, charge_id)
+    if started is not None:
+        return started
 
     order = await deps.storage.create_payment(
         user_id=first.user_id,
@@ -822,9 +842,21 @@ async def _renewal_order(
         docs_version=deps.settings.docs_version,
     )
     if not await deps.storage.attach_external_id(order.id, charge_id):
-        deps.logger.info("renewal_already_confirmed", user_id=int(first.user_id))
-        return None
+        # Одновременно то же списание довёл другой обработчик: если его
+        # заказ ещё не оплачен, выдаёт тот, кто успеет первым.
+        started = await _unfinished_renewal(deps, charge_id)
+        if started is None:
+            deps.logger.info("renewal_already_confirmed", user_id=int(first.user_id))
+        return started
     return order
+
+
+async def _unfinished_renewal(deps: Deps, charge_id: str) -> Payment | None:
+    """Заказ продления на это списание, который ещё не оплачен."""
+    known = await deps.storage.get_payment_by_external_id(charge_id)
+    if known is not None and known.status == PaymentStatus.PENDING.value:
+        return known
+    return None
 
 
 async def _end_previous(

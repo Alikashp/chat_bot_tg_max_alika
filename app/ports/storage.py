@@ -536,6 +536,14 @@ class Storage(Protocol):
         """Снимает подписку с очереди: Telegram отмену принял."""
         ...
 
+    async def star_ledger_offset(self) -> int:
+        """До какой позиции журнал звёздных транзакций уже сверен (сессия 10)."""
+        ...
+
+    async def set_star_ledger_offset(self, offset: int) -> None:
+        """Запоминает позицию: всё до неё доведено или не наше."""
+        ...
+
     # --- Диалог --------------------------------------------------------
 
     async def get_dialog(self, user_id: UserId) -> DialogState:

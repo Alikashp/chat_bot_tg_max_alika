@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import io
 from collections.abc import Iterator
 
@@ -26,9 +27,18 @@ from app.ports.documents import DocumentEmptyError, DocumentUnreadableError
 class LocalDocumentReader:
     """Реализация порта DocumentReader. Работает в памяти, файлов не пишет."""
 
-    def read(
+    async def read(
         self, document: Document, document_format: DocumentFormat, *, limit: int
     ) -> str:
+        """Разбор — в отдельном потоке: петлю событий он не держит (сессия 10)."""
+        return await asyncio.to_thread(
+            self.read_now, document, document_format, limit=limit
+        )
+
+    def read_now(
+        self, document: Document, document_format: DocumentFormat, *, limit: int
+    ) -> str:
+        """Тот же разбор, блокирующий: для потока и для тестов."""
         if limit <= 0:
             raise ValueError("предел длины текста должен быть положительным")
 

@@ -40,7 +40,6 @@ from app.core.models import (
     Subscription,
     TariffId,
     User,
-    UserId,
 )
 from app.core.receipts import Receipt, receipt_for
 from app.core.scenarios import keyboards
@@ -419,8 +418,11 @@ async def approve(
     уже оплачен. Отказывать нельзя: это остановило бы подписку, за которую
     человек платит. Но и соглашаться на любой оплаченный заказ нельзя — тогда
     старая ссылка на счёт, открытая второй раз, стоила бы человеку денег без
-    единого дня тарифа. Поэтому оплаченный заказ проходит только при живой
-    подписке: продление бывает только у неё.
+    единого дня тарифа. Поэтому оплаченный заказ проходит только как
+    продление своей подписки: живой, звёздной и того же тарифа. Живая
+    подписка другого тарифа или карточная — это другая подписка, а старая
+    ссылка, открытая снова, заводит у Telegram новую: звёзды спишутся, а
+    выдать по оплаченному заказу нечего (сессия 9).
     """
     if deps.stars is None:
         return
@@ -434,7 +436,7 @@ async def approve(
             order.status == PaymentStatus.PENDING.value
             or (
                 order.status == PaymentStatus.PAID.value
-                and await _renews(deps, order.user_id)
+                and await _renews_by_stars(deps, order)
             )
         )
     )
@@ -487,12 +489,14 @@ async def _renews_otherwise(
     return True
 
 
-async def _renews(deps: Deps, user_id: UserId) -> bool:
-    """Есть ли у человека подписка, по которой ждём очередного списания."""
-    subscription = await deps.storage.get_subscription(user_id)
+async def _renews_by_stars(deps: Deps, order: Payment) -> bool:
+    """Ждём ли очередного списания звёздами по подписке этого заказа."""
+    subscription = await deps.storage.get_subscription(order.user_id)
     return (
         subscription is not None
         and subscription.status != SubscriptionStatus.CANCELLED.value
+        and subscription.method == PaymentMethod.STARS.value
+        and subscription.tariff is order.tariff
     )
 
 

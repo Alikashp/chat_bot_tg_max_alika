@@ -711,11 +711,14 @@ def _build_settlement(by_messenger: dict[MessengerKind, Deps]) -> Settlement:
             logger.info("payment_notice_not_paid")
             return
 
+        renewal = await payments.is_card_renewal(deps, order)
         confirmed = await payments.confirm(deps, order_id)
         if confirmed is None:
             return
 
-        await payments.announce(deps, session_for(deps, user), confirmed)
+        await payments.announce(
+            deps, session_for(deps, user), confirmed, renewal=renewal
+        )
 
     return Settlement(handle=handle)
 

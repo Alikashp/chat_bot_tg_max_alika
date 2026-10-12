@@ -106,8 +106,7 @@ class Reconciler:
             return
         # Заказ может оказаться автосписанием за период, ответ на которое
         # потерялся. Узнавать это надо до выдачи: она освобождает период.
-        subscription = await deps.storage.get_subscription(order.user_id)
-        renewal = subscription is not None and subscription.charge_order_id == order.id
+        renewal = await payments.is_card_renewal(deps, order)
         confirmed = await payments.confirm(deps, order.id)
         if confirmed is None:
             return

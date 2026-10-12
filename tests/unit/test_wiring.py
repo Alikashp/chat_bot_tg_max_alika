@@ -23,7 +23,7 @@ from app.core.models import MessengerKind, Subscription, TariffId
 from app.core.scenarios.deps import Deps
 from app.main import build_cards, build_presentations
 from app.ports.payments import PaymentMethod, PaymentStatus, SubscriptionStatus
-from tests.fakes import FakeCards
+from tests.fakes import FakeCards, FakeMessenger
 
 BASE = "https://api.example/v3"
 
@@ -210,6 +210,46 @@ async def test_a_notice_we_cannot_verify_grants_nothing(deps: Deps) -> None:
     user = await deps.storage.get_user_by_id(order.user_id)
     assert user is not None
     assert user.tariff is TariffId.FREE
+
+
+async def test_a_card_renewal_confirmed_by_the_notice_says_renewed(
+    deps: Deps, messenger: FakeMessenger
+) -> None:
+    """Сессия 10, С6а: уведомление ЮKassa пришло раньше ответа биллингу.
+
+    Человек ничего не покупал — продлилась его подписка. «Оплата прошла»
+    его бы только запутал; сверка говорит «Продлили тариф», уведомление
+    обязано говорить то же.
+    """
+    from app.main import _build_settlement
+
+    cards = FakeCards(recurring=True)
+    telegram = replace(deps, cards=cards)
+    order_id = await _order(telegram, MessengerKind.TELEGRAM, "yk-renew-1")
+    order = await deps.storage.get_payment(order_id)
+    assert order is not None
+    now = deps.now()
+    await deps.storage.save_subscription(
+        Subscription(
+            user_id=order.user_id,
+            tariff=TariffId.PRO,
+            method=PaymentMethod.CARD.value,
+            status="active",
+            amount=599,
+            currency="RUB",
+            next_charge_at=now,
+            created_at=now,
+            payment_method_id="card-1",
+        )
+    )
+    assert await deps.storage.hold_charge_order(order.user_id, order_id)
+
+    settlement = _build_settlement({MessengerKind.TELEGRAM: telegram})
+    await settlement.handle(
+        {"object": {"id": "yk-renew-1", "metadata": {"order_id": order_id}}}
+    )
+
+    assert messenger.last_text.text.startswith("Продлили тариф")
 
 
 # --- Уведомление о возврате ----------------------------------------------

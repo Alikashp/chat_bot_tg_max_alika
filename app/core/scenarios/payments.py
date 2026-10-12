@@ -650,6 +650,17 @@ async def confirm(
     return replace(order, paid_at=deps.now())
 
 
+async def is_card_renewal(deps: Deps, order: Payment) -> bool:
+    """Списание за период по карточной подписке, а не покупка (сессия 10, С6а).
+
+    Узнавать это надо до выдачи: она освобождает период подписки. Нужно
+    уведомлению ЮKassa и сверке — оба могут довести продление раньше
+    биллинга, и оба обязаны сказать человеку «Продлили тариф».
+    """
+    subscription = await deps.storage.get_subscription(order.user_id)
+    return subscription is not None and subscription.charge_order_id == order.id
+
+
 async def refunded(deps: Deps, order: Payment) -> None:
     """Деньги по заказу вернули: оплаченный ими месяц кончается (Т5).
 

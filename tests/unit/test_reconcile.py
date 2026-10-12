@@ -13,6 +13,9 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import timedelta
 
+import httpx
+import respx
+
 from app.adapters.storage.memory import InMemoryStorage
 from app.core import texts
 from app.core.limits import current_day
@@ -21,6 +24,7 @@ from app.core.reconcile import Reconciler
 from app.core.scenarios.deps import Deps
 from app.ports.payments import PaymentStatus
 from tests.fakes import FakeCards, FakeLogger, FakeMessenger, FrozenClock
+from tests.unit.test_yookassa import PAYMENTS_URL, _provider
 
 AFTER = timedelta(minutes=10)
 WINDOW = timedelta(days=3)
@@ -221,3 +225,35 @@ async def test_a_renewal_order_is_announced_as_a_renewal(
     await _reconciler({MessengerKind.TELEGRAM: recurring}).run()
 
     assert "Продлили тариф" in messenger.last_text.text
+
+
+@respx.mock
+async def test_a_refunded_payment_is_not_turned_into_a_tariff(
+    deps: Deps, user: User, storage: InMemoryStorage, clock: FrozenClock
+) -> None:
+    """Сессия 10, С3: оба уведомления потерялись, а деньги уже вернули.
+
+    Сверка спрашивает ЮKassa настоящим адаптером: статус платежа после
+    возврата остаётся succeeded, и только сумма возврата говорит правду.
+    """
+    order_id = await _order(storage, user, external_id="2d0a1b")
+    clock.advance(minutes=11)
+    respx.get(f"{PAYMENTS_URL}/2d0a1b").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "id": "2d0a1b",
+                "status": "succeeded",
+                "paid": True,
+                "amount": {"value": "599.00", "currency": "RUB"},
+                "refunded_amount": {"value": "599.00", "currency": "RUB"},
+            },
+        )
+    )
+
+    await _reconciler({MessengerKind.TELEGRAM: replace(deps, cards=_provider())}).run()
+
+    order = await storage.get_payment(order_id)
+    assert order is not None and order.status == PaymentStatus.PENDING.value
+    fresh = await storage.get_user_by_id(user.id)
+    assert fresh is not None and fresh.tariff is TariffId.FREE

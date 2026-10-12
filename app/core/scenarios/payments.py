@@ -490,14 +490,24 @@ async def _renews_otherwise(
 
 
 async def _renews_by_stars(deps: Deps, order: Payment) -> bool:
-    """Ждём ли очередного списания звёздами по подписке этого заказа."""
+    """Ждём ли очередного списания звёздами по подписке этого заказа.
+
+    Подписку заказа узнаём по первому списанию: с сессии 10 первый заказ
+    его помнит, а живая подписка хранит его же (сессия 10, С2). Отменённая
+    и заведённая заново подписка того же тарифа — уже другая, и старая
+    ссылка на неё не одобряется. Заказ, оплаченный до сессии 10, списания не
+    помнит — для него остаётся прежнее правило: звёздная подписка того же
+    тарифа.
+    """
     subscription = await deps.storage.get_subscription(order.user_id)
-    return (
-        subscription is not None
-        and subscription.status != SubscriptionStatus.CANCELLED.value
-        and subscription.method == PaymentMethod.STARS.value
-        and subscription.tariff is order.tariff
-    )
+    if (
+        subscription is None
+        or subscription.status == SubscriptionStatus.CANCELLED.value
+        or subscription.method != PaymentMethod.STARS.value
+        or subscription.tariff is not order.tariff
+    ):
+        return False
+    return order.external_id is None or order.external_id == subscription.charge_id
 
 
 async def confirm(

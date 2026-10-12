@@ -579,12 +579,26 @@ class InMemoryStorage:
 
     # --- Рефералы ------------------------------------------------------
 
-    async def record_referral(self, referrer_id: UserId, referee_id: UserId) -> bool:
+    async def record_referral(
+        self,
+        referrer_id: UserId,
+        referee_id: UserId,
+        *,
+        since: datetime | None = None,
+        limit: int = 0,
+    ) -> bool:
         if referrer_id == referee_id:
             return False
         self._require_user(referrer_id)
         self._require_user(referee_id)
         if referee_id in self._referrals:
+            return False
+        # Без await между подсчётом и записью: в одной петле это одна операция.
+        if (
+            limit > 0
+            and since is not None
+            and self._count_since(referrer_id, since) >= limit
+        ):
             return False
         self._referrals[referee_id] = (referrer_id, self._now())
         return True
@@ -595,6 +609,9 @@ class InMemoryStorage:
         )
 
     async def count_referrals_since(self, referrer_id: UserId, since: datetime) -> int:
+        return self._count_since(referrer_id, since)
+
+    def _count_since(self, referrer_id: UserId, since: datetime) -> int:
         return sum(
             1
             for referrer, recorded_at in self._referrals.values()

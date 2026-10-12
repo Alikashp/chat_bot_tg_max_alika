@@ -930,12 +930,24 @@ class PostgresStorage:
 
     # --- Рефералы ------------------------------------------------------
 
-    async def record_referral(self, referrer_id: UserId, referee_id: UserId) -> bool:
-        """Фиксирует связь. Возвращает False, если она уже была.
+    async def record_referral(
+        self,
+        referrer_id: UserId,
+        referee_id: UserId,
+        *,
+        since: datetime | None = None,
+        limit: int = 0,
+    ) -> bool:
+        """Фиксирует связь. Возвращает False, если она уже была или потолок взят.
 
         Self-referral отсекается здесь, чтобы вернуть честное False вместо
         исключения. Ограничение в схеме при этом остаётся: оно превращает
         «мы аккуратно проверили» в «этого не может быть».
+
+        Потолок — под блокировкой строки пригласившего (сессия 10, С5):
+        одновременные записи к одному пригласившему идут по очереди, и каждая
+        считает уже с учётом предыдущей. Без блокировки все успевали
+        посчитать до первой вставки.
         """
         if referrer_id == referee_id:
             return False
@@ -949,7 +961,22 @@ class PostgresStorage:
             index_elements=[referrals.c.referee_id]
         ).returning(referrals.c.referee_id)
 
+        capped = limit > 0 and since is not None
         async with self._session() as session, session.begin():
+            if capped:
+                await session.execute(
+                    select(users.c.id)
+                    .where(users.c.id == referrer_id)
+                    .with_for_update()
+                )
+                taken = await session.execute(
+                    select(func.count()).where(
+                        referrals.c.referrer_id == referrer_id,
+                        referrals.c.created_at >= since,
+                    )
+                )
+                if int(taken.scalar_one()) >= limit:
+                    return False
             recorded = (await session.execute(query)).one_or_none()
         return recorded is not None
 

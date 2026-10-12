@@ -567,11 +567,7 @@ async def _build_draft(deps: Deps, session: Session, token: str, draft: Draft) -
         # Черновик ни разу не показывался с оформлением — показываем.
         await show_screen(deps, session, token)
         return
-    if await _build(deps, session, token, draft):
-        assert deps.drafts is not None
-        deps.drafts.take(token)
-        if draft.report_token is not None and deps.handoff is not None:
-            deps.handoff.take(draft.report_token)
+    await _build(deps, session, token, draft)
 
 
 async def _gone(deps: Deps, session: Session) -> None:
@@ -604,7 +600,16 @@ async def _build(deps: Deps, session: Session, token: str, draft: Draft) -> bool
         return False
 
     try:
-        return await _build_claimed(deps, session, token, draft)
+        delivered = await _build_claimed(deps, session, token, draft)
+        if delivered:
+            # Черновик и жетон доклада уходят раньше слота: нажатие «Собрать»,
+            # пришедшее в миг освобождения слота, иначе нашло бы черновик на
+            # месте и собрало бы вторую колоду (сессия 9).
+            assert deps.drafts is not None
+            deps.drafts.take(token)
+            if draft.report_token is not None and deps.handoff is not None:
+                deps.handoff.take(draft.report_token)
+        return delivered
     finally:
         await deps.storage.release_presentation(session.user.id)
 

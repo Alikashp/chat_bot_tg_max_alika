@@ -75,7 +75,9 @@ async def draw(deps: Deps, session: Session, description: str) -> None:
         )
         await deps.storage.set_retry_context(
             session.user.id,
-            RetryContext(kind=RetryKind.IMAGE, prompt=description).encode(),
+            RetryContext(
+                kind=RetryKind.IMAGE, source=deps.prompts.put(description)
+            ).encode(),
         )
         await deps.messenger.edit_text(
             waiting,
@@ -96,11 +98,14 @@ async def draw(deps: Deps, session: Session, description: str) -> None:
         waiting, photo, keyboard=keyboards.image_result()
     )
 
-    # Картинка доставлена — только теперь списываем.
+    # Картинка доставлена — только теперь списываем. Описание для «Ещё
+    # вариант» — в памяти, в базе только жетон.
     await deps.storage.set_retry_context(
         session.user.id,
         RetryContext(
-            kind=RetryKind.IMAGE, prompt=description, result_photo=delivered
+            kind=RetryKind.IMAGE,
+            source=deps.prompts.put(description),
+            result_photo=delivered,
         ).encode(),
     )
     await spending.charge(deps, session, LimitKind.IMAGES)

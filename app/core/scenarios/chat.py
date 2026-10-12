@@ -80,10 +80,11 @@ async def handle_message(deps: Deps, session: Session, text: str) -> None:
             "llm_failed", user_id=int(session.user.id), error=repr(error)
         )
         # Запоминаем сообщение, чтобы «Повторить» повторяло именно его, а не
-        # просило человека набрать всё заново.
+        # просило человека набрать всё заново. Само сообщение — в памяти, в
+        # базе только жетон.
         await deps.storage.set_retry_context(
             session.user.id,
-            RetryContext(kind=RetryKind.CHAT, prompt=text).encode(),
+            RetryContext(kind=RetryKind.CHAT, source=deps.prompts.put(text)).encode(),
         )
         screen = texts.chat_error()
         await deps.messenger.send_text(

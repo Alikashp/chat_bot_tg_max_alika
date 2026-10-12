@@ -228,6 +228,12 @@ def build_intake(
 #: зависшему запросу к базе остановить все оплаты.
 _PAYMENT_QUESTION_WORKERS = 2
 
+#: Сколько текстов для «Повторить» и «Ещё вариант» держим в памяти. В худшем
+#: случае — сообщения чата по 4 096 знаков: около 40 МБ; обычно описание
+#: картинки — строка, и это единицы мегабайт. Вытесняются самые старые: их
+#: владелец услышит «повторять нечего».
+PROMPTS_MAX_ITEMS = 5_000
+
 
 def build_telegram_intake(
     handle: Callable[[dict[str, Any]], Awaitable[None]],
@@ -502,6 +508,11 @@ async def build_wiring(settings: Settings) -> Wiring:
     # памяти, под жетоном (сессия 7, В6). Присланный файл в черновике —
     # ссылкой, поэтому хватает предела по числу (сессия 8, М1).
     drafts: MemoryHandoff[Draft] = MemoryHandoff()
+    # Тексты для «Повторить» и «Ещё вариант» — сообщение чата, описание
+    # картинки — тоже в памяти, а не в базе (сессия 9). Жетон заводится на
+    # каждый результат и каждый сбой, поэтому предел выше, чем у связок:
+    # описания обычно в строку, а сообщение чата — не длиннее 4 096 знаков.
+    prompts: MemoryHandoff[str] = MemoryHandoff(max_items=PROMPTS_MAX_ITEMS)
     if presentations_client is not None:
         http_clients = (*http_clients, presentations_client)
 
@@ -545,6 +556,7 @@ async def build_wiring(settings: Settings) -> Wiring:
             stars=stars,
             channel=channel,
             now=_utc_now,
+            prompts=prompts,
             examples=examples,
             presentations=presentations,
             handoff=handoff,

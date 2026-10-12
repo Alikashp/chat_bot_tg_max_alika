@@ -818,7 +818,8 @@ async def test_the_report_text_never_reaches_the_database(
     # доклада. Поэтому в «Повторить» по докладу темы нет вовсе — один жетон.
     context = retry_context.decode(fresh.retry_context)
     assert context is not None
-    assert (context.prompt, context.source is not None) == ("", True)
+    assert context.source is not None
+    assert "prompt" not in (fresh.retry_context or "")
 
 
 async def test_a_failed_presentation_from_the_report_can_be_retried(

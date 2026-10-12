@@ -45,6 +45,7 @@ from app.core.scenarios.reach import WatchedMessenger
 from app.core.settings import CoreSettings
 from app.infra.antiflood import FloodGuard
 from app.infra.dedup import Deduplicator
+from app.infra.handoff import MemoryHandoff
 from app.infra.queue import JobQueue
 from app.infra.server import MAX_SECRET_HEADER, Webhook, create_app
 from config.presets import PRESETS
@@ -315,6 +316,7 @@ async def harness() -> AsyncIterator[Harness]:
         # не предлагается.
         channel=None,
         now=clock,
+        prompts=MemoryHandoff(),
     )
 
     async def handle(raw: dict[str, Any]) -> None:

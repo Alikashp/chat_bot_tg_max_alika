@@ -386,3 +386,65 @@ async def test_old_presentation_topics_leave_the_database(
         ("await:pres", '{"kind":"chat","prompt":"привет"}'),
     ]
     assert "Секретная" not in repr(found)
+
+
+def _forget_retry_texts() -> object:
+    """Миграция, стирающая тексты из данных для «Повторить» (сессия 9)."""
+    path = (
+        Path(__file__).resolve().parents[2]
+        / "migrations"
+        / "versions"
+        / "f2b8d4a6c391_forget_retry_texts.py"
+    )
+    spec = importlib.util.spec_from_file_location("forget_retry_texts", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+async def test_old_retry_texts_leave_the_database(engine: AsyncEngine) -> None:
+    """Сессия 9, шаг 0: тексты, записанные прежней версией, стираются.
+
+    Ссылки на готовую картинку и фото прикола, жетоны презентаций остаются:
+    «Поделиться» и «Ещё раз» у прикола работают как раньше.
+    """
+    migration = _forget_retry_texts()
+    contexts = [
+        '{"kind":"chat","prompt":"Секрет чата","preset_id":null,'
+        '"source_photos":[],"result_photo":null,"theme_id":null,"source":null}',
+        '{"kind":"image","prompt":"Секрет картинки","result_photo":null}',
+        '{"kind":"image","prompt":"Секрет ответа","result_photo":"photo-1"}',
+        '{"kind":"preset","prompt":"","preset_id":"lego",'
+        '"source_photos":["src-1"],"result_photo":"photo-2"}',
+        '{"kind":"presentation","prompt":"","theme_id":"t","source":"abc"}',
+        '{"kind":"image","source":"token","result_photo":"photo-3"}',
+        'не json "prompt"',
+        None,
+    ]
+    ids = await _make_users(engine, len(contexts))
+    async with engine.begin() as connection:
+        for user_id, context in zip(ids, contexts, strict=True):
+            await connection.execute(
+                text("UPDATE users SET retry_context = :r WHERE id = :id"),
+                {"r": context, "id": user_id},
+            )
+        for _ in range(2):
+            await connection.run_sync(migration.forget)  # type: ignore[attr-defined]
+        result = await connection.execute(
+            text("SELECT retry_context FROM users ORDER BY id")
+        )
+        found = [row[0] for row in result.all()]
+
+    assert found == [
+        None,
+        None,
+        '{"kind":"image","result_photo":"photo-1"}',
+        '{"kind":"preset","preset_id":"lego",'
+        '"source_photos":["src-1"],"result_photo":"photo-2"}',
+        '{"kind":"presentation","theme_id":"t","source":"abc"}',
+        '{"kind":"image","source":"token","result_photo":"photo-3"}',
+        None,
+        None,
+    ]
+    assert "Секрет" not in repr(found)

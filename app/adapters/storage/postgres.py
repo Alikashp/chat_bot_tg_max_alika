@@ -913,12 +913,13 @@ class PostgresStorage:
         payload: list[dict[str, str]] = [
             {"role": turn.role.value, "content": turn.content} for turn in dialog.turns
         ]
+        now = self._now()
         statement = insert(dialogs).values(
-            user_id=user_id, turns=payload, user_turns=dialog.user_turns
+            user_id=user_id, turns=payload, user_turns=dialog.user_turns, updated_at=now
         )
         query = statement.on_conflict_do_update(
             index_elements=[dialogs.c.user_id],
-            set_={"turns": payload, "user_turns": dialog.user_turns},
+            set_={"turns": payload, "user_turns": dialog.user_turns, "updated_at": now},
         )
         async with self._session() as session, session.begin():
             await session.execute(query)
@@ -927,6 +928,15 @@ class PostgresStorage:
         query = delete(dialogs).where(dialogs.c.user_id == user_id)
         async with self._session() as session, session.begin():
             await session.execute(query)
+
+    async def forget_idle_dialogs(self, before: datetime) -> int:
+        query = (
+            delete(dialogs)
+            .where(dialogs.c.updated_at < before)
+            .returning(dialogs.c.user_id)
+        )
+        async with self._session() as session, session.begin():
+            return len((await session.execute(query)).all())
 
     # --- Рефералы ------------------------------------------------------
 

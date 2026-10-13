@@ -195,6 +195,15 @@ dialogs = Table(
     ),
     Column("turns", JSONB, nullable=False),
     Column("user_turns", Integer, nullable=False, server_default="0"),
+    # Когда разговор сохраняли последним (сессия 10): история без активности
+    # дольше срока удаляется сама.
+    Column(
+        "updated_at",
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    ),
+    Index("ix_dialogs_updated_at", "updated_at"),
 )
 
 subscriptions = Table(

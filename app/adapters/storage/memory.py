@@ -66,6 +66,7 @@ class InMemoryStorage:
         self._usage: dict[tuple[UserId, date], Usage] = {}
         self._period_usage: dict[tuple[UserId, datetime], PeriodUsage] = {}
         self._dialogs: dict[UserId, DialogState] = {}
+        self._dialogs_touched: dict[UserId, datetime] = {}
         #: Учёт обращений к провайдерам. Публичный намеренно: в тестах по
         #: нему проверяют, что попытка записана, — так же, как в бою по
         #: таблице generations.
@@ -572,10 +573,19 @@ class InMemoryStorage:
     async def save_dialog(self, user_id: UserId, dialog: DialogState) -> None:
         self._require_user(user_id)
         self._dialogs[user_id] = dialog
+        self._dialogs_touched[user_id] = self._now()
 
     async def reset_dialog(self, user_id: UserId) -> None:
         self._require_user(user_id)
         self._dialogs.pop(user_id, None)
+        self._dialogs_touched.pop(user_id, None)
+
+    async def forget_idle_dialogs(self, before: datetime) -> int:
+        idle = [who for who, at in self._dialogs_touched.items() if at < before]
+        for who in idle:
+            self._dialogs.pop(who, None)
+            del self._dialogs_touched[who]
+        return len(idle)
 
     # --- Рефералы ------------------------------------------------------
 

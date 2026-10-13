@@ -244,6 +244,18 @@ def paywall(invite_label: str = "") -> Keyboard:
     return Keyboard(rows=tuple(rows))
 
 
+def paywall_free(continue_label: str, action: str, invite_label: str = "") -> Keyboard:
+    """Пейволл бесплатного тарифа: продолжить на Лайте и, если есть, друг.
+
+    Кнопка продолжения ведёт к экрану условий или заказа, минуя список
+    тарифов: условия перед оплатой обязательны, выбор — уже сделан.
+    """
+    rows = [(Button(text=continue_label, action=action),)]
+    if invite_label:
+        rows.append((Button(text=invite_label, action=Action.INVITE_FRIEND),))
+    return Keyboard(rows=tuple(rows))
+
+
 def channel_required(url: str) -> Keyboard:
     """Уйти в канал и вернуться с проверкой (сессия 8).
 

@@ -28,6 +28,7 @@ from app.core.scenarios import (
     tariffs,
 )
 from app.core.scenarios.deps import Deps, Session
+from app.core.tariffs import tariff_of
 from app.ports.ai import ContentRefusedError, ImageQuality
 from config import presets as registry
 from config.presets import PRESETS, Preset
@@ -201,7 +202,12 @@ async def test_chat_shows_the_paywall_when_messages_run_out(
 
     await chat.handle_message(deps, session, "привет")
 
-    assert "закончились" in messenger.last_text.text
+    assert (
+        messenger.last_text.text
+        == texts.paywall_free(
+            LimitKind.MESSAGES, lite=tariff_of(TariffId.LITE), trial=None
+        ).text
+    )
     assert len(messenger.last_text.keyboard.rows) == 2  # type: ignore[union-attr]
 
 
@@ -277,7 +283,9 @@ async def test_image_paywall_when_pictures_run_out(
 
     await images.draw(deps, session, "кот")
 
-    expected = texts.paywall_images(renews_on="27 сентября", invite_images=2)
+    expected = texts.paywall_free(
+        LimitKind.IMAGES, lite=tariff_of(TariffId.LITE), trial=None
+    )
     assert messenger.last_text.text == expected.text
 
 

@@ -365,6 +365,15 @@ async def _route_action(deps: Deps, session: Session, action: str) -> None:
         case Action.TRIAL:
             await _clear_pending(deps, session)
             await payments.start_trial(deps, session)
+        case Action.PAYWALL_TRIAL:
+            # «Продолжить за 1 ₽» с пейволла (сессия 11). Кнопка живёт в
+            # переписке: пробный период к нажатию мог стать недоступен, и
+            # тогда честный путь — заказ Лайта, а не список тарифов.
+            await _clear_pending(deps, session)
+            if await payments.trial_offered(deps, session):
+                await payments.start_trial(deps, session)
+            else:
+                await payments.choose_method(deps, session, TRIAL.tariff)
         case Action.SUBSCRIPTION:
             await _clear_pending(deps, session)
             await subscriptions.show(deps, session)

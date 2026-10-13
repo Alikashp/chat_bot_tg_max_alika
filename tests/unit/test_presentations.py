@@ -15,13 +15,15 @@ import pytest
 
 from app.adapters.storage.memory import InMemoryStorage
 from app.core import pending, retry_context, texts
-from app.core.actions import Action
+from app.core.actions import Action, buy_action
 from app.core.generations import GenerationKind, GenerationStatus
-from app.core.models import Chat, IncomingMessage, MessengerKind, User, UserId
+from app.core.limits import LimitKind
+from app.core.models import Chat, IncomingMessage, MessengerKind, TariffId, User, UserId
 from app.core.router import handle
 from app.core.scenarios import keyboards, onboarding
 from app.core.scenarios.deps import Deps
 from app.core.scenarios.presentations import normalise_topic
+from app.core.tariffs import tariff_of
 from app.ports.presentations import (
     PresentationBusyError,
     PresentationError,
@@ -41,6 +43,11 @@ from tests.fakes import (
 
 CHAT = Chat(messenger=MessengerKind.TELEGRAM, chat_id="1")
 TOPIC = "Как работает фотосинтез"
+
+
+def _free_paywall(kind: LimitKind) -> str:
+    """Пейволл бесплатного тарифа без пробного периода (сессия 11)."""
+    return texts.paywall_free(kind, lite=tariff_of(TariffId.LITE), trial=None).text
 
 
 def incoming(**fields: object) -> IncomingMessage:
@@ -348,13 +355,14 @@ async def test_without_presentations_left_the_invite_screen_shows(
     """Закончились — экран с «Позвать друга», а не тема в пустоту."""
     await handle(enabled, incoming(action=Action.MENU_PRESENTATIONS))
 
-    assert (
-        messenger.last_text.text == texts.paywall_presentations(1, renews_on=None).text
-    )
+    assert messenger.last_text.text == _free_paywall(LimitKind.PRESENTATIONS)
     keyboard = messenger.last_text.keyboard
     assert keyboard is not None
     assert [(b.text, b.action) for row in keyboard.rows for b in row] == [
-        (texts.BUTTON_OPEN_TARIFFS, Action.OPEN_TARIFFS),
+        (
+            texts.button_continue(lite=tariff_of(TariffId.LITE), trial=None),
+            buy_action(TariffId.LITE.value),
+        ),
         (texts.button_invite_for_presentations(1), Action.INVITE_FRIEND),
     ]
     assert presentations.themes_calls == 0
@@ -694,7 +702,7 @@ async def test_a_report_from_the_presentation_without_reports_left(
     button = report_button(messenger)
 
     await handle(enabled, incoming(action=button))
-    assert messenger.last_text.text == texts.paywall_documents(renews_on=None).text
+    assert messenger.last_text.text == _free_paywall(LimitKind.DOCUMENTS)
     assert llm.calls == []
 
     await storage.add_bonus(owner.id, documents=1)
@@ -889,9 +897,7 @@ async def test_a_presentation_from_the_report_without_presentations_left(
 
     await handle(enabled, incoming(action=presentation_action(messenger)))
 
-    assert (
-        messenger.last_text.text == texts.paywall_presentations(1, renews_on=None).text
-    )
+    assert messenger.last_text.text == _free_paywall(LimitKind.PRESENTATIONS)
     assert presentations.themes_calls == 0
 
 
@@ -994,9 +1000,7 @@ async def test_inventing_with_nothing_left_shows_the_paywall(
     """Кнопка из старого сообщения при пустом остатке — пейволл, не тема."""
     await handle(enabled, incoming(action=Action.PRESENTATION_SUGGEST))
 
-    assert (
-        messenger.last_text.text == texts.paywall_presentations(1, renews_on=None).text
-    )
+    assert messenger.last_text.text == _free_paywall(LimitKind.PRESENTATIONS)
 
 
 # --- Профиль (Д5) --------------------------------------------------------

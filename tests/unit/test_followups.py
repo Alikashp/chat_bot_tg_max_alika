@@ -18,10 +18,19 @@ from app.adapters.storage.memory import InMemoryStorage
 from app.core import texts
 from app.core.actions import Action
 from app.core.limits import LimitKind
-from app.core.models import Chat, ChatTurn, IncomingMessage, MessengerKind, Role, User
+from app.core.models import (
+    Chat,
+    ChatTurn,
+    IncomingMessage,
+    MessengerKind,
+    Role,
+    TariffId,
+    User,
+)
 from app.core.router import handle
 from app.core.scenarios import spending
 from app.core.scenarios.deps import Deps, Session
+from app.core.tariffs import tariff_of
 from app.infra.antiflood import FloodGuard
 from config.prompt import DRAW_PROMPT, SHORTER_PROMPT, SIMPLER_PROMPT
 from tests.fakes import FakeImages, FakeLLM, FakeLogger, FakeMessenger, use_up_norm
@@ -212,7 +221,10 @@ async def test_without_messages_simpler_shows_the_paywall(
     await handle(deps, incoming(action=simpler))
 
     assert len(llm.calls) == calls
-    assert texts.BUTTON_OPEN_TARIFFS in labels_under(messenger)
+    # Бесплатному — предложение Лайта (сессия 11).
+    assert texts.button_continue(
+        lite=tariff_of(TariffId.LITE), trial=None
+    ) in labels_under(messenger)
 
 
 async def use_up_norm_messages(deps: Deps, session: Session) -> None:
@@ -237,7 +249,10 @@ async def test_without_pictures_draw_this_shows_the_paywall(
     await handle(deps, incoming(action=draw))
 
     assert images_.generated == []
-    assert texts.BUTTON_OPEN_TARIFFS in labels_under(messenger)
+    # Бесплатному — предложение Лайта (сессия 11).
+    assert texts.button_continue(
+        lite=tariff_of(TariffId.LITE), trial=None
+    ) in labels_under(messenger)
     assert texts.IMAGE_DRAWING not in messenger.texts_said()
 
 

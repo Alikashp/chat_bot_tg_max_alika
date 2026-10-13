@@ -42,6 +42,7 @@ _OPEN_ACTIONS = frozenset(
         Action.MENU_TARIFFS,
         Action.OPEN_TARIFFS,
         Action.TRIAL,
+        Action.PAYWALL_TRIAL,
         Action.SUBSCRIPTION,
         Action.SUBSCRIPTION_OFF,
         Action.MENU_SHOW,

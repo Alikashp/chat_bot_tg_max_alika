@@ -64,7 +64,7 @@ async def choose_method(deps: Deps, session: Session, tariff_id: TariffId) -> No
         return
 
     cards = deps.cards is not None
-    stars = _stars_price(deps, tariff_id) if deps.stars is not None else None
+    stars = _stars_price(deps, tariff_id) if _stars_on_sale(deps) else None
 
     if cards and stars is not None:
         screen = texts.payment_methods(
@@ -358,6 +358,12 @@ async def start_stars(deps: Deps, session: Session, tariff_id: TariffId) -> None
     if deps.stars is None:
         await _payments_not_ready(deps, session)
         return
+    if not _stars_on_sale(deps):
+        # Кнопка «⭐ Звёздами» из сообщения, отправленного, пока звёзды
+        # продавались (сессия 11). Нового звёздного заказа нет — ведём к
+        # тому способу, который есть сейчас.
+        await choose_method(deps, session, tariff_id)
+        return
 
     if await _renews_otherwise(deps, session, PaymentMethod.STARS):
         return
@@ -435,7 +441,10 @@ async def approve(
         and user is not None
         and order.user_id == user.id
         and (
-            order.status == PaymentStatus.PENDING.value
+            # Новый звёздный заказ — только пока звёзды продаются (сессия
+            # 11): счёт, выставленный раньше, при выключенных звёздах не
+            # оплачивается.
+            (order.status == PaymentStatus.PENDING.value and _stars_on_sale(deps))
             or (
                 order.status == PaymentStatus.PAID.value
                 and await _renews_by_stars(deps, order)
@@ -1072,6 +1081,16 @@ async def _open_order(
         docs_version=deps.settings.docs_version,
         trial=trial,
     )
+
+
+def _stars_on_sale(deps: Deps) -> bool:
+    """Продаём ли новые подписки за звёзды (сессия 11, ``STARS_ENABLED``).
+
+    Подключение к звёздам (``deps.stars``) и продажа — разные вещи: через
+    подключение продлеваются и отменяются действующие звёздные подписки и
+    работает сверка, а продажа включается настройкой отдельно.
+    """
+    return deps.stars is not None and deps.settings.stars_enabled
 
 
 def _stars_price(deps: Deps, tariff_id: TariffId) -> int:

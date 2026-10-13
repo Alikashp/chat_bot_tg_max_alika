@@ -70,51 +70,8 @@ def _buttons(messenger: FakeMessenger) -> list[str]:
 # --- Т7: пейволлы ---------------------------------------------------------
 
 
-async def test_a_free_person_out_of_images_is_told_when_new_ones_come(
-    deps: Deps, session: Session, messenger: FakeMessenger
-) -> None:
-    await _empty(deps, session, LimitKind.IMAGES)
-
-    await paywall.show(deps, session, LimitKind.IMAGES)
-
-    assert messenger.last_text.text == (
-        "Картинки на этот месяц закончились 😔\n"
-        f"Новые будут {MONTH_END}, а можно не ждать:"
-    )
-    assert texts.BUTTON_OPEN_TARIFFS in _buttons(messenger)
-
-
-async def test_a_free_person_out_of_reports_is_not_promised_new_ones(
-    deps: Deps, session: Session, messenger: FakeMessenger
-) -> None:
-    """У бесплатного тарифа докладов в месяц нет — и обещать их нечего."""
-    await _empty(deps, session, LimitKind.DOCUMENTS)
-
-    await paywall.show(deps, session, LimitKind.DOCUMENTS)
-
-    assert messenger.last_text.text == (
-        "Доклады закончились 😔\nЕщё будут с тарифом — выбери подходящий 👇"
-    )
-    assert MONTH_END not in messenger.last_text.text
-    assert _buttons(messenger) == [texts.BUTTON_OPEN_TARIFFS]
-
-
-async def test_the_presentations_paywall_offers_tariffs(
-    deps: Deps, session: Session, messenger: FakeMessenger
-) -> None:
-    """Т7: презентации вошли в тарифы — и на их пейволле появилась кнопка."""
-    on = replace(deps, presentations=FakePresentations())
-    await _empty(on, session, LimitKind.PRESENTATIONS)
-
-    await paywall.show(on, session, LimitKind.PRESENTATIONS)
-
-    assert messenger.last_text.text == (
-        "Презентации закончились 😔\nЕщё будут с тарифом или за друга:"
-    )
-    assert _buttons(messenger) == [
-        texts.BUTTON_OPEN_TARIFFS,
-        texts.button_invite_for_presentations(1),
-    ]
+# Пейволлы бесплатного тарифа с сессии 11 предлагают Лайт — их проверяет
+# tests/unit/test_free_paywalls.py. Здесь — пейволлы платящих (П3).
 
 
 async def test_a_renewing_subscriber_is_told_the_norm_comes_with_the_renewal(
@@ -185,12 +142,17 @@ async def test_a_prepaid_month_renews_without_any_charge(
 
 
 async def test_messages_still_come_tomorrow(
-    deps: Deps, session: Session, storage: InMemoryStorage, messenger: FakeMessenger
+    deps: Deps,
+    session: Session,
+    stars: FakeStars,
+    storage: InMemoryStorage,
+    messenger: FakeMessenger,
 ) -> None:
     """Сообщения — дневная норма: «завтра будут ещё» здесь по-прежнему правда."""
-    await storage.add_usage(session.user.id, session.day, messages=20)
+    pro = await _pro(deps, session, stars)
+    await storage.add_usage(pro.user.id, pro.day, messages=100)
 
-    await paywall.show(deps, session, LimitKind.MESSAGES)
+    await paywall.show(deps, pro, LimitKind.MESSAGES)
 
     assert "Завтра будут ещё" in messenger.last_text.text
 

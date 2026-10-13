@@ -61,6 +61,9 @@ class Action(StrEnum):
     OPEN_TARIFFS = "t:open"
     #: Взять пробный период «Лайта» (фаза 11, часть 3).
     TRIAL = "t:trial"
+    #: «🚀 Продолжить за 1 ₽» на пейволле бесплатного тарифа (сессия 11):
+    #: пробный период, а если он уже недоступен — заказ Лайта.
+    PAYWALL_TRIAL = "t:pw:trial"
     INVITE_FRIEND = "r:invite"
     MY_LINK = "r:link"
     REFERRAL_SEND = "r:send"

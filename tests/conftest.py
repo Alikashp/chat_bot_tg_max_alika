@@ -98,6 +98,9 @@ def settings() -> CoreSettings:
         privacy_url="https://telegra.ph/privacy",
         docs_version="2026-08-31",
         bank_statement_name="YM*ChatAIBot",
+        # Прежние тесты оплаты проверяют и звёзды; выключенные звёзды
+        # проверяет tests/unit/test_stars_switch.py (сессия 11).
+        stars_enabled=True,
     )
 
 

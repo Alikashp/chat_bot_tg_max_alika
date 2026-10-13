@@ -253,6 +253,8 @@ async def test_without_the_setting_nobody_is_asked(
         Action.SUBSCRIPTION,
         Action.SUBSCRIPTION_OFF,
         buy_action(TariffId.LITE.value),
+        # «🚀 Продолжить за 1 ₽» с пейволла — тоже дорога к оплате (сессия 11).
+        Action.PAYWALL_TRIAL,
     ],
 )
 async def test_the_money_side_stays_open(

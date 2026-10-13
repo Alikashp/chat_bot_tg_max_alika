@@ -14,8 +14,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 
+from app.core.limits import LimitKind
 from app.core.models import TariffId
-from app.core.tariffs import PAID_TARIFFS, RUB, STARS, TARIFFS, TRIAL
+from app.core.tariffs import PAID_TARIFFS, RUB, STARS, TARIFFS, TRIAL, Tariff, Trial
 
 
 @dataclass(frozen=True, slots=True)
@@ -976,6 +977,53 @@ def paywall_images(
         button_invite_for_images(invite_images),
     )
     return Screen(text=text, buttons=buttons)
+
+
+#: Первая строка пейволла бесплатного тарифа: что кончилось бесплатное.
+_FREE_SPENT = {
+    LimitKind.PRESENTATIONS: "Это была бесплатная презентация ✅",
+    LimitKind.IMAGES: "Это были бесплатные картинки на этот месяц ✅",
+    LimitKind.DOCUMENTS: "Это были бесплатные доклады ✅",
+    LimitKind.MESSAGES: "Это были бесплатные сообщения на сегодня ✅",
+}
+
+
+def paywall_free(kind: LimitKind, *, lite: Tariff, trial: Trial | None) -> Screen:
+    """Пейволл бесплатного тарифа: предложение Лайта (сессия 11).
+
+    Образец заказчика — у презентаций, остальные написаны по нему: что
+    кончилось бесплатное, «нужно ещё?» с предложением, что даёт Лайт —
+    начиная с того, что кончилось. ``trial`` — пробный период, если он сейчас
+    положен человеку: тогда «на 3 дня за 1 ₽», иначе цена Лайта в месяц.
+    Все числа — из реестра тарифов: поменяли тариф — поменялся и экран.
+    """
+    ask = "Нужна ещё?" if kind is LimitKind.PRESENTATIONS else "Нужно ещё?"
+    offer = (
+        f"Открой всё на {_days(trial.days)} за {_price(trial.price_rub, RUB)}:"
+        if trial is not None
+        else f"Открой всё за {_price(lite.price_rub, RUB)} в месяц:"
+    )
+    per_day = f"{_messages(lite.daily_messages)} в день"
+    gives = {
+        LimitKind.PRESENTATIONS: (
+            f"{_presentations(lite.monthly_presentations)}, доклады и {per_day}."
+        ),
+        LimitKind.IMAGES: f"{_images(lite.monthly_images)}, доклады и {per_day}.",
+        LimitKind.DOCUMENTS: (
+            f"{_documents(lite.monthly_documents)}, картинки и {per_day}."
+        ),
+        LimitKind.MESSAGES: f"{per_day}, картинки и доклады.",
+    }[kind]
+    return Screen(
+        text=f"{_FREE_SPENT[kind]}\n{ask} {offer}\n{gives}",
+        buttons=(button_continue(lite=lite, trial=trial),),
+    )
+
+
+def button_continue(*, lite: Tariff, trial: Trial | None) -> str:
+    """Кнопка к условиям пробного периода или к заказу Лайта."""
+    price = trial.price_rub if trial is not None else lite.price_rub
+    return f"🚀 Продолжить за {_price(price, RUB)}"
 
 
 def paywall_messages(*, invite_messages: int) -> Screen:

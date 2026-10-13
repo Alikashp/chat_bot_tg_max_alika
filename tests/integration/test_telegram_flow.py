@@ -359,6 +359,9 @@ async def harness() -> AsyncIterator[Harness]:
             offer_url="https://telegra.ph/offer",
             privacy_url="https://telegra.ph/privacy",
             docs_version="2026-08-31",
+            # Этот прогон проверяет и оплату звёздами (сессия 11: по
+            # умолчанию она выключена).
+            stars_enabled=True,
         ),
         logger=logger,
         document_reader=LocalDocumentReader(),

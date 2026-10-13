@@ -287,6 +287,17 @@ def subscription_manage() -> Keyboard:
     )
 
 
+def my_subscription() -> Keyboard:
+    """Одна кнопка на экран подписки — под напоминанием (сессия 10).
+
+    Отключения прямо под напоминанием нет: оно на экране подписки, куда эта
+    кнопка ведёт.
+    """
+    return Keyboard.row(
+        Button(text=texts.BUTTON_MY_SUBSCRIPTION, action=Action.SUBSCRIPTION)
+    )
+
+
 def tariffs_or_profile() -> Keyboard:
     """Выход с экранов, где отключать уже нечего."""
     return Keyboard.row(

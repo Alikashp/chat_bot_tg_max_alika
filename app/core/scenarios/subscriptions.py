@@ -165,7 +165,7 @@ async def remind(deps: Deps, subscription: Subscription) -> None:
     await deps.messenger.send_text(
         session_for(deps, user).chat,
         screen.text,
-        keyboard=keyboards.subscription_manage(),
+        keyboard=keyboards.my_subscription(),
     )
     await deps.storage.mark_reminded(subscription.user_id, subscription.next_charge_at)
     deps.logger.info("subscription_reminded", user_id=int(subscription.user_id))

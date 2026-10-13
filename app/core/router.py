@@ -421,10 +421,17 @@ async def _pay_by(deps: Deps, session: Session, method: str, tariff_id: str) -> 
 
 
 def _tariff(tariff_id: str) -> TariffId | None:
+    """Тариф из данных кнопки — только если его можно купить (сессия 10, С6б).
+
+    Данные кнопки приходят снаружи: бесплатный тариф не продаётся, а
+    неизвестный мог остаться в кнопке от прошлой версии или быть подделан.
+    И тот и другой ведут на экран тарифов, а не к заказу.
+    """
     try:
-        return TariffId(tariff_id)
+        tariff = TariffId(tariff_id)
     except ValueError:
         return None
+    return None if tariff is TariffId.FREE else tariff
 
 
 async def _ask_email(deps: Deps, session: Session, tariff_id: str) -> None:

@@ -305,12 +305,14 @@ async def remember_email(deps: Deps, session: Session, written: str) -> None:
 
 
 def _tariff(tariff_id: str | None) -> TariffId | None:
+    """Тариф, к оплате которого вернуться; бесплатный не продаётся (С6б)."""
     if tariff_id is None:
         return None
     try:
-        return TariffId(tariff_id)
+        tariff = TariffId(tariff_id)
     except ValueError:
         return None
+    return None if tariff is TariffId.FREE else tariff
 
 
 async def _clear_pending(deps: Deps, session: Session) -> None:

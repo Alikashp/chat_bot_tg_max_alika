@@ -141,6 +141,41 @@ async def test_a_succeeded_payment_is_confirmed() -> None:
 
 
 @respx.mock
+async def test_a_refunded_payment_is_not_paid() -> None:
+    """Сессия 10, С3: возврат не меняет статус succeeded — смотрим сумму возврата.
+
+    Иначе сверка, дошедшая до заказа после возврата, выдала бы тариф за
+    деньги, которые уже вернулись. Частичный возврат — тоже возврат.
+    """
+    respx.get(f"{PAYMENTS_URL}/2d0a1b").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                **_succeeded(),
+                "refunded_amount": {"value": "100.00", "currency": "RUB"},
+            },
+        )
+    )
+
+    assert await _provider().is_paid("2d0a1b", expected_rub=599) is False
+
+
+@respx.mock
+async def test_a_zero_refund_is_still_paid() -> None:
+    respx.get(f"{PAYMENTS_URL}/2d0a1b").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                **_succeeded(),
+                "refunded_amount": {"value": "0.00", "currency": "RUB"},
+            },
+        )
+    )
+
+    assert await _provider().is_paid("2d0a1b", expected_rub=599) is True
+
+
+@respx.mock
 async def test_a_pending_payment_is_not_confirmed() -> None:
     """Уведомление могло прийти раньше денег — или не от ЮKassa вовсе."""
     respx.get(f"{PAYMENTS_URL}/2d0a1b").mock(

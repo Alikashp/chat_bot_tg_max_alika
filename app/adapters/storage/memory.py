@@ -66,6 +66,7 @@ class InMemoryStorage:
         self._usage: dict[tuple[UserId, date], Usage] = {}
         self._period_usage: dict[tuple[UserId, datetime], PeriodUsage] = {}
         self._dialogs: dict[UserId, DialogState] = {}
+        self._dialogs_touched: dict[UserId, datetime] = {}
         #: Учёт обращений к провайдерам. Публичный намеренно: в тестах по
         #: нему проверяют, что попытка записана, — так же, как в бою по
         #: таблице generations.
@@ -82,6 +83,7 @@ class InMemoryStorage:
         self._payments: dict[str, Payment] = {}
         self._subscriptions: dict[UserId, Subscription] = {}
         self._star_cancels: dict[str, StarCancel] = {}
+        self._star_ledger_offset = 0
 
     # --- Пользователи --------------------------------------------------
 
@@ -556,6 +558,12 @@ class InMemoryStorage:
     async def star_cancel_done(self, charge_id: str) -> None:
         self._star_cancels.pop(charge_id, None)
 
+    async def star_ledger_offset(self) -> int:
+        return self._star_ledger_offset
+
+    async def set_star_ledger_offset(self, offset: int) -> None:
+        self._star_ledger_offset = offset
+
     # --- Диалог --------------------------------------------------------
 
     async def get_dialog(self, user_id: UserId) -> DialogState:
@@ -565,19 +573,42 @@ class InMemoryStorage:
     async def save_dialog(self, user_id: UserId, dialog: DialogState) -> None:
         self._require_user(user_id)
         self._dialogs[user_id] = dialog
+        self._dialogs_touched[user_id] = self._now()
 
     async def reset_dialog(self, user_id: UserId) -> None:
         self._require_user(user_id)
         self._dialogs.pop(user_id, None)
+        self._dialogs_touched.pop(user_id, None)
+
+    async def forget_idle_dialogs(self, before: datetime) -> int:
+        idle = [who for who, at in self._dialogs_touched.items() if at < before]
+        for who in idle:
+            self._dialogs.pop(who, None)
+            del self._dialogs_touched[who]
+        return len(idle)
 
     # --- Рефералы ------------------------------------------------------
 
-    async def record_referral(self, referrer_id: UserId, referee_id: UserId) -> bool:
+    async def record_referral(
+        self,
+        referrer_id: UserId,
+        referee_id: UserId,
+        *,
+        since: datetime | None = None,
+        limit: int = 0,
+    ) -> bool:
         if referrer_id == referee_id:
             return False
         self._require_user(referrer_id)
         self._require_user(referee_id)
         if referee_id in self._referrals:
+            return False
+        # Без await между подсчётом и записью: в одной петле это одна операция.
+        if (
+            limit > 0
+            and since is not None
+            and self._count_since(referrer_id, since) >= limit
+        ):
             return False
         self._referrals[referee_id] = (referrer_id, self._now())
         return True
@@ -588,6 +619,9 @@ class InMemoryStorage:
         )
 
     async def count_referrals_since(self, referrer_id: UserId, since: datetime) -> int:
+        return self._count_since(referrer_id, since)
+
+    def _count_since(self, referrer_id: UserId, since: datetime) -> int:
         return sum(
             1
             for referrer, recorded_at in self._referrals.values()

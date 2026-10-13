@@ -121,7 +121,7 @@ async def apply(
 
     assert check.document_format is not None
     try:
-        source = deps.document_reader.read(
+        source = await deps.document_reader.read(
             document, check.document_format, limit=deps.settings.document_text_limit
         )
     except DocumentUnreadableError:
@@ -259,7 +259,7 @@ async def _produce(
     await _record(deps, session, action, started=started)
 
     built = [
-        deps.document_writer.build(
+        await deps.document_writer.build(
             title or action.title, answer.text, document_format=document_format
         )
         for document_format in _OUTPUT_FORMATS

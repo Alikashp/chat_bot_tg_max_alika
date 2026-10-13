@@ -135,7 +135,15 @@ async def _apply_referral(deps: Deps, session: Session, payload: str) -> None:
     if not await _within_daily_limit(deps, referrer.id):
         return
 
-    if not await deps.storage.record_referral(referrer.id, session.user.id):
+    # Потолок проверен выше ради понятной строки в логе, но гарантия — в
+    # самой записи: друзья, нажавшие /start разом, прошли бы подсчёт все.
+    limit = deps.settings.referral_daily_reward_limit
+    if not await deps.storage.record_referral(
+        referrer.id,
+        session.user.id,
+        since=deps.now() - _REWARD_WINDOW if limit > 0 else None,
+        limit=max(limit, 0),
+    ):
         return
 
     await deps.storage.add_bonus(

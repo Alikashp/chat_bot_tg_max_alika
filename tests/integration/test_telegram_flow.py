@@ -67,6 +67,7 @@ from app.core.scenarios.reach import WatchedMessenger
 from app.core.settings import CoreSettings
 from app.infra.antiflood import FloodGuard
 from app.infra.dedup import Deduplicator
+from app.infra.handoff import MemoryHandoff
 from app.infra.queue import JobQueue
 from app.infra.server import TELEGRAM_SECRET_HEADER, Webhook, create_app
 from app.ports.payments import PaymentMethod
@@ -369,6 +370,7 @@ async def harness() -> AsyncIterator[Harness]:
         # живой Telegram, а прогон обходится без сети.
         channel=None,
         now=clock,
+        prompts=MemoryHandoff(),
     )
     dispatcher = telegram_router.build_dispatcher(deps)
 

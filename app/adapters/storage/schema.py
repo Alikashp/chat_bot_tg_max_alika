@@ -23,6 +23,7 @@ from sqlalchemy import (
     Index,
     Integer,
     MetaData,
+    SmallInteger,
     String,
     Table,
     Text,
@@ -153,6 +154,15 @@ star_cancels = Table(
     Column("queued_at", DateTime(timezone=True), nullable=False),
 )
 
+#: Позиция в журнале звёздных транзакций бота, до которой сверка всё
+#: довела (сессия 10). Строка одна: журнал у бота один.
+star_ledger = Table(
+    "star_ledger",
+    metadata,
+    Column("id", SmallInteger, primary_key=True),
+    Column("offset", Integer, nullable=False),
+)
+
 monthly_usage = Table(
     "monthly_usage",
     metadata,
@@ -185,6 +195,15 @@ dialogs = Table(
     ),
     Column("turns", JSONB, nullable=False),
     Column("user_turns", Integer, nullable=False, server_default="0"),
+    # Когда разговор сохраняли последним (сессия 10): история без активности
+    # дольше срока удаляется сама.
+    Column(
+        "updated_at",
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    ),
+    Index("ix_dialogs_updated_at", "updated_at"),
 )
 
 subscriptions = Table(

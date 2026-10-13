@@ -24,7 +24,13 @@ from app.core.models import (
 )
 from app.core.receipts import Receipt
 from app.ports.ai import Answer, ImageQuality
-from app.ports.payments import ChargeResult, ChargeStatus, PaymentIntent
+from app.ports.payments import (
+    ChargeResult,
+    ChargeStatus,
+    PaymentIntent,
+    StarLedgerPage,
+    StarPayment,
+)
 from app.ports.presentations import (
     BuiltPresentation,
     DeckRequest,
@@ -557,6 +563,10 @@ class FakeStars:
         self.error: Exception | None = None
         #: Сбой отмены — отдельно от сбоя выставления счёта.
         self.cancel_error: Exception | None = None
+        #: Журнал транзакций бота, от старых к новым (сессия 10).
+        self.transactions: list[StarPayment | None] = []
+        self.ledger_reads: list[int] = []
+        self.ledger_error: Exception | None = None
 
     async def subscription_link(
         self,
@@ -581,6 +591,21 @@ class FakeStars:
         self, request_id: str, *, ok: bool, reason: str | None = None
     ) -> None:
         self.approvals.append((request_id, ok))
+
+    async def ledger(self, *, offset: int, limit: int) -> StarLedgerPage:
+        """Журнал как у Telegram: от старых к новым, страницами.
+
+        ``None`` в журнале — чужая транзакция (исходящая, без счёта): позицию
+        она сдвигает, а оплатой не считается.
+        """
+        self.ledger_reads.append(offset)
+        if self.ledger_error is not None:
+            raise self.ledger_error
+        page = self.transactions[offset : offset + limit]
+        return StarLedgerPage(
+            read=len(page),
+            payments=tuple(entry for entry in page if entry is not None),
+        )
 
 
 #: Байты, которые фейковый провайдер отдаёт вместо файлов. Разные, чтобы по

@@ -13,6 +13,7 @@ import signal
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from typing import Any
 
 import httpx
@@ -48,6 +49,7 @@ from app.adapters.telegram.intake import dedup_key, is_pre_checkout
 from app.adapters.telegram.messenger import TelegramMessenger
 from app.adapters.telegram.stars import TelegramStars
 from app.config import Settings, get_settings
+from app.core import retention
 from app.core.billing import Billing
 from app.core.channel import channel_username
 from app.core.decks import Draft
@@ -227,6 +229,16 @@ def build_intake(
 #: быстрые — одно чтение заказа, — но два обработчика не дают одному
 #: зависшему запросу к базе остановить все оплаты.
 _PAYMENT_QUESTION_WORKERS = 2
+
+#: Как часто удалять молчащую историю переписки. Срок — 30 дней, так что
+#: час опоздания ничего не значит, а проход — один DELETE по индексу.
+_DIALOGS_INTERVAL_SECONDS = 3600
+
+#: Сколько текстов для «Повторить» и «Ещё вариант» держим в памяти. В худшем
+#: случае — сообщения чата по 4 096 знаков: около 40 МБ; обычно описание
+#: картинки — строка, и это единицы мегабайт. Вытесняются самые старые: их
+#: владелец услышит «повторять нечего».
+PROMPTS_MAX_ITEMS = 5_000
 
 
 def build_telegram_intake(
@@ -502,6 +514,11 @@ async def build_wiring(settings: Settings) -> Wiring:
     # памяти, под жетоном (сессия 7, В6). Присланный файл в черновике —
     # ссылкой, поэтому хватает предела по числу (сессия 8, М1).
     drafts: MemoryHandoff[Draft] = MemoryHandoff()
+    # Тексты для «Повторить» и «Ещё вариант» — сообщение чата, описание
+    # картинки — тоже в памяти, а не в базе (сессия 9). Жетон заводится на
+    # каждый результат и каждый сбой, поэтому предел выше, чем у связок:
+    # описания обычно в строку, а сообщение чата — не длиннее 4 096 знаков.
+    prompts: MemoryHandoff[str] = MemoryHandoff(max_items=PROMPTS_MAX_ITEMS)
     if presentations_client is not None:
         http_clients = (*http_clients, presentations_client)
 
@@ -545,6 +562,7 @@ async def build_wiring(settings: Settings) -> Wiring:
             stars=stars,
             channel=channel,
             now=_utc_now,
+            prompts=prompts,
             examples=examples,
             presentations=presentations,
             handoff=handoff,
@@ -699,11 +717,14 @@ def _build_settlement(by_messenger: dict[MessengerKind, Deps]) -> Settlement:
             logger.info("payment_notice_not_paid")
             return
 
+        renewal = await payments.is_card_renewal(deps, order)
         confirmed = await payments.confirm(deps, order_id)
         if confirmed is None:
             return
 
-        await payments.announce(deps, session_for(deps, user), confirmed)
+        await payments.announce(
+            deps, session_for(deps, user), confirmed, renewal=renewal
+        )
 
     return Settlement(handle=handle)
 
@@ -976,10 +997,19 @@ async def run() -> None:
         interval_seconds=settings.reconcile_interval_seconds,
     )
 
+    # История переписки без активности 30 дней удаляется сама (сессия 10):
+    # память разговора — единственное место, где текст человека лежит в базе.
+    dialogs = Periodic(
+        "dialogs",
+        partial(retention.forget_idle_dialogs, wiring.billing.deps),
+        interval_seconds=_DIALOGS_INTERVAL_SECONDS,
+    )
+
     for each in queues:
         each.start()
     billing.start()
     reconcile.start()
+    dialogs.start()
     runner = web.AppRunner(app, access_log=None)
     await runner.setup()
     site = web.TCPSite(runner, host="0.0.0.0", port=settings.port)  # noqa: S104
@@ -1024,6 +1054,7 @@ async def run() -> None:
         # списанием и выдачей тарифа нельзя.
         await billing.stop()
         await reconcile.stop()
+        await dialogs.stop()
         await site.stop()
         abandoned = 0
         for each in queues:

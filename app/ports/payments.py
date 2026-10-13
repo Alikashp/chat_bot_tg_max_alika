@@ -18,7 +18,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 from enum import StrEnum
 from typing import Protocol
 
@@ -201,6 +201,35 @@ class CardPayments(Protocol):
         ...
 
 
+@dataclass(frozen=True, slots=True)
+class StarPayment:
+    """Оплата звёздами из журнала транзакций бота (сессия 10).
+
+    ``charge_id`` — идентификатор транзакции; у входящей оплаты он совпадает
+    с ``telegram_payment_charge_id`` из сообщения об оплате. ``order_id`` —
+    payload счёта, то есть наш заказ. ``user_id`` — кто платил, номером
+    Telegram.
+    """
+
+    charge_id: str
+    user_id: str
+    order_id: str
+    paid_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class StarLedgerPage:
+    """Страница журнала транзакций.
+
+    ``read`` — сколько транзакций прочитано, включая не наши (исходящие,
+    без счёта): позиция в журнале сдвигается на всё прочитанное, а в
+    ``payments`` — только оплаты по нашим счетам.
+    """
+
+    read: int
+    payments: tuple[StarPayment, ...]
+
+
 class StarsPayments(Protocol):
     """Подписка на звёздах Telegram.
 
@@ -243,5 +272,13 @@ class StarsPayments(Protocol):
         Telegram спрашивает об этом перед списанием и ждёт ответа считаные
         секунды. Отказ здесь дешевле разбирательства с возвратом денег за
         заказ, которого у нас нет.
+        """
+        ...
+
+    async def ledger(self, *, offset: int, limit: int) -> StarLedgerPage:
+        """Журнал транзакций бота с позиции ``offset``, от старых к новым.
+
+        По нему сверка доводит оплаты, сообщение о которых не обработалось:
+        Telegram не присылает его снова, а журнал помнит каждую.
         """
         ...

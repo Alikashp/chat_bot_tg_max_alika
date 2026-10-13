@@ -33,7 +33,14 @@ from app.core.scenarios import payments, spending, subscriptions, tariffs
 from app.core.scenarios.deps import Deps, Session
 from app.core.tariffs import RUB, TRIAL, tariff_of
 from app.ports.payments import SubscriptionStatus
-from tests.fakes import FakeCards, FakeLogger, FakeMessenger, FakeStars, FrozenClock
+from tests.fakes import (
+    FakeCards,
+    FakeLogger,
+    FakeMessenger,
+    FakeStars,
+    FrozenClock,
+    SentText,
+)
 
 LITE = TariffId.LITE
 #: Пробный период взят 28 августа в 15:00 по Москве — кончается 31-го.
@@ -367,6 +374,98 @@ async def test_without_a_delivered_reminder_there_is_no_charge(
 
 
 # --- ПП5: отмена во время пробных дней ------------------------------------
+
+
+async def _remind(deps: Deps, messenger: FakeMessenger, clock: FrozenClock) -> SentText:
+    """Проход биллинга за сутки до первых 299 ₽ — и само напоминание."""
+    clock.advance(hours=2 * 24 + 1)
+    await Billing(by_messenger={MessengerKind.TELEGRAM: deps}).run()
+    reminder = texts.subscription_reminder(
+        LITE, amount=299, currency=RUB, on=FIRST_CHARGE
+    )
+    sent = [each for each in messenger.texts if each.text == reminder.text]
+    assert len(sent) == 1
+    return sent[0]
+
+
+def _press(session: Session, action: str) -> IncomingMessage:
+    return IncomingMessage(
+        chat=session.chat, external_user_id=session.user.external_id, action=action
+    )
+
+
+async def test_the_reminder_has_one_button_to_the_subscription(
+    trial: Deps,
+    session: Session,
+    cards: FakeCards,
+    messenger: FakeMessenger,
+    clock: FrozenClock,
+) -> None:
+    """Сессия 10, С8: под напоминанием одна кнопка, и это не отключение.
+
+    Текст называет сумму и дату и говорит, где управлять подпиской, но к
+    отключению не зовёт.
+    """
+    await _take(trial, session, cards)
+
+    reminder = await _remind(trial, messenger, clock)
+
+    assert reminder.keyboard is not None
+    assert [[(b.text, b.action) for b in row] for row in reminder.keyboard.rows] == [
+        [("⚙️ Моя подписка", Action.SUBSCRIPTION)]
+    ]
+    assert "299 ₽" in reminder.text and FIRST_CHARGE in reminder.text
+    assert "профил" in reminder.text
+    assert "тключ" not in reminder.text
+
+
+async def test_my_subscription_under_the_reminder_switches_the_trial_off(
+    trial: Deps,
+    session: Session,
+    cards: FakeCards,
+    messenger: FakeMessenger,
+    clock: FrozenClock,
+) -> None:
+    await _take(trial, session, cards)
+    reminder = await _remind(trial, messenger, clock)
+    assert reminder.keyboard is not None
+    my_subscription = reminder.keyboard.rows[0][0].action
+    assert my_subscription is not None
+
+    await handle(trial, _press(session, my_subscription))
+    screen = messenger.last_text
+    assert screen.keyboard is not None
+    switch_off = [
+        b.action
+        for row in screen.keyboard.rows
+        for b in row
+        if b.text == texts.BUTTON_SUBSCRIPTION_OFF
+    ]
+    assert switch_off == [Action.SUBSCRIPTION_OFF]
+    await handle(trial, _press(session, Action.SUBSCRIPTION_OFF))
+    await _week(trial, messenger, clock, cards)
+
+    assert cards.charged == []
+
+
+async def test_the_switch_off_button_under_an_earlier_reminder_still_works(
+    trial: Deps,
+    session: Session,
+    cards: FakeCards,
+    messenger: FakeMessenger,
+    clock: FrozenClock,
+) -> None:
+    """Напоминания, отправленные до сессии 10, несли «Отключить продление»."""
+    await _take(trial, session, cards)
+    await _remind(trial, messenger, clock)
+
+    await handle(trial, _press(session, Action.SUBSCRIPTION_OFF))
+    await _week(trial, messenger, clock, cards)
+
+    assert cards.charged == []
+    subscription = await trial.storage.get_subscription(session.user.id)
+    assert subscription is not None
+    assert subscription.status == SubscriptionStatus.CANCELLED.value
 
 
 async def test_cancelling_during_the_trial_takes_no_money(

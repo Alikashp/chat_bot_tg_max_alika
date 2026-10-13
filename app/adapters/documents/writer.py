@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import io
 from dataclasses import dataclass
 from enum import StrEnum
@@ -61,9 +62,18 @@ class LocalDocumentWriter:
     def __init__(self, font: Path = DEFAULT_FONT) -> None:
         self._font = font
 
-    def build(
+    async def build(
         self, title: str, body: str, *, document_format: DocumentFormat
     ) -> Document:
+        """Сборка — в отдельном потоке: петлю событий она не держит (сессия 10)."""
+        return await asyncio.to_thread(
+            self.build_now, title, body, document_format=document_format
+        )
+
+    def build_now(
+        self, title: str, body: str, *, document_format: DocumentFormat
+    ) -> Document:
+        """Та же сборка, блокирующая: для потока и для тестов."""
         if document_format is DocumentFormat.PPTX:
             # Презентацию мы пока не собираем, и промолчать тут нельзя:
             # человек получил бы пустой файл вместо доклада.

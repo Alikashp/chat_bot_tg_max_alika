@@ -201,12 +201,7 @@ class YooKassaPayments:
         Частичный возврат считаем возвратом: деньги человеку вернули, и
         называть такой платёж обычной оплатой уже неправда.
         """
-        response = await self._payment(external_id)
-        refunded = response.get("refunded_amount")
-        if not isinstance(refunded, dict):
-            return False
-        value = _rubles(refunded.get("value"))
-        return value is not None and value > 0
+        return _refunded(await self._payment(external_id))
 
     async def is_paid(self, external_id: str, *, expected_rub: int) -> bool:
         """Спрашивает у ЮKassa, оплачен ли платёж на нужную сумму.
@@ -218,6 +213,12 @@ class YooKassaPayments:
         response = await self._payment(external_id)
         if response.get("status") != _SUCCEEDED or response.get("paid") is not True:
             return False
+        if _refunded(response):
+            # Возврат статус не меняет: платёж так и остаётся succeeded. Если
+            # уведомления об оплате и о возврате потерялись, сверка дошла бы
+            # до заказа уже после возврата и выдала бы тариф за вернувшиеся
+            # деньги (сессия 10, С3).
+            return False
 
         amount = response.get("amount")
         if not isinstance(amount, dict):
@@ -225,6 +226,15 @@ class YooKassaPayments:
         return _rubles(amount.get("value")) == expected_rub and (
             amount.get("currency") == RUB
         )
+
+
+def _refunded(response: dict[str, Any]) -> bool:
+    """Вернули ли по платежу хоть что-то: частичный возврат — тоже возврат."""
+    refunded = response.get("refunded_amount")
+    if not isinstance(refunded, dict):
+        return False
+    value = _rubles(refunded.get("value"))
+    return value is not None and value > 0
 
 
 def _charge_status(response: dict[str, Any]) -> ChargeStatus:

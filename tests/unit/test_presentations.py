@@ -17,7 +17,7 @@ from app.adapters.storage.memory import InMemoryStorage
 from app.core import pending, retry_context, texts
 from app.core.actions import Action
 from app.core.generations import GenerationKind, GenerationStatus
-from app.core.models import Chat, IncomingMessage, MessengerKind, User
+from app.core.models import Chat, IncomingMessage, MessengerKind, User, UserId
 from app.core.router import handle
 from app.core.scenarios import keyboards, onboarding
 from app.core.scenarios.deps import Deps
@@ -380,6 +380,39 @@ async def test_a_double_press_builds_one_deck(
     assert presentations.built == [(TOPIC, "graphite_light")]
     assert await left(storage, owner) == 1
     assert texts.PRESENTATION_IN_PROGRESS in messenger.texts_said()
+
+
+async def test_a_press_right_as_the_slot_frees_builds_nothing(
+    enabled: Deps,
+    messenger: FakeMessenger,
+    owner: User,
+    storage: InMemoryStorage,
+    presentations: FakePresentations,
+) -> None:
+    """Сессия 9: второе нажатие в миг, когда первая сборка отпускает слот.
+
+    Колода уже у человека и списана, слот свободен — а черновик ещё на
+    месте. Второе «Собрать» в этот миг собрало бы вторую колоду и списало
+    бы вторую презентацию: черновик обязан уйти раньше, чем слот.
+    """
+    await storage.add_bonus(owner.id, presentations=1)
+    await up_to_themes(enabled)
+    press = incoming(action=build_action(messenger))
+    release = storage.release_presentation
+    pressed = False
+
+    async def release_and_press_again(user_id: UserId) -> None:
+        nonlocal pressed
+        await release(user_id)
+        if not pressed:
+            pressed = True
+            await handle(enabled, press)
+
+    storage.release_presentation = release_and_press_again  # type: ignore[method-assign]
+    await handle(enabled, press)
+
+    assert presentations.built == [(TOPIC, "graphite_light")]
+    assert await left(storage, owner) == 1
 
 
 async def test_a_late_second_press_builds_nothing(
@@ -818,7 +851,8 @@ async def test_the_report_text_never_reaches_the_database(
     # доклада. Поэтому в «Повторить» по докладу темы нет вовсе — один жетон.
     context = retry_context.decode(fresh.retry_context)
     assert context is not None
-    assert (context.prompt, context.source is not None) == ("", True)
+    assert context.source is not None
+    assert "prompt" not in (fresh.retry_context or "")
 
 
 async def test_a_failed_presentation_from_the_report_can_be_retried(

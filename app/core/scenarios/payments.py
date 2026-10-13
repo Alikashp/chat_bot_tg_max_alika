@@ -40,7 +40,6 @@ from app.core.models import (
     Subscription,
     TariffId,
     User,
-    UserId,
 )
 from app.core.receipts import Receipt, receipt_for
 from app.core.scenarios import keyboards
@@ -306,12 +305,14 @@ async def remember_email(deps: Deps, session: Session, written: str) -> None:
 
 
 def _tariff(tariff_id: str | None) -> TariffId | None:
+    """Тариф, к оплате которого вернуться; бесплатный не продаётся (С6б)."""
     if tariff_id is None:
         return None
     try:
-        return TariffId(tariff_id)
+        tariff = TariffId(tariff_id)
     except ValueError:
         return None
+    return None if tariff is TariffId.FREE else tariff
 
 
 async def _clear_pending(deps: Deps, session: Session) -> None:
@@ -419,8 +420,11 @@ async def approve(
     уже оплачен. Отказывать нельзя: это остановило бы подписку, за которую
     человек платит. Но и соглашаться на любой оплаченный заказ нельзя — тогда
     старая ссылка на счёт, открытая второй раз, стоила бы человеку денег без
-    единого дня тарифа. Поэтому оплаченный заказ проходит только при живой
-    подписке: продление бывает только у неё.
+    единого дня тарифа. Поэтому оплаченный заказ проходит только как
+    продление своей подписки: живой, звёздной и того же тарифа. Живая
+    подписка другого тарифа или карточная — это другая подписка, а старая
+    ссылка, открытая снова, заводит у Telegram новую: звёзды спишутся, а
+    выдать по оплаченному заказу нечего (сессия 9).
     """
     if deps.stars is None:
         return
@@ -434,7 +438,7 @@ async def approve(
             order.status == PaymentStatus.PENDING.value
             or (
                 order.status == PaymentStatus.PAID.value
-                and await _renews(deps, order.user_id)
+                and await _renews_by_stars(deps, order)
             )
         )
     )
@@ -487,13 +491,25 @@ async def _renews_otherwise(
     return True
 
 
-async def _renews(deps: Deps, user_id: UserId) -> bool:
-    """Есть ли у человека подписка, по которой ждём очередного списания."""
-    subscription = await deps.storage.get_subscription(user_id)
-    return (
-        subscription is not None
-        and subscription.status != SubscriptionStatus.CANCELLED.value
-    )
+async def _renews_by_stars(deps: Deps, order: Payment) -> bool:
+    """Ждём ли очередного списания звёздами по подписке этого заказа.
+
+    Подписку заказа узнаём по первому списанию: с сессии 10 первый заказ
+    его помнит, а живая подписка хранит его же (сессия 10, С2). Отменённая
+    и заведённая заново подписка того же тарифа — уже другая, и старая
+    ссылка на неё не одобряется. Заказ, оплаченный до сессии 10, списания не
+    помнит — для него остаётся прежнее правило: звёздная подписка того же
+    тарифа.
+    """
+    subscription = await deps.storage.get_subscription(order.user_id)
+    if (
+        subscription is None
+        or subscription.status == SubscriptionStatus.CANCELLED.value
+        or subscription.method != PaymentMethod.STARS.value
+        or subscription.tariff is not order.tariff
+    ):
+        return False
+    return order.external_id is None or order.external_id == subscription.charge_id
 
 
 async def confirm(
@@ -530,6 +546,19 @@ async def confirm(
         # Уведомления об оплате приходят по несколько раз. Это не ошибка —
         # просто продлевать подписку на каждое нельзя.
         deps.logger.info("payment_already_confirmed", user_id=int(order.user_id))
+        return None
+
+    if (
+        not renewal
+        and charge_id is not None
+        and order.method == PaymentMethod.STARS.value
+        and order.external_id != charge_id
+        and not await deps.storage.attach_external_id(order.id, charge_id)
+    ):
+        # Первый звёздный платёж запоминает своё списание: по нему сверка
+        # журнала узнаёт, что эта транзакция — не продление (сессия 10).
+        # Списание уже числится за другим заказом — второй выдачи не будет.
+        deps.logger.error("payment_charge_taken", user_id=int(order.user_id))
         return None
 
     # Всё, что спрашивается у провайдера, — до выдачи. Выдача — одна
@@ -621,6 +650,17 @@ async def confirm(
         method=order.method,
     )
     return replace(order, paid_at=deps.now())
+
+
+async def is_card_renewal(deps: Deps, order: Payment) -> bool:
+    """Списание за период по карточной подписке, а не покупка (сессия 10, С6а).
+
+    Узнавать это надо до выдачи: она освобождает период подписки. Нужно
+    уведомлению ЮKassa и сверке — оба могут довести продление раньше
+    биллинга, и оба обязаны сказать человеку «Продлили тариф».
+    """
+    subscription = await deps.storage.get_subscription(order.user_id)
+    return subscription is not None and subscription.charge_order_id == order.id
 
 
 async def refunded(deps: Deps, order: Payment) -> None:
@@ -801,10 +841,17 @@ async def _renewal_order(
     по идентификатору списания: он уникален в таблице заказов, поэтому
     попытка привязать его второй раз проваливается на уровне базы — то есть
     надёжно, а не «мы вроде бы проверили».
+
+    Заказ на это списание уже есть, но не оплачен — выдача упала посреди
+    обработки. Тогда доводится он же, а не заводится второй (сессия 10).
     """
     if charge_id is None:
         deps.logger.warning("renewal_without_charge_id", user_id=int(first.user_id))
         return None
+
+    started = await _unfinished_renewal(deps, charge_id)
+    if started is not None:
+        return started
 
     order = await deps.storage.create_payment(
         user_id=first.user_id,
@@ -818,9 +865,21 @@ async def _renewal_order(
         docs_version=deps.settings.docs_version,
     )
     if not await deps.storage.attach_external_id(order.id, charge_id):
-        deps.logger.info("renewal_already_confirmed", user_id=int(first.user_id))
-        return None
+        # Одновременно то же списание довёл другой обработчик: если его
+        # заказ ещё не оплачен, выдаёт тот, кто успеет первым.
+        started = await _unfinished_renewal(deps, charge_id)
+        if started is None:
+            deps.logger.info("renewal_already_confirmed", user_id=int(first.user_id))
+        return started
     return order
+
+
+async def _unfinished_renewal(deps: Deps, charge_id: str) -> Payment | None:
+    """Заказ продления на это списание, который ещё не оплачен."""
+    known = await deps.storage.get_payment_by_external_id(charge_id)
+    if known is not None and known.status == PaymentStatus.PENDING.value:
+        return known
+    return None
 
 
 async def _end_previous(

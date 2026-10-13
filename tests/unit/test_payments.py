@@ -18,7 +18,7 @@ from app.adapters.storage.memory import InMemoryStorage
 from app.core import support, texts
 from app.core.billing import Billing
 from app.core.models import MessengerKind, TariffId, User
-from app.core.scenarios import payments
+from app.core.scenarios import payments, subscriptions
 from app.core.scenarios.deps import Deps, Session
 from app.core.tariffs import tariff_of
 from app.ports.payments import PaymentMethod, PaymentStatus
@@ -308,6 +308,95 @@ async def test_a_renewal_of_a_live_subscription_is_approved(
     await payments.start_stars(deps, session, PRO)
     order_id = stars.invoices[0].order_id
     await payments.confirm(deps, order_id, charge_id="charge-1")
+
+    await payments.approve(deps, "req-2", order_id, user=session.user)
+
+    assert stars.approvals == [("req-2", True)]
+
+
+async def test_an_old_paid_link_of_a_replaced_subscription_is_refused(
+    deps: Deps, session: Session, stars: FakeStars
+) -> None:
+    """Сессия 9: оплаченный заказ проходит только как продление своей подписки.
+
+    Человек оформил «Лайт» звёздами, потом «Про» — «Лайт» отменён. Старая
+    ссылка на «Лайт», открытая снова, — это первый платёж новой подписки:
+    выдача по уже оплаченному заказу ничего не даст, а звёзды спишутся.
+    Живая подписка здесь — другая, и согласие по ней — деньги без тарифа.
+    """
+    await payments.start_stars(deps, session, TariffId.LITE)
+    old = stars.invoices[0].order_id
+    await payments.confirm(deps, old, charge_id="charge-lite")
+    await payments.start_stars(deps, session, PRO)
+    await payments.confirm(deps, stars.invoices[1].order_id, charge_id="charge-pro")
+
+    await payments.approve(deps, "req-3", old, user=session.user)
+
+    assert stars.approvals == [("req-3", False)]
+    # Ровно то, что ждало бы человека после согласия: тарифа не выдают.
+    assert await payments.confirm(deps, old, charge_id="charge-new") is None
+
+
+async def test_an_old_paid_star_link_is_refused_under_a_card_subscription(
+    deps: Deps, session: Session, storage: InMemoryStorage, stars: FakeStars
+) -> None:
+    """Продлевает карточную подписку не Telegram: звёздам продлевать нечего."""
+    await payments.start_stars(deps, session, PRO)
+    old = stars.invoices[0].order_id
+    await payments.confirm(deps, old, charge_id="charge-1")
+    live = await storage.get_subscription(session.user.id)
+    assert live is not None
+    await storage.save_subscription(
+        replace(
+            live,
+            method=PaymentMethod.CARD.value,
+            currency="RUB",
+            charge_id=None,
+            payment_method_id="card-1",
+        )
+    )
+
+    await payments.approve(deps, "req-2", old, user=session.user)
+
+    assert stars.approvals == [("req-2", False)]
+
+
+async def test_an_old_link_of_a_cancelled_subscription_of_the_same_tariff_is_refused(
+    deps: Deps, session: Session, stars: FakeStars
+) -> None:
+    """Сессия 10, С2: подписку отменили и оформили тот же тариф заново.
+
+    Первая ссылка, открытая снова, завела бы у Telegram ещё одну подписку,
+    а по оплаченному заказу выдавать нечего. Продление одобряется только у
+    той подписки, которая жива, — её узнаём по первому списанию.
+    """
+    await payments.start_stars(deps, session, PRO)
+    old = stars.invoices[0].order_id
+    await payments.confirm(deps, old, charge_id="charge-old")
+    await subscriptions.cancel(deps, session)
+    await payments.start_stars(deps, session, PRO)
+    live = stars.invoices[1].order_id
+    await payments.confirm(deps, live, charge_id="charge-live")
+
+    await payments.approve(deps, "req-old", old, user=session.user)
+    await payments.approve(deps, "req-live", live, user=session.user)
+
+    assert stars.approvals == [("req-old", False), ("req-live", True)]
+
+
+async def test_a_renewal_of_a_subscription_paid_before_session_10_is_approved(
+    deps: Deps, session: Session, storage: InMemoryStorage, stars: FakeStars
+) -> None:
+    """Заказ, оплаченный до сессии 10, своего списания не помнит.
+
+    Живая подписка при этом его — отказать значило бы остановить продление,
+    за которое человек платит.
+    """
+    await payments.start_stars(deps, session, PRO)
+    order_id = stars.invoices[0].order_id
+    await payments.confirm(deps, order_id, charge_id="charge-1")
+    order = storage._payments[order_id]
+    storage._payments[order_id] = replace(order, external_id=None)
 
     await payments.approve(deps, "req-2", order_id, user=session.user)
 

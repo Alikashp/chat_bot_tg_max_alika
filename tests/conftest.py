@@ -133,6 +133,7 @@ def deps(
         # иначе «через семь часов кнопка устарела» не проверить.
         handoff=MemoryHandoff(clock=lambda: clock().timestamp()),
         drafts=MemoryHandoff(clock=lambda: clock().timestamp()),
+        prompts=MemoryHandoff(clock=lambda: clock().timestamp()),
     )
 
 

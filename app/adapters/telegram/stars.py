@@ -20,10 +20,11 @@
 from __future__ import annotations
 
 from aiogram import Bot
-from aiogram.types import LabeledPrice
+from aiogram.types import LabeledPrice, TransactionPartnerUser
 
 from app.core import texts
 from app.core.tariffs import STARS
+from app.ports.payments import StarLedgerPage, StarPayment
 
 #: Валюта звёзд Telegram.
 STARS_CURRENCY = STARS
@@ -99,3 +100,28 @@ class TelegramStars:
             ok=ok,
             error_message=None if ok else (reason or texts.PAYMENT_REFUSED),
         )
+
+    async def ledger(self, *, offset: int, limit: int) -> StarLedgerPage:
+        """Журнал транзакций бота: оплаты по нашим счетам, от старых к новым.
+
+        Входящая оплата — транзакция, у которой источник — человек и есть
+        payload счёта. Исходящие (возвраты, вывод) и платежи без счёта
+        позицию сдвигают, но оплатой не считаются.
+        """
+        found = await self._bot.get_star_transactions(offset=offset, limit=limit)
+        paid: list[StarPayment] = []
+        for transaction in found.transactions:
+            source = transaction.source
+            if not isinstance(source, TransactionPartnerUser):
+                continue
+            if not source.invoice_payload:
+                continue
+            paid.append(
+                StarPayment(
+                    charge_id=transaction.id,
+                    user_id=str(source.user.id),
+                    order_id=source.invoice_payload,
+                    paid_at=transaction.date,
+                )
+            )
+        return StarLedgerPage(read=len(found.transactions), payments=tuple(paid))

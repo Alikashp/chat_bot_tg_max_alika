@@ -29,10 +29,16 @@ async def repeat_last(deps: Deps, session: Session, expected: RetryKind) -> None
         return
 
     match context.kind:
-        case RetryKind.CHAT:
-            await chat.handle_message(deps, session, context.prompt)
-        case RetryKind.IMAGE:
-            await images.draw(deps, session, context.prompt)
+        case RetryKind.CHAT | RetryKind.IMAGE:
+            # Текст жил в памяти процесса: после перезапуска или по сроку его
+            # нет, и повторять нечего — без запроса к провайдеру и списания.
+            prompt = deps.prompts.peek(context.source) if context.source else None
+            if prompt is None:
+                await _nothing_to_repeat(deps, session)
+            elif context.kind is RetryKind.CHAT:
+                await chat.handle_message(deps, session, prompt)
+            else:
+                await images.draw(deps, session, prompt)
         case RetryKind.PRESET:
             await _repeat_preset(deps, session, context)
 

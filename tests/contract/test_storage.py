@@ -849,6 +849,26 @@ async def test_concurrent_referral_records_only_one_wins(storage: Storage) -> No
     assert sum(results) == 1
 
 
+async def test_the_daily_cap_is_kept_by_the_record(storage: Storage) -> None:
+    """Сессия 10, С5: потолок проверяется самой записью, а не только снаружи."""
+    referrer = await _make_user(storage, "1")
+    friends = [await _make_user(storage, str(n)) for n in range(2, 5)]
+    since = datetime.now(UTC) - timedelta(days=1)
+
+    recorded = [
+        await storage.record_referral(referrer.id, friend.id, since=since, limit=2)
+        for friend in friends
+    ]
+
+    assert recorded == [True, True, False]
+    # Связи до ``since`` в потолок не идут: окно скользит.
+    later = datetime.now(UTC) + timedelta(minutes=1)
+    late_friend = await _make_user(storage, "9")
+    assert await storage.record_referral(
+        referrer.id, late_friend.id, since=later, limit=2
+    )
+
+
 async def test_referrals_are_counted_since_moment(storage: Storage) -> None:
     """Нужно для суточного лимита наград на одного пригласившего."""
     referrer = await _make_user(storage, "1")

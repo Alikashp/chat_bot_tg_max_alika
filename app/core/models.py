@@ -146,6 +146,13 @@ class User:
     #: Когда человек потратил единственную бесплатную перегенерацию первой
     #: бесплатной презентации (сессия 12). Пусто — не тратил.
     free_regen_at: datetime | None = None
+    #: Последнее входящее от человека — сообщение, кнопка, команда, оплата
+    #: (сессия 12). Пишется не чаще раза в час; от неё считается цепочка
+    #: реактивации.
+    last_active_at: datetime | None = None
+    #: Когда человеку ушло последнее маркетинговое сообщение (рассылка
+    #: реактивации). Не чаще одного в семь дней.
+    last_marketing_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -226,6 +233,38 @@ class Subscription:
     #: продления идут без напоминаний. Выдача следующего периода заводит
     #: подписку заново, и отметка сама сбрасывается.
     remind_before_charge: bool = False
+
+
+class MailingStatus(StrEnum):
+    """Чем кончилась отправка шага рассылки (сессия 12).
+
+    ``sending`` — строка заведена, сообщение уходит: так второй проход
+    видит шаг занятым и не отправляет его ещё раз. Упал процесс посреди
+    отправки — строка остаётся ``sending``, и шаг не повторяется: лишнее
+    маркетинговое сообщение хуже пропущенного.
+    """
+
+    SENDING = "sending"
+    SENT = "sent"
+    BLOCKED = "blocked"
+    ERROR = "error"
+
+
+@dataclass(frozen=True, slots=True)
+class Mailing:
+    """Одна отправка шага рассылки. Текста сообщения здесь нет — только факт."""
+
+    user_id: UserId
+    #: Шаг цепочки: R1, R2, R3.
+    step: str
+    #: Значение ``last_active_at`` на момент отправки — цикл неактивности.
+    cycle_key: datetime
+    sent_at: datetime
+    status: MailingStatus
+    #: Имя класса ошибки доставки, без её текста.
+    error_code: str | None = None
+    #: Когда нажали кнопку под этим сообщением.
+    clicked_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)

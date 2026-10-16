@@ -29,6 +29,7 @@ from app.core.models import (
     NO_USERNAME,
     ChatTurn,
     DialogState,
+    MailingStatus,
     MessengerKind,
     Payment,
     Role,
@@ -1778,3 +1779,135 @@ async def test_a_free_regeneration_is_spent_once_concurrently(storage: Storage) 
     )
 
     assert sum(spent) == 1
+
+
+# --- Рассылки (сессия 12) -------------------------------------------------
+
+
+async def test_a_mailing_step_is_claimed_once_per_cycle(storage: Storage) -> None:
+    """Уникальность (человек, шаг, цикл): второй проход шаг не отправит."""
+    user = await _make_user(storage)
+    cycle = datetime(2026, 10, 1, 12, tzinfo=UTC)
+    at = datetime(2026, 10, 5, 13, tzinfo=UTC)
+
+    assert await storage.claim_mailing(user.id, "R1", cycle, at) is True
+    assert await storage.claim_mailing(user.id, "R1", cycle, at) is False
+    # Другой шаг того же цикла и тот же шаг нового цикла — свои строки.
+    assert await storage.claim_mailing(user.id, "R2", cycle, at) is True
+    assert await storage.claim_mailing(user.id, "R1", at, at) is True
+
+
+async def test_parallel_claims_of_one_step_send_once(storage: Storage) -> None:
+    user = await _make_user(storage)
+    cycle = datetime(2026, 10, 1, 12, tzinfo=UTC)
+
+    claimed = await asyncio.gather(
+        *(storage.claim_mailing(user.id, "R1", cycle, cycle) for _ in range(10))
+    )
+
+    assert sum(claimed) == 1
+
+
+async def test_a_sent_mailing_marks_the_last_marketing_time(storage: Storage) -> None:
+    user = await _make_user(storage)
+    cycle = datetime(2026, 10, 1, 12, tzinfo=UTC)
+    at = datetime(2026, 10, 5, 13, tzinfo=UTC)
+    await storage.claim_mailing(user.id, "R1", cycle, at)
+
+    await storage.finish_mailing(user.id, "R1", cycle, status=MailingStatus.SENT, at=at)
+
+    (row,) = await storage.mailings_of(user.id)
+    assert (row.step, row.cycle_key, row.status, row.error_code) == (
+        "R1",
+        cycle,
+        MailingStatus.SENT,
+        None,
+    )
+    fresh = await storage.get_user_by_id(user.id)
+    assert fresh is not None and fresh.last_marketing_at == at
+
+
+async def test_a_failed_mailing_keeps_the_class_and_no_marketing_time(
+    storage: Storage,
+) -> None:
+    user = await _make_user(storage)
+    cycle = datetime(2026, 10, 1, 12, tzinfo=UTC)
+    at = datetime(2026, 10, 5, 13, tzinfo=UTC)
+    await storage.claim_mailing(user.id, "R2", cycle, at)
+
+    await storage.finish_mailing(
+        user.id,
+        "R2",
+        cycle,
+        status=MailingStatus.ERROR,
+        error_code="TelegramNetworkError",
+        at=at,
+    )
+
+    (row,) = await storage.mailings_of(user.id)
+    assert (row.status, row.error_code) == (MailingStatus.ERROR, "TelegramNetworkError")
+    fresh = await storage.get_user_by_id(user.id)
+    assert fresh is not None and fresh.last_marketing_at is None
+
+
+async def test_a_press_marks_the_latest_mailing_of_its_step(storage: Storage) -> None:
+    user = await _make_user(storage)
+    old = datetime(2026, 9, 1, 12, tzinfo=UTC)
+    new = datetime(2026, 10, 1, 12, tzinfo=UTC)
+    pressed = datetime(2026, 10, 5, 14, tzinfo=UTC)
+    for cycle in (old, new):
+        await storage.claim_mailing(user.id, "R1", cycle, cycle)
+        await storage.finish_mailing(
+            user.id, "R1", cycle, status=MailingStatus.SENT, at=cycle
+        )
+
+    assert await storage.mark_mailing_clicked(user.id, "R1", pressed) is True
+    assert await storage.mark_mailing_clicked(user.id, "R1", pressed) is False
+
+    clicked = {
+        row.cycle_key: row.clicked_at for row in await storage.mailings_of(user.id)
+    }
+    assert clicked == {old: None, new: pressed}
+
+
+async def test_mailing_candidates_are_the_quiet_who_did_not_stop_the_bot(
+    storage: Storage,
+) -> None:
+    # Позже регистрации: отметка активности назад не двигается.
+    now = datetime.now(UTC) + timedelta(days=30)
+    quiet = await _make_user(storage, "1")
+    stopped = await _make_user(storage, "2")
+    fresh = await _make_user(storage, "3")
+    for user, days in ((quiet, 4), (stopped, 4), (fresh, 1)):
+        await storage.touch_active(user.id, now - timedelta(days=days))
+    await storage.mark_stopped(stopped.id, now)
+
+    found = await storage.mailing_candidates(
+        messenger=MessengerKind.TELEGRAM,
+        active_after=now - timedelta(days=5),
+        active_before=now - timedelta(days=3),
+        limit=10,
+    )
+
+    assert [user.id for user in found] == [quiet.id]
+    assert (
+        await storage.mailing_candidates(
+            messenger=MessengerKind.MAX,
+            active_after=now - timedelta(days=5),
+            active_before=now - timedelta(days=3),
+            limit=10,
+        )
+        == []
+    )
+
+
+async def test_activity_never_moves_back(storage: Storage) -> None:
+    """Опоздавшая запись не отодвигает отметку активности назад."""
+    user = await _make_user(storage)
+    later = datetime.now(UTC) + timedelta(days=1)
+
+    await storage.touch_active(user.id, later)
+    await storage.touch_active(user.id, later - timedelta(hours=5))
+
+    fresh = await storage.get_user_by_id(user.id)
+    assert fresh is not None and fresh.last_active_at == later

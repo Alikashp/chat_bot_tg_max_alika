@@ -91,6 +91,11 @@ users = Table(
     # Когда потрачена бесплатная перегенерация первой бесплатной
     # презентации. NULL — не тратилась; одна на человека.
     Column("free_regen_at", DateTime(timezone=True), nullable=True),
+    # Последнее входящее от человека (сессия 12): от неё считается цепочка
+    # реактивации. Пишется не чаще раза в час.
+    Column("last_active_at", DateTime(timezone=True), nullable=True, index=True),
+    # Последнее маркетинговое сообщение: не чаще одного в семь дней.
+    Column("last_marketing_at", DateTime(timezone=True), nullable=True),
     # Когда выдали разовый бонус за подписку на канал. NULL — не выдавали.
     # Бонус убран в сессии 8; отметки остались как история и больше не
     # ставятся, а начисленные картинки так и лежат в bonus_images.
@@ -158,6 +163,31 @@ star_cancels = Table(
         nullable=False,
     ),
     Column("queued_at", DateTime(timezone=True), nullable=False),
+)
+
+#: Отправки шагов цепочки реактивации (сессия 12). Текста сообщения здесь
+#: нет — только кто, какой шаг, в каком цикле, когда, чем кончилось и когда
+#: нажали кнопку. Уникальность (человек, шаг, цикл) — защита от второй
+#: отправки при повторном и параллельном проходе.
+mailings = Table(
+    "mailings",
+    metadata,
+    Column("id", BigInteger, primary_key=True, autoincrement=True),
+    Column(
+        "user_id",
+        BigInteger,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column("step", String(4), nullable=False),
+    # last_active_at человека на момент отправки: новый цикл — новый ключ.
+    Column("cycle_key", DateTime(timezone=True), nullable=False),
+    Column("sent_at", DateTime(timezone=True), nullable=False),
+    Column("status", String(16), nullable=False),
+    # Имя класса ошибки доставки, без её текста.
+    Column("error_code", String(64), nullable=True),
+    Column("clicked_at", DateTime(timezone=True), nullable=True),
+    UniqueConstraint("user_id", "step", "cycle_key", name="uq_mailings_cycle"),
 )
 
 #: Позиция в журнале звёздных транзакций бота, до которой сверка всё

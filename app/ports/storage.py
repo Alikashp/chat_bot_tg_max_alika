@@ -18,6 +18,8 @@ from app.core.limits import LimitKind
 from app.core.models import (
     NO_USERNAME,
     DialogState,
+    Mailing,
+    MailingStatus,
     MessengerKind,
     Payment,
     PeriodUsage,
@@ -266,6 +268,58 @@ class Storage(Protocol):
 
     async def clear_stopped(self, user_id: UserId) -> None:
         """Снимает отметку: человек снова что-то сделал в боте."""
+        ...
+
+    async def touch_active(self, user_id: UserId, at: datetime) -> None:
+        """Отмечает активность человека в ``at``; назад отметка не двигается."""
+        ...
+
+    async def claim_mailing(
+        self, user_id: UserId, step: str, cycle_key: datetime, at: datetime
+    ) -> bool:
+        """Заводит отправку шага в цикле. False — этот шаг цикла уже заведён.
+
+        Уникальность (человек, шаг, цикл) — в самой базе: повторный и
+        параллельный проход второй раз шаг не отправят (сессия 12).
+        """
+        ...
+
+    async def finish_mailing(
+        self,
+        user_id: UserId,
+        step: str,
+        cycle_key: datetime,
+        *,
+        status: MailingStatus,
+        at: datetime,
+        error_code: str | None = None,
+    ) -> None:
+        """Ставит исход отправки; доставленное — ещё и ``last_marketing_at``."""
+        ...
+
+    async def mark_mailing_clicked(
+        self, user_id: UserId, step: str, at: datetime
+    ) -> bool:
+        """Отмечает нажатие кнопки под последней отправкой шага. False — нечего."""
+        ...
+
+    async def mailings_of(self, user_id: UserId) -> list[Mailing]:
+        """Все отправки человеку, от старых к новым."""
+        ...
+
+    async def mailing_candidates(
+        self,
+        *,
+        messenger: MessengerKind,
+        active_after: datetime,
+        active_before: datetime,
+        limit: int,
+    ) -> list[User]:
+        """Кто молчит с ``active_after`` по ``active_before`` и не остановил бота.
+
+        Тариф и прочие условия проверяет ядро: здесь — только грубый отбор,
+        чтобы не тянуть всех людей подряд.
+        """
         ...
 
     async def mark_first_deck(self, user_id: UserId, at: datetime) -> bool:

@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async
 from app.adapters.storage.schema import (
     dialogs,
     generations,
+    mailings,
     monthly_usage,
     payments,
     referrals,
@@ -43,6 +44,8 @@ from app.core.models import (
     NO_USERNAME,
     ChatTurn,
     DialogState,
+    Mailing,
+    MailingStatus,
     MessengerKind,
     Payment,
     PeriodUsage,
@@ -155,6 +158,7 @@ class PostgresStorage:
                 referral_code=referral_code,
                 support_number=support_number,
                 created_at=now,
+                last_active_at=now,
                 bonus_images=bonus_images,
                 bonus_documents=bonus_documents,
                 bonus_presentations=bonus_presentations,
@@ -447,6 +451,130 @@ class PostgresStorage:
         query = update(users).where(users.c.id == user_id).values(stopped_at=None)
         async with self._session() as session, session.begin():
             await session.execute(query)
+
+    async def touch_active(self, user_id: UserId, at: datetime) -> None:
+        """Условие «не раньше записанного» — в UPDATE: отметка не идёт назад."""
+        query = (
+            update(users)
+            .where(
+                users.c.id == user_id,
+                or_(users.c.last_active_at.is_(None), users.c.last_active_at < at),
+            )
+            .values(last_active_at=at)
+        )
+        async with self._session() as session, session.begin():
+            await session.execute(query)
+
+    async def claim_mailing(
+        self, user_id: UserId, step: str, cycle_key: datetime, at: datetime
+    ) -> bool:
+        """Вставка с ON CONFLICT DO NOTHING: побеждает ровно одна заявка."""
+        query = (
+            insert(mailings)
+            .values(
+                user_id=user_id,
+                step=step,
+                cycle_key=cycle_key,
+                sent_at=at,
+                status=MailingStatus.SENDING.value,
+            )
+            .on_conflict_do_nothing(constraint="uq_mailings_cycle")
+            .returning(mailings.c.id)
+        )
+        async with self._session() as session, session.begin():
+            return (await session.execute(query)).one_or_none() is not None
+
+    async def finish_mailing(
+        self,
+        user_id: UserId,
+        step: str,
+        cycle_key: datetime,
+        *,
+        status: MailingStatus,
+        at: datetime,
+        error_code: str | None = None,
+    ) -> None:
+        """Исход отправки и отметка маркетинга — одной транзакцией."""
+        row = (
+            update(mailings)
+            .where(
+                mailings.c.user_id == user_id,
+                mailings.c.step == step,
+                mailings.c.cycle_key == cycle_key,
+            )
+            .values(status=status.value, error_code=error_code, sent_at=at)
+        )
+        async with self._session() as session, session.begin():
+            await session.execute(row)
+            if status is MailingStatus.SENT:
+                await session.execute(
+                    update(users)
+                    .where(users.c.id == user_id)
+                    .values(last_marketing_at=at)
+                )
+
+    async def mark_mailing_clicked(
+        self, user_id: UserId, step: str, at: datetime
+    ) -> bool:
+        latest = (
+            select(mailings.c.id)
+            .where(mailings.c.user_id == user_id, mailings.c.step == step)
+            .order_by(mailings.c.sent_at.desc())
+            .limit(1)
+            .scalar_subquery()
+        )
+        query = (
+            update(mailings)
+            .where(mailings.c.id == latest, mailings.c.clicked_at.is_(None))
+            .values(clicked_at=at)
+            .returning(mailings.c.id)
+        )
+        async with self._session() as session, session.begin():
+            return (await session.execute(query)).one_or_none() is not None
+
+    async def mailings_of(self, user_id: UserId) -> list[Mailing]:
+        query = (
+            select(mailings)
+            .where(mailings.c.user_id == user_id)
+            .order_by(mailings.c.sent_at)
+        )
+        async with self._session() as session:
+            rows = (await session.execute(query)).mappings().all()
+        return [
+            Mailing(
+                user_id=UserId(row["user_id"]),
+                step=row["step"],
+                cycle_key=row["cycle_key"],
+                sent_at=row["sent_at"],
+                status=MailingStatus(row["status"]),
+                error_code=row["error_code"],
+                clicked_at=row["clicked_at"],
+            )
+            for row in rows
+        ]
+
+    async def mailing_candidates(
+        self,
+        *,
+        messenger: MessengerKind,
+        active_after: datetime,
+        active_before: datetime,
+        limit: int,
+    ) -> list[User]:
+        query = (
+            select(users)
+            .where(
+                users.c.messenger == messenger.value,
+                users.c.stopped_at.is_(None),
+                users.c.last_active_at >= active_after,
+                users.c.last_active_at < active_before,
+            )
+            .order_by(users.c.id)
+            .limit(limit)
+        )
+        async with self._session() as session:
+            rows = (await session.execute(query)).mappings().all()
+        return [_to_user(row) for row in rows]
 
     async def mark_first_deck(self, user_id: UserId, at: datetime) -> bool:
         """Условие «ещё не отмечено» — в самом UPDATE: первая колода одна."""
@@ -1097,6 +1225,8 @@ def _to_user(row: Any) -> User:
         norm_since=row["norm_since"],
         trial_order_id=row["trial_order_id"],
         free_regen_at=row["free_regen_at"],
+        last_active_at=row["last_active_at"],
+        last_marketing_at=row["last_marketing_at"],
     )
 
 

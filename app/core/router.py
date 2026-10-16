@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
+from datetime import timedelta
 
 from app.core import pending, texts
 from app.core.actions import (
@@ -34,7 +35,7 @@ from app.core.actions import (
     parse_theme_action,
 )
 from app.core.documents import DocumentTooLargeError
-from app.core.models import IncomingMessage, TariffId
+from app.core.models import IncomingMessage, TariffId, User
 from app.core.photos import PhotoTooLargeError
 from app.core.retry_context import RetryKind
 from app.core.scenarios import (
@@ -129,6 +130,11 @@ async def _handle(deps: Deps, incoming: IncomingMessage) -> None:
         await deps.storage.clear_stopped(user.id)
         user = replace(user, stopped_at=None)
         deps.logger.info("user_returned", user_id=int(user.id))
+
+    if user is not None:
+        # Любое входящее от человека — сообщение, кнопка, команда, оплата —
+        # это активность (сессия 12): от неё считается цепочка реактивации.
+        user = await _mark_active(deps, user)
 
     if incoming.start_payload is not None:
         await onboarding.start(
@@ -663,6 +669,19 @@ async def _handle_text(deps: Deps, session: Session, text: str) -> None:
 
 
 # --- Вспомогательное -----------------------------------------------------
+
+#: Как часто записывать активность. Чаще незачем: цепочка реактивации
+#: считает сутки, а запись на каждое сообщение — лишний запрос в базу.
+ACTIVITY_EVERY = timedelta(hours=1)
+
+
+async def _mark_active(deps: Deps, user: User) -> User:
+    """Отмечает активность человека — не чаще раза в ``ACTIVITY_EVERY``."""
+    now = deps.now()
+    if user.last_active_at is not None and now - user.last_active_at < ACTIVITY_EVERY:
+        return user
+    await deps.storage.touch_active(user.id, now)
+    return replace(user, last_active_at=now)
 
 
 async def _refresh_menu(deps: Deps, session: Session) -> None:

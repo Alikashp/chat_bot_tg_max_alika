@@ -26,6 +26,8 @@ from app.core.limits import LimitKind
 from app.core.models import (
     NO_USERNAME,
     DialogState,
+    Mailing,
+    MailingStatus,
     MessengerKind,
     Payment,
     PeriodUsage,
@@ -68,6 +70,7 @@ class InMemoryStorage:
         self._dialogs: dict[UserId, DialogState] = {}
         self._dialogs_touched: dict[UserId, datetime] = {}
         self._first_decks: dict[UserId, datetime] = {}
+        self._mailings: dict[tuple[UserId, str, datetime], Mailing] = {}
         #: Учёт обращений к провайдерам. Публичный намеренно: в тестах по
         #: нему проверяют, что попытка записана, — так же, как в бою по
         #: таблице generations.
@@ -131,6 +134,7 @@ class InMemoryStorage:
             referral_code=referral_code,
             support_number=support_number,
             created_at=self._now(),
+            last_active_at=self._now(),
             bonus_images=bonus_images,
             bonus_documents=bonus_documents,
             bonus_presentations=bonus_presentations,
@@ -289,6 +293,86 @@ class InMemoryStorage:
     async def clear_stopped(self, user_id: UserId) -> None:
         user = self._require_user(user_id)
         self._users[user_id] = replace(user, stopped_at=None)
+
+    async def touch_active(self, user_id: UserId, at: datetime) -> None:
+        user = self._require_user(user_id)
+        if user.last_active_at is None or user.last_active_at < at:
+            self._users[user_id] = replace(user, last_active_at=at)
+
+    async def claim_mailing(
+        self, user_id: UserId, step: str, cycle_key: datetime, at: datetime
+    ) -> bool:
+        self._require_user(user_id)
+        key = (user_id, step, cycle_key)
+        if key in self._mailings:
+            return False
+        self._mailings[key] = Mailing(
+            user_id=user_id,
+            step=step,
+            cycle_key=cycle_key,
+            sent_at=at,
+            status=MailingStatus.SENDING,
+        )
+        return True
+
+    async def finish_mailing(
+        self,
+        user_id: UserId,
+        step: str,
+        cycle_key: datetime,
+        *,
+        status: MailingStatus,
+        at: datetime,
+        error_code: str | None = None,
+    ) -> None:
+        key = (user_id, step, cycle_key)
+        self._mailings[key] = replace(
+            self._mailings[key], status=status, error_code=error_code, sent_at=at
+        )
+        if status is MailingStatus.SENT:
+            user = self._require_user(user_id)
+            self._users[user_id] = replace(user, last_marketing_at=at)
+
+    async def mark_mailing_clicked(
+        self, user_id: UserId, step: str, at: datetime
+    ) -> bool:
+        mine = [
+            row
+            for row in self._mailings.values()
+            if row.user_id == user_id and row.step == step
+        ]
+        if not mine:
+            return False
+        latest = max(mine, key=lambda row: row.sent_at)
+        if latest.clicked_at is not None:
+            return False
+        key = (user_id, step, latest.cycle_key)
+        self._mailings[key] = replace(latest, clicked_at=at)
+        return True
+
+    async def mailings_of(self, user_id: UserId) -> list[Mailing]:
+        return sorted(
+            (row for row in self._mailings.values() if row.user_id == user_id),
+            key=lambda row: row.sent_at,
+        )
+
+    async def mailing_candidates(
+        self,
+        *,
+        messenger: MessengerKind,
+        active_after: datetime,
+        active_before: datetime,
+        limit: int,
+    ) -> list[User]:
+        found = [
+            user
+            for user in self._users.values()
+            if user.messenger is messenger
+            and user.stopped_at is None
+            and user.last_active_at is not None
+            and active_after <= user.last_active_at < active_before
+        ]
+        return sorted(found, key=lambda user: user.id)[:limit]
 
     async def mark_first_deck(self, user_id: UserId, at: datetime) -> bool:
         self._require_user(user_id)

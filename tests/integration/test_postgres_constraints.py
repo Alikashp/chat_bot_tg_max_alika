@@ -561,3 +561,117 @@ async def test_activity_is_filled_from_the_latest_trace(engine: AsyncEngine) -> 
         datetime(2026, 9, 20, 12, tzinfo=UTC),
         datetime(2026, 9, 25, 9, tzinfo=UTC),
     ]
+
+
+async def test_one_mailing_row_carries_one_gift(engine: AsyncEngine) -> None:
+    """Сессия 13, Д2: второй подарок за одну отправку база не примет."""
+    (user_id,) = await _make_users(engine, 1)
+    now = datetime(2026, 9, 1, tzinfo=UTC)
+    async with engine.begin() as connection:
+        mailing_id = (
+            await connection.execute(
+                text(
+                    "INSERT INTO mailings (user_id, step, cycle_key, sent_at, status) "
+                    "VALUES (:u, 'R2', :at, :at, 'sent') RETURNING id"
+                ),
+                {"u": user_id, "at": now},
+            )
+        ).scalar_one()
+    insert = text(
+        "INSERT INTO gifts (user_id, kind, source, granted_at, expires_at, "
+        "mailing_id) VALUES (:u, 'presentations', 'R2', :at, :at, :m)"
+    )
+    async with engine.begin() as connection:
+        await connection.execute(insert, {"u": user_id, "at": now, "m": mailing_id})
+
+    with pytest.raises(IntegrityError):
+        async with engine.begin() as connection:
+            await connection.execute(insert, {"u": user_id, "at": now, "m": mailing_id})
+
+
+async def test_a_failed_gift_rolls_the_sent_mark_back(engine: AsyncEngine) -> None:
+    """Сессия 13, Д2: сбой записи подарка внутри транзакции откатывает и
+    «доставлено», и отметку маркетинга — «sent» без подарка не остаётся."""
+    from datetime import timedelta
+
+    from app.adapters.storage.postgres import PostgresStorage
+    from app.core.gifts import GiftGrant
+    from app.core.limits import LimitKind
+    from app.core.models import MailingStatus, UserId
+
+    (raw_id,) = await _make_users(engine, 1)
+    user_id = UserId(raw_id)
+    storage = PostgresStorage(engine)
+    now = datetime(2026, 9, 1, tzinfo=UTC)
+    await storage.claim_mailing(user_id, "R2", now, now)
+    # Источник длиннее колонки: настоящая ошибка базы посреди транзакции.
+    broken = GiftGrant(
+        kind=LimitKind.PRESENTATIONS,
+        source="R2" * 10,
+        expires_at=now + timedelta(days=3),
+    )
+
+    with pytest.raises(SQLAlchemyError):
+        await storage.finish_mailing(
+            user_id, "R2", now, status=MailingStatus.SENT, at=now, gift=broken
+        )
+
+    (row,) = await storage.mailings_of(user_id)
+    assert row.status is MailingStatus.SENDING
+    assert await storage.gifts_of(user_id) == []
+    fresh = await storage.get_user_by_id(user_id)
+    assert fresh is not None and fresh.last_marketing_at is None
+
+
+def _gift_per_mailing() -> object:
+    path = (
+        Path(__file__).resolve().parents[2]
+        / "migrations"
+        / "versions"
+        / "f5b3d9a1e264_gift_per_mailing.py"
+    )
+    spec = importlib.util.spec_from_file_location("gift_per_mailing", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+async def test_earlier_gifts_find_their_mailing(engine: AsyncEngine) -> None:
+    """Сессия 13: подарок до ревизии — к доставленному R2 того же человека в
+    тот же момент; чужой и несовпавший остаются без отправки; повтор — тот же."""
+    migration = _gift_per_mailing()
+    first, second = await _make_users(engine, 2)
+    sent = datetime(2026, 9, 1, 13, tzinfo=UTC)
+    other = datetime(2026, 9, 2, 13, tzinfo=UTC)
+    async with engine.begin() as connection:
+        mailing_id = (
+            await connection.execute(
+                text(
+                    "INSERT INTO mailings (user_id, step, cycle_key, sent_at, status) "
+                    "VALUES (:u, 'R2', :at, :at, 'sent') RETURNING id"
+                ),
+                {"u": first, "at": sent},
+            )
+        ).scalar_one()
+        for user_id, at in ((first, sent), (second, sent), (first, other)):
+            await connection.execute(
+                text(
+                    "INSERT INTO gifts (user_id, kind, source, granted_at, "
+                    "expires_at) VALUES (:u, 'presentations', 'R2', :at, :at)"
+                ),
+                {"u": user_id, "at": at},
+            )
+        for _ in range(2):
+            await connection.execute(text(migration.BACKFILL_SQL))  # type: ignore[attr-defined]
+        found = (
+            await connection.execute(
+                text("SELECT user_id, granted_at, mailing_id FROM gifts ORDER BY id")
+            )
+        ).all()
+
+    assert [tuple(row) for row in found] == [
+        (first, sent, mailing_id),
+        (second, sent, None),
+        (first, other, None),
+    ]

@@ -212,6 +212,15 @@ gifts = Table(
     Column("used_at", DateTime(timezone=True), nullable=True),
     # Сгорел: ставится равным сроку проходом expire_gifts.
     Column("expired_at", DateTime(timezone=True), nullable=True),
+    # Отправка, с которой пришёл подарок (сессия 13). Уникальна: одна
+    # доставка — один подарок, даже если запись исхода повторили.
+    Column(
+        "mailing_id",
+        BigInteger,
+        ForeignKey("mailings.id", ondelete="CASCADE"),
+        nullable=True,
+    ),
+    UniqueConstraint("mailing_id", name="uq_gifts_mailing"),
 )
 
 #: Позиция в журнале звёздных транзакций бота, до которой сверка всё

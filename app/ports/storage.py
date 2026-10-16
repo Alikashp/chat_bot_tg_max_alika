@@ -14,7 +14,7 @@ from typing import Protocol
 
 from app.core import sources
 from app.core.generations import Generation
-from app.core.gifts import Gift
+from app.core.gifts import Gift, GiftGrant
 from app.core.limits import LimitKind
 from app.core.models import (
     NO_USERNAME,
@@ -334,8 +334,17 @@ class Storage(Protocol):
         status: MailingStatus,
         at: datetime,
         error_code: str | None = None,
-    ) -> None:
-        """Ставит исход отправки; доставленное — ещё и ``last_marketing_at``."""
+        gift: GiftGrant | None = None,
+    ) -> bool:
+        """Ставит исход отправки; доставленное — ещё и ``last_marketing_at``.
+
+        ``gift`` начисляется только доставленному и в той же записи, что и
+        отметка «доставлено» (сессия 13): «sent» без подарка не бывает.
+
+        Исход ставится только строке в статусе ``sending``. Повтор — после
+        потерянного ответа базы или параллельный — ничего не меняет и
+        второго подарка не даёт. True — исход поставлен этим вызовом.
+        """
         ...
 
     async def mark_mailing_clicked(

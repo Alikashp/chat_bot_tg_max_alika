@@ -40,7 +40,7 @@ from app.adapters.storage.schema import (
 )
 from app.core import sources
 from app.core.generations import Generation
-from app.core.gifts import Gift
+from app.core.gifts import Gift, GiftGrant
 from app.core.limits import LimitKind
 from app.core.models import (
     NO_USERNAME,
@@ -583,25 +583,48 @@ class PostgresStorage:
         status: MailingStatus,
         at: datetime,
         error_code: str | None = None,
-    ) -> None:
-        """Исход отправки и отметка маркетинга — одной транзакцией."""
+        gift: GiftGrant | None = None,
+    ) -> bool:
+        """Исход отправки, отметка маркетинга и подарок — одной транзакцией.
+
+        Переход только из ``sending`` — условием в WHERE: из двух
+        одновременных вызовов второй, дождавшись строки, видит уже не
+        ``sending`` и ничего не пишет. Второй подарок за ту же отправку
+        не примет и сама база: ``gifts.mailing_id`` уникален.
+        """
         row = (
             update(mailings)
             .where(
                 mailings.c.user_id == user_id,
                 mailings.c.step == step,
                 mailings.c.cycle_key == cycle_key,
+                mailings.c.status == MailingStatus.SENDING.value,
             )
             .values(status=status.value, error_code=error_code, sent_at=at)
+            .returning(mailings.c.id)
         )
         async with self._session() as session, session.begin():
-            await session.execute(row)
+            mailing_id = (await session.execute(row)).scalar_one_or_none()
+            if mailing_id is None:
+                return False
             if status is MailingStatus.SENT:
                 await session.execute(
                     update(users)
                     .where(users.c.id == user_id)
                     .values(last_marketing_at=at)
                 )
+                if gift is not None:
+                    await session.execute(
+                        insert(gifts).values(
+                            user_id=user_id,
+                            kind=gift.kind.value,
+                            source=gift.source,
+                            granted_at=at,
+                            expires_at=gift.expires_at,
+                            mailing_id=mailing_id,
+                        )
+                    )
+        return True
 
     async def mark_mailing_clicked(
         self, user_id: UserId, step: str, at: datetime

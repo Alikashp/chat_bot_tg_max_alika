@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async
 from app.adapters.storage.schema import (
     dialogs,
     generations,
+    gifts,
     mailings,
     monthly_usage,
     payments,
@@ -39,6 +40,7 @@ from app.adapters.storage.schema import (
 )
 from app.core import sources
 from app.core.generations import Generation
+from app.core.gifts import Gift
 from app.core.limits import LimitKind
 from app.core.models import (
     NO_USERNAME,
@@ -376,6 +378,94 @@ class PostgresStorage:
         )
         async with self._session() as session, session.begin():
             await session.execute(query)
+
+    async def grant_gift(
+        self,
+        user_id: UserId,
+        kind: LimitKind,
+        *,
+        source: str,
+        granted_at: datetime,
+        expires_at: datetime,
+    ) -> None:
+        query = insert(gifts).values(
+            user_id=user_id,
+            kind=kind.value,
+            source=source,
+            granted_at=granted_at,
+            expires_at=expires_at,
+        )
+        async with self._session() as session, session.begin():
+            await session.execute(query)
+
+    @staticmethod
+    def _live_gift(user_id: UserId, kind: LimitKind, now: datetime) -> list[Any]:
+        return [
+            gifts.c.user_id == user_id,
+            gifts.c.kind == kind.value,
+            gifts.c.used_at.is_(None),
+            gifts.c.expired_at.is_(None),
+            gifts.c.expires_at > now,
+        ]
+
+    async def count_gifts(self, user_id: UserId, kind: LimitKind, now: datetime) -> int:
+        query = select(func.count()).where(*self._live_gift(user_id, kind, now))
+        async with self._session() as session:
+            return int((await session.execute(query)).scalar_one())
+
+    async def spend_gift(self, user_id: UserId, kind: LimitKind, now: datetime) -> bool:
+        """Один UPDATE с условием в WHERE: самый ранний живой подарок.
+
+        Условия повторены во внешнем WHERE намеренно: из двух одновременных
+        запросов второй, дождавшись строки, перепроверяет именно их (READ
+        COMMITTED) и уже потраченный подарок второй раз не тратит.
+        """
+        soonest = (
+            select(gifts.c.id)
+            .where(*self._live_gift(user_id, kind, now))
+            .order_by(gifts.c.expires_at, gifts.c.id)
+            .limit(1)
+            .scalar_subquery()
+        )
+        query = (
+            update(gifts)
+            .where(gifts.c.id == soonest, *self._live_gift(user_id, kind, now))
+            .values(used_at=now)
+            .returning(gifts.c.id)
+        )
+        async with self._session() as session, session.begin():
+            return (await session.execute(query)).one_or_none() is not None
+
+    async def expire_gifts(self, now: datetime) -> int:
+        query = (
+            update(gifts)
+            .where(
+                gifts.c.used_at.is_(None),
+                gifts.c.expired_at.is_(None),
+                gifts.c.expires_at <= now,
+            )
+            .values(expired_at=gifts.c.expires_at)
+            .returning(gifts.c.id)
+        )
+        async with self._session() as session, session.begin():
+            return len((await session.execute(query)).all())
+
+    async def gifts_of(self, user_id: UserId) -> list[Gift]:
+        query = select(gifts).where(gifts.c.user_id == user_id).order_by(gifts.c.id)
+        async with self._session() as session:
+            rows = (await session.execute(query)).mappings().all()
+        return [
+            Gift(
+                user_id=UserId(row["user_id"]),
+                kind=LimitKind(row["kind"]),
+                source=row["source"],
+                granted_at=row["granted_at"],
+                expires_at=row["expires_at"],
+                used_at=row["used_at"],
+                expired_at=row["expired_at"],
+            )
+            for row in rows
+        ]
 
     async def claim_presentation(
         self, user_id: UserId, now: datetime, *, stale_after: timedelta

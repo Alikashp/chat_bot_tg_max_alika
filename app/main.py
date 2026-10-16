@@ -49,7 +49,7 @@ from app.adapters.telegram.intake import dedup_key, is_pre_checkout
 from app.adapters.telegram.messenger import TelegramMessenger
 from app.adapters.telegram.stars import TelegramStars
 from app.config import Settings, get_settings
-from app.core import retention
+from app.core import gifts, retention
 from app.core.billing import Billing
 from app.core.channel import channel_username
 from app.core.decks import Draft
@@ -634,6 +634,10 @@ async def build_wiring(settings: Settings) -> Wiring:
     )
 
 
+async def _expire_gifts(deps: Deps) -> None:
+    await gifts.expire(deps.storage, deps.logger, deps.now())
+
+
 async def _settle_refund(
     by_messenger: dict[MessengerKind, Deps], external_id: str
 ) -> None:
@@ -1033,10 +1037,20 @@ async def run() -> None:
         interval_seconds=_MAILINGS_INTERVAL_SECONDS,
     )
 
+    # Сгоревшие подарки из R2 отмечаются раз в час. Тратиться они перестают
+    # ровно в свой срок и без этого прохода — он нужен, чтобы в базе было
+    # видно «сгорел».
+    burn_gifts = Periodic(
+        "gifts",
+        partial(_expire_gifts, wiring.billing.deps),
+        interval_seconds=_DIALOGS_INTERVAL_SECONDS,
+    )
+
     for each in queues:
         each.start()
     billing.start()
     mailings.start()
+    burn_gifts.start()
     reconcile.start()
     dialogs.start()
     runner = web.AppRunner(app, access_log=None)
@@ -1085,6 +1099,7 @@ async def run() -> None:
         await reconcile.stop()
         await dialogs.stop()
         await mailings.stop()
+        await burn_gifts.stop()
         await site.stop()
         abandoned = 0
         for each in queues:

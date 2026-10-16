@@ -24,7 +24,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from app.core import pending, texts
+from app.core import gifts, pending, texts
+from app.core.limits import LimitKind
 from app.core.models import (
     Keyboard,
     MailingStatus,
@@ -156,6 +157,15 @@ class Mailer:
             return
 
         await self._finish(user, step, cycle, MailingStatus.SENT, now)
+        if step is R2:
+            # Подарок — только после доставки: не дошло — обещания не было.
+            await storage.grant_gift(
+                user.id,
+                LimitKind.PRESENTATIONS,
+                source=gifts.R2_GIFT_SOURCE,
+                granted_at=now,
+                expires_at=gifts.r2_expiry(now),
+            )
         if step is not R3 and user.pending is None:
             # Текст обещает: «напиши тему одним сообщением». Значит,
             # следующее сообщение — тема, а не вопрос в чат.

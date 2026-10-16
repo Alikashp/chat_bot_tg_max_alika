@@ -1954,3 +1954,102 @@ async def test_activity_never_moves_back(storage: Storage) -> None:
 
     fresh = await storage.get_user_by_id(user.id)
     assert fresh is not None and fresh.last_active_at == later
+
+
+# --- Подарки со сроком (сессия 12, шаг 4) ----------------------------------
+
+
+async def test_a_gift_is_counted_until_it_expires(storage: Storage) -> None:
+    user = await _make_user(storage)
+    now = datetime.now(UTC)
+    await storage.grant_gift(
+        user.id,
+        LimitKind.PRESENTATIONS,
+        source="R2",
+        granted_at=now,
+        expires_at=now + timedelta(days=3),
+    )
+
+    assert await storage.count_gifts(user.id, LimitKind.PRESENTATIONS, now) == 1
+    assert await storage.count_gifts(user.id, LimitKind.IMAGES, now) == 0
+    later = now + timedelta(days=3)
+    assert await storage.count_gifts(user.id, LimitKind.PRESENTATIONS, later) == 0
+    (gift,) = await storage.gifts_of(user.id)
+    assert (gift.kind, gift.source, gift.granted_at) == (
+        LimitKind.PRESENTATIONS,
+        "R2",
+        now,
+    )
+    assert gift.expires_at == now + timedelta(days=3)
+
+
+async def test_a_gift_is_spent_once_even_in_parallel(storage: Storage) -> None:
+    user = await _make_user(storage)
+    now = datetime.now(UTC)
+    await storage.grant_gift(
+        user.id,
+        LimitKind.PRESENTATIONS,
+        source="R2",
+        granted_at=now,
+        expires_at=now + timedelta(days=3),
+    )
+
+    spent = await asyncio.gather(
+        *(storage.spend_gift(user.id, LimitKind.PRESENTATIONS, now) for _ in range(5))
+    )
+
+    assert sorted(spent) == [False, False, False, False, True]
+    assert await storage.count_gifts(user.id, LimitKind.PRESENTATIONS, now) == 0
+    (gift,) = await storage.gifts_of(user.id)
+    assert gift.used_at == now
+
+
+async def test_the_soonest_gift_is_spent_first_and_expired_ones_never(
+    storage: Storage,
+) -> None:
+    user = await _make_user(storage)
+    now = datetime.now(UTC)
+    for days in (5, 1, -1):
+        await storage.grant_gift(
+            user.id,
+            LimitKind.PRESENTATIONS,
+            source="R2",
+            granted_at=now - timedelta(days=3) + timedelta(days=days),
+            expires_at=now + timedelta(days=days),
+        )
+
+    assert await storage.spend_gift(user.id, LimitKind.PRESENTATIONS, now)
+
+    used = [g.expires_at for g in await storage.gifts_of(user.id) if g.used_at]
+    assert used == [now + timedelta(days=1)]
+    assert await storage.spend_gift(user.id, LimitKind.PRESENTATIONS, now)
+    assert not await storage.spend_gift(user.id, LimitKind.PRESENTATIONS, now)
+
+
+async def test_expiry_marks_only_unused_gifts_past_their_time(
+    storage: Storage,
+) -> None:
+    user = await _make_user(storage)
+    now = datetime.now(UTC)
+    for days in (-2, -1, 1):
+        await storage.grant_gift(
+            user.id,
+            LimitKind.PRESENTATIONS,
+            source="R2",
+            granted_at=now - timedelta(days=3) + timedelta(days=days),
+            expires_at=now + timedelta(days=days),
+        )
+    # Самый ранний успели потратить до срока.
+    assert await storage.spend_gift(
+        user.id, LimitKind.PRESENTATIONS, now - timedelta(days=3)
+    )
+
+    assert await storage.expire_gifts(now) == 1
+    assert await storage.expire_gifts(now) == 0
+
+    rows = sorted(await storage.gifts_of(user.id), key=lambda g: g.expires_at)
+    assert [(g.used_at is not None, g.expired_at) for g in rows] == [
+        (True, None),
+        (False, now - timedelta(days=1)),
+        (False, None),
+    ]

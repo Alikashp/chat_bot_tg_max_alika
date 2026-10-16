@@ -47,6 +47,8 @@ class Source(StrEnum):
     """Откуда списывать очередную единицу."""
 
     DAILY = "daily"
+    #: Подарок со сроком (сессия 12): сгорающее тратится раньше вечного.
+    GIFT = "gift"
     MONTHLY = "monthly"
     BONUS = "bonus"
 
@@ -61,6 +63,8 @@ class Allowance:
     bonus: int
     monthly_limit: int = 0
     monthly_used: int = 0
+    #: Подарки со сроком, ещё не потраченные и не сгоревшие (подарок из R2).
+    gift: int = 0
 
     @property
     def daily_left(self) -> int:
@@ -84,8 +88,8 @@ class Allowance:
 
     @property
     def total_left(self) -> int:
-        """Сколько всего осталось — с учётом бонуса."""
-        return self.norm_left + self.bonus
+        """Сколько всего осталось — с учётом бонуса и подарков."""
+        return self.norm_left + self.bonus + self.gift
 
     @property
     def exhausted(self) -> bool:
@@ -97,6 +101,8 @@ class Allowance:
         """Откуда спишется следующая единица; None — если списывать неоткуда."""
         if self.daily_left > 0:
             return Source.DAILY
+        if self.gift > 0:
+            return Source.GIFT
         if self.monthly_left > 0:
             return Source.MONTHLY
         if self.bonus > 0:
@@ -228,6 +234,7 @@ def allowance(
     kind: LimitKind,
     *,
     period_usage: PeriodUsage | None = None,
+    gift: int = 0,
 ) -> Allowance:
     """Считает остаток по виду ресурса.
 
@@ -255,6 +262,7 @@ def allowance(
         bonus=bonus,
         monthly_limit=monthly_norm(tariff, kind),
         monthly_used=used,
+        gift=gift,
     )
 
 

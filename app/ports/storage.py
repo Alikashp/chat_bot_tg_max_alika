@@ -14,6 +14,7 @@ from typing import Protocol
 
 from app.core import sources
 from app.core.generations import Generation
+from app.core.gifts import Gift
 from app.core.limits import LimitKind
 from app.core.models import (
     NO_USERNAME,
@@ -223,6 +224,46 @@ class Storage(Protocol):
         presentations: int = 0,
     ) -> None:
         """Атомарно начисляет бонусный баланс (награда за реферала)."""
+        ...
+
+    async def grant_gift(
+        self,
+        user_id: UserId,
+        kind: LimitKind,
+        *,
+        source: str,
+        granted_at: datetime,
+        expires_at: datetime,
+    ) -> None:
+        """Начисляет подарок со сроком: одну единицу ``kind`` до ``expires_at``."""
+        ...
+
+    async def count_gifts(self, user_id: UserId, kind: LimitKind, now: datetime) -> int:
+        """Сколько подарков ``kind`` можно потратить в момент ``now``.
+
+        Считается по сроку, а не по отметке «сгорел»: проход, который её
+        ставит, может опоздать, а тратиться подарок перестаёт ровно в свой час.
+        """
+        ...
+
+    async def spend_gift(self, user_id: UserId, kind: LimitKind, now: datetime) -> bool:
+        """Атомарно тратит подарок с самым ранним сроком.
+
+        False — тратить нечего: подарков нет, они сгорели или их только что
+        потратил параллельный запрос.
+        """
+        ...
+
+    async def expire_gifts(self, now: datetime) -> int:
+        """Отмечает сгоревшими неиспользованные подарки с прошедшим сроком.
+
+        Возвращает, сколько отмечено. Отметка — сам срок подарка: в базе
+        видно, когда он сгорел, а не когда до него дошёл проход.
+        """
+        ...
+
+    async def gifts_of(self, user_id: UserId) -> list[Gift]:
+        """Все подарки человека — для тестов и разбора."""
         ...
 
     async def claim_presentation(

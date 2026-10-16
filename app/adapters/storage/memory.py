@@ -22,6 +22,7 @@ from uuid import uuid4
 
 from app.core import sources
 from app.core.generations import Generation
+from app.core.gifts import Gift
 from app.core.limits import LimitKind
 from app.core.models import (
     NO_USERNAME,
@@ -71,6 +72,7 @@ class InMemoryStorage:
         self._dialogs_touched: dict[UserId, datetime] = {}
         self._first_decks: dict[UserId, datetime] = {}
         self._mailings: dict[tuple[UserId, str, datetime], Mailing] = {}
+        self._gifts: list[Gift] = []
         #: Учёт обращений к провайдерам. Публичный намеренно: в тестах по
         #: нему проверяют, что попытка записана, — так же, как в бою по
         #: таблице generations.
@@ -262,6 +264,64 @@ class InMemoryStorage:
             bonus_documents=user.bonus_documents + documents,
             bonus_presentations=user.bonus_presentations + presentations,
         )
+
+    async def grant_gift(
+        self,
+        user_id: UserId,
+        kind: LimitKind,
+        *,
+        source: str,
+        granted_at: datetime,
+        expires_at: datetime,
+    ) -> None:
+        self._require_user(user_id)
+        self._gifts.append(
+            Gift(
+                user_id=user_id,
+                kind=kind,
+                source=source,
+                granted_at=granted_at,
+                expires_at=expires_at,
+            )
+        )
+
+    def _live_gifts(self, user_id: UserId, kind: LimitKind, now: datetime) -> list[int]:
+        """Номера подарков, которые можно потратить, — ранний срок первым."""
+        live = [
+            index
+            for index, gift in enumerate(self._gifts)
+            if gift.user_id == user_id
+            and gift.kind is kind
+            and gift.used_at is None
+            and gift.expired_at is None
+            and gift.expires_at > now
+        ]
+        return sorted(live, key=lambda index: self._gifts[index].expires_at)
+
+    async def count_gifts(self, user_id: UserId, kind: LimitKind, now: datetime) -> int:
+        return len(self._live_gifts(user_id, kind, now))
+
+    async def spend_gift(self, user_id: UserId, kind: LimitKind, now: datetime) -> bool:
+        live = self._live_gifts(user_id, kind, now)
+        if not live:
+            return False
+        self._gifts[live[0]] = replace(self._gifts[live[0]], used_at=now)
+        return True
+
+    async def expire_gifts(self, now: datetime) -> int:
+        expired = 0
+        for index, gift in enumerate(self._gifts):
+            if (
+                gift.used_at is None
+                and gift.expired_at is None
+                and gift.expires_at <= now
+            ):
+                self._gifts[index] = replace(gift, expired_at=gift.expires_at)
+                expired += 1
+        return expired
+
+    async def gifts_of(self, user_id: UserId) -> list[Gift]:
+        return [gift for gift in self._gifts if gift.user_id == user_id]
 
     async def claim_presentation(
         self, user_id: UserId, now: datetime, *, stale_after: timedelta

@@ -190,6 +190,30 @@ mailings = Table(
     UniqueConstraint("user_id", "step", "cycle_key", name="uq_mailings_cycle"),
 )
 
+#: Подарки со сроком (сессия 12, шаг 4): пока только презентация из R2.
+#: Строка на подарок, чтобы было видно: начислен, использован, сгорел.
+gifts = Table(
+    "gifts",
+    metadata,
+    Column("id", BigInteger, primary_key=True, autoincrement=True),
+    Column(
+        "user_id",
+        BigInteger,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    ),
+    # Вид ресурса из LimitKind: presentations.
+    Column("kind", String(16), nullable=False),
+    # Откуда подарок: шаг рассылки, R2.
+    Column("source", String(8), nullable=False),
+    Column("granted_at", DateTime(timezone=True), nullable=False),
+    Column("expires_at", DateTime(timezone=True), nullable=False),
+    Column("used_at", DateTime(timezone=True), nullable=True),
+    # Сгорел: ставится равным сроку проходом expire_gifts.
+    Column("expired_at", DateTime(timezone=True), nullable=True),
+)
+
 #: Позиция в журнале звёздных транзакций бота, до которой сверка всё
 #: довела (сессия 10). Строка одна: журнал у бота один.
 star_ledger = Table(

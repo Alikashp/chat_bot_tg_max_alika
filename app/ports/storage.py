@@ -14,10 +14,13 @@ from typing import Protocol
 
 from app.core import sources
 from app.core.generations import Generation
+from app.core.gifts import Gift
 from app.core.limits import LimitKind
 from app.core.models import (
     NO_USERNAME,
     DialogState,
+    Mailing,
+    MailingStatus,
     MessengerKind,
     Payment,
     PeriodUsage,
@@ -223,6 +226,46 @@ class Storage(Protocol):
         """Атомарно начисляет бонусный баланс (награда за реферала)."""
         ...
 
+    async def grant_gift(
+        self,
+        user_id: UserId,
+        kind: LimitKind,
+        *,
+        source: str,
+        granted_at: datetime,
+        expires_at: datetime,
+    ) -> None:
+        """Начисляет подарок со сроком: одну единицу ``kind`` до ``expires_at``."""
+        ...
+
+    async def count_gifts(self, user_id: UserId, kind: LimitKind, now: datetime) -> int:
+        """Сколько подарков ``kind`` можно потратить в момент ``now``.
+
+        Считается по сроку, а не по отметке «сгорел»: проход, который её
+        ставит, может опоздать, а тратиться подарок перестаёт ровно в свой час.
+        """
+        ...
+
+    async def spend_gift(self, user_id: UserId, kind: LimitKind, now: datetime) -> bool:
+        """Атомарно тратит подарок с самым ранним сроком.
+
+        False — тратить нечего: подарков нет, они сгорели или их только что
+        потратил параллельный запрос.
+        """
+        ...
+
+    async def expire_gifts(self, now: datetime) -> int:
+        """Отмечает сгоревшими неиспользованные подарки с прошедшим сроком.
+
+        Возвращает, сколько отмечено. Отметка — сам срок подарка: в базе
+        видно, когда он сгорел, а не когда до него дошёл проход.
+        """
+        ...
+
+    async def gifts_of(self, user_id: UserId) -> list[Gift]:
+        """Все подарки человека — для тестов и разбора."""
+        ...
+
     async def claim_presentation(
         self, user_id: UserId, now: datetime, *, stale_after: timedelta
     ) -> bool:
@@ -266,6 +309,76 @@ class Storage(Protocol):
 
     async def clear_stopped(self, user_id: UserId) -> None:
         """Снимает отметку: человек снова что-то сделал в боте."""
+        ...
+
+    async def touch_active(self, user_id: UserId, at: datetime) -> None:
+        """Отмечает активность человека в ``at``; назад отметка не двигается."""
+        ...
+
+    async def claim_mailing(
+        self, user_id: UserId, step: str, cycle_key: datetime, at: datetime
+    ) -> bool:
+        """Заводит отправку шага в цикле. False — этот шаг цикла уже заведён.
+
+        Уникальность (человек, шаг, цикл) — в самой базе: повторный и
+        параллельный проход второй раз шаг не отправят (сессия 12).
+        """
+        ...
+
+    async def finish_mailing(
+        self,
+        user_id: UserId,
+        step: str,
+        cycle_key: datetime,
+        *,
+        status: MailingStatus,
+        at: datetime,
+        error_code: str | None = None,
+    ) -> None:
+        """Ставит исход отправки; доставленное — ещё и ``last_marketing_at``."""
+        ...
+
+    async def mark_mailing_clicked(
+        self, user_id: UserId, step: str, at: datetime
+    ) -> bool:
+        """Отмечает нажатие кнопки под последней отправкой шага. False — нечего."""
+        ...
+
+    async def mailings_of(self, user_id: UserId) -> list[Mailing]:
+        """Все отправки человеку, от старых к новым."""
+        ...
+
+    async def mailing_candidates(
+        self,
+        *,
+        messenger: MessengerKind,
+        step: str,
+        active_after: datetime,
+        active_before: datetime,
+        marketing_before: datetime,
+        now: datetime,
+        limit: int,
+    ) -> list[User]:
+        """Кому шаг ``step`` положен прямо сейчас — грубым отбором в базе.
+
+        Молчит с ``active_after`` по ``active_before``, не остановил бота,
+        бесплатный тариф (нет действующего оплаченного срока), маркетинга не
+        было с ``marketing_before``, а этот шаг текущего цикла ещё не заведён:
+        иначе первые ``limit`` уже обработанных навсегда загораживали бы
+        остальных. Ядро перепроверяет всё по каждому.
+        """
+        ...
+
+    async def mark_first_deck(self, user_id: UserId, at: datetime) -> bool:
+        """Отмечает первую доставленную презентацию. False — уже была раньше.
+
+        Отметка одна на человека и ставится одной условной операцией: по ней
+        решается, положена ли бесплатная перегенерация (сессия 12).
+        """
+        ...
+
+    async def mark_free_regen_used(self, user_id: UserId, at: datetime) -> bool:
+        """Тратит бесплатную перегенерацию. False — она уже потрачена."""
         ...
 
     async def remember_channel_check(self, user_id: UserId, at: datetime) -> None:

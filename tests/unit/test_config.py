@@ -176,3 +176,27 @@ def test_a_required_channel_needs_a_link() -> None:
         {**VALID_ENV, "channel_required": True, "channel_url": "https://t.me/chan"}
     )
     assert settings.channel_required is True
+
+
+def test_mailings_are_off_by_default_and_switch_on_step_by_step() -> None:
+    """Сессия 12, правило 8: общий выключатель и флаг на каждый шаг."""
+    from app.core.mailing import STEPS
+    from app.main import build_core_settings
+
+    off = build_core_settings(
+        Settings.model_validate(VALID_ENV), "bot", referral_link_host="t.me"
+    )
+    assert not off.mailings_enabled
+    assert not any(
+        getattr(off, f"mailing_{step.name.lower()}_enabled") for step in STEPS
+    )
+
+    on = build_core_settings(
+        Settings.model_validate(
+            {**VALID_ENV, "mailings_enabled": True, "mailing_r2_enabled": True}
+        ),
+        "bot",
+        referral_link_host="t.me",
+    )
+    assert on.mailings_enabled and on.mailing_r2_enabled
+    assert not on.mailing_r1_enabled and not on.mailing_r3_enabled

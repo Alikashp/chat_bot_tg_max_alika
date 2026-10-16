@@ -108,7 +108,8 @@ async def _allowance(
     period = await deps.storage.get_period_usage(
         user.id, period_of(deps, session).start
     )
-    return allowance(user, usage, session.tariff, kind, period_usage=period)
+    gift = await deps.storage.count_gifts(user.id, kind, session.now)
+    return allowance(user, usage, session.tariff, kind, period_usage=period, gift=gift)
 
 
 async def charge(deps: Deps, session: Session, kind: LimitKind) -> None:
@@ -135,6 +136,14 @@ async def charge(deps: Deps, session: Session, kind: LimitKind) -> None:
     if source is Source.DAILY:
         await deps.storage.add_usage(user.id, session.day, messages=1)
         return
+
+    if source is Source.GIFT:
+        if await deps.storage.spend_gift(user.id, kind, session.now):
+            return
+        # Подарок успели потратить параллельно или он сгорел между проверкой
+        # и списанием — дальше по порядку: норма (условное списание само
+        # откажет, если её нет), потом бонус.
+        source = Source.MONTHLY
 
     if source is Source.MONTHLY and await deps.storage.spend_norm(
         user.id,

@@ -534,3 +534,16 @@ def test_no_screen_says_razbor() -> None:
     assert texts.document_error().text == (
         "Что-то пошло не так, попробуй ещё раз 🤷 Доклад не потратился."
     )
+
+
+def test_only_the_declared_wording_is_exempt_from_the_forbidden_words() -> None:
+    """Исключения из запрета на слова — только подписи заказчика, дословно.
+
+    И исключение снимает запрет только с этой подписи целиком: то же слово
+    в любом другом тексте по-прежнему нарушение.
+    """
+    from scripts.check_texts import ALLOWED_WORDING, check_wording
+
+    assert ALLOWED_WORDING == (texts.BUTTON_REGENERATE,)
+    assert check_wording("кнопка", texts.BUTTON_REGENERATE) == []
+    assert check_wording("текст", "Перегенерировать ответ")

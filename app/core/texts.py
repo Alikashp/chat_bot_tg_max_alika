@@ -548,6 +548,12 @@ PRESENTATION_IN_PROGRESS = "Презентация уже готовится —
 
 BUTTON_PRESENTATION_AGAIN = "Ещё одну презентацию"
 BUTTON_REPORT_FROM_PRESENTATION = "📑 Сделать доклад по презентации"
+#: Кнопки под итогом готовой презентации с сессии 12, каждая своей строкой.
+#: Прежние подписи выше остаются в сообщениях, отправленных раньше: их
+#: действия те же, и работают они как раньше.
+BUTTON_REGENERATE = "🔄 Перегенерировать"
+BUTTON_REPORT_OF_DECK = "📄 Доклад по презентации"
+BUTTON_NEW_PRESENTATION = "✅ Новая презентация"
 BUTTON_PRESENTATION_FROM_REPORT = "📑 Сделать презентацию по докладу"
 
 #: Кнопку-связку уже нажимали: доклад или презентация по ней уже сделаны или
@@ -764,7 +770,7 @@ def presentation_done() -> Screen:
 def presentation_result(*, with_pdf: bool = True) -> Screen:
     return Screen(
         text=PRESENTATION_RESULT if with_pdf else PRESENTATION_RESULT_PPTX_ONLY,
-        buttons=(BUTTON_REPORT_FROM_PRESENTATION, BUTTON_PRESENTATION_AGAIN),
+        buttons=(BUTTON_REGENERATE, BUTTON_REPORT_OF_DECK, BUTTON_NEW_PRESENTATION),
     )
 
 
@@ -1024,6 +1030,42 @@ def button_continue(*, lite: Tariff, trial: Trial | None) -> str:
     """Кнопка к условиям пробного периода или к заказу Лайта."""
     price = trial.price_rub if trial is not None else lite.price_rub
     return f"🚀 Продолжить за {_price(price, RUB)}"
+
+
+# --- Рассылка реактивации (сессия 12) ------------------------------------
+
+#: Тексты дословно от заказчика. В R1 перенос строки в поручении — перенос
+#: по ширине, а не абзац: фраза одна.
+MAILING_R1 = (
+    "Есть тема следующего доклада? Напиши её одним сообщением — через пару "
+    "минут пришлю презентацию в PDF и PowerPoint."
+)
+MAILING_R2 = (
+    "Дарим тебе ещё одну презентацию 🎁\nДействует 3 дня — успей сделать к семинару."
+)
+BUTTON_MAILING_R1 = "📊 Написать тему"
+BUTTON_MAILING_R2 = "Сделать презентацию"
+
+
+def mailing_r1() -> Screen:
+    return Screen(text=MAILING_R1, buttons=(BUTTON_MAILING_R1,))
+
+
+def mailing_r2() -> Screen:
+    return Screen(text=MAILING_R2, buttons=(BUTTON_MAILING_R2,))
+
+
+def mailing_r3(url: str) -> Screen:
+    """Ссылка в тексте, а не только в кнопке: так она работает и при пересылке."""
+    return Screen(
+        text=(
+            "Если у друга тоже горит доклад — просто перешли ему это сообщение.\n"
+            "Ему презентация в подарок, тебе тоже 🎁\n"
+            "\n"
+            f"👉 {url}"
+        ),
+        next_step="переслать другу — ссылка в тексте",
+    )
 
 
 def paywall_messages(*, invite_messages: int) -> Screen:
@@ -1779,6 +1821,9 @@ def _all_screens() -> tuple[Screen, ...]:
     return (
         onboarding(),
         onboarding(from_presentations=True),
+        mailing_r1(),
+        mailing_r2(),
+        mailing_r3("https://t.me/testbot?start=ref_code1"),
         chat_answer("Ответ на вопрос.", offer_new_dialog=False),
         chat_answer("Ответ на вопрос.", offer_new_dialog=True),
         chat_answer(

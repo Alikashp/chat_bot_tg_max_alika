@@ -29,6 +29,7 @@ from app.core.models import (
     NO_USERNAME,
     ChatTurn,
     DialogState,
+    MailingStatus,
     MessengerKind,
     Payment,
     Role,
@@ -1752,3 +1753,303 @@ async def test_reconciliation_picks_pending_card_orders_of_the_right_age(
     assert [order.id for order in found] == [due.id]
     assert no_external.id not in [order.id for order in found]
     assert too_old == []
+
+
+async def test_the_first_deck_and_the_free_regeneration_are_marked_once(
+    storage: Storage,
+) -> None:
+    """Сессия 12: обе отметки ставятся одной условной операцией и один раз."""
+    user = await _make_user(storage)
+    at = datetime.now(UTC)
+
+    assert await storage.mark_first_deck(user.id, at) is True
+    assert await storage.mark_first_deck(user.id, at) is False
+    assert await storage.mark_free_regen_used(user.id, at) is True
+    assert await storage.mark_free_regen_used(user.id, at) is False
+    fresh = await storage.get_user_by_id(user.id)
+    assert fresh is not None and fresh.free_regen_at is not None
+
+
+async def test_a_free_regeneration_is_spent_once_concurrently(storage: Storage) -> None:
+    user = await _make_user(storage)
+    at = datetime.now(UTC)
+
+    spent = await asyncio.gather(
+        *(storage.mark_free_regen_used(user.id, at) for _ in range(10))
+    )
+
+    assert sum(spent) == 1
+
+
+# --- Рассылки (сессия 12) -------------------------------------------------
+
+
+async def test_a_mailing_step_is_claimed_once_per_cycle(storage: Storage) -> None:
+    """Уникальность (человек, шаг, цикл): второй проход шаг не отправит."""
+    user = await _make_user(storage)
+    cycle = datetime(2026, 10, 1, 12, tzinfo=UTC)
+    at = datetime(2026, 10, 5, 13, tzinfo=UTC)
+
+    assert await storage.claim_mailing(user.id, "R1", cycle, at) is True
+    assert await storage.claim_mailing(user.id, "R1", cycle, at) is False
+    # Другой шаг того же цикла и тот же шаг нового цикла — свои строки.
+    assert await storage.claim_mailing(user.id, "R2", cycle, at) is True
+    assert await storage.claim_mailing(user.id, "R1", at, at) is True
+
+
+async def test_parallel_claims_of_one_step_send_once(storage: Storage) -> None:
+    user = await _make_user(storage)
+    cycle = datetime(2026, 10, 1, 12, tzinfo=UTC)
+
+    claimed = await asyncio.gather(
+        *(storage.claim_mailing(user.id, "R1", cycle, cycle) for _ in range(10))
+    )
+
+    assert sum(claimed) == 1
+
+
+async def test_a_sent_mailing_marks_the_last_marketing_time(storage: Storage) -> None:
+    user = await _make_user(storage)
+    cycle = datetime(2026, 10, 1, 12, tzinfo=UTC)
+    at = datetime(2026, 10, 5, 13, tzinfo=UTC)
+    await storage.claim_mailing(user.id, "R1", cycle, at)
+
+    await storage.finish_mailing(user.id, "R1", cycle, status=MailingStatus.SENT, at=at)
+
+    (row,) = await storage.mailings_of(user.id)
+    assert (row.step, row.cycle_key, row.status, row.error_code) == (
+        "R1",
+        cycle,
+        MailingStatus.SENT,
+        None,
+    )
+    fresh = await storage.get_user_by_id(user.id)
+    assert fresh is not None and fresh.last_marketing_at == at
+
+
+async def test_a_failed_mailing_keeps_the_class_and_no_marketing_time(
+    storage: Storage,
+) -> None:
+    user = await _make_user(storage)
+    cycle = datetime(2026, 10, 1, 12, tzinfo=UTC)
+    at = datetime(2026, 10, 5, 13, tzinfo=UTC)
+    await storage.claim_mailing(user.id, "R2", cycle, at)
+
+    await storage.finish_mailing(
+        user.id,
+        "R2",
+        cycle,
+        status=MailingStatus.ERROR,
+        error_code="TelegramNetworkError",
+        at=at,
+    )
+
+    (row,) = await storage.mailings_of(user.id)
+    assert (row.status, row.error_code) == (MailingStatus.ERROR, "TelegramNetworkError")
+    fresh = await storage.get_user_by_id(user.id)
+    assert fresh is not None and fresh.last_marketing_at is None
+
+
+async def test_a_press_marks_the_latest_mailing_of_its_step(storage: Storage) -> None:
+    user = await _make_user(storage)
+    old = datetime(2026, 9, 1, 12, tzinfo=UTC)
+    new = datetime(2026, 10, 1, 12, tzinfo=UTC)
+    pressed = datetime(2026, 10, 5, 14, tzinfo=UTC)
+    for cycle in (old, new):
+        await storage.claim_mailing(user.id, "R1", cycle, cycle)
+        await storage.finish_mailing(
+            user.id, "R1", cycle, status=MailingStatus.SENT, at=cycle
+        )
+
+    assert await storage.mark_mailing_clicked(user.id, "R1", pressed) is True
+    assert await storage.mark_mailing_clicked(user.id, "R1", pressed) is False
+
+    clicked = {
+        row.cycle_key: row.clicked_at for row in await storage.mailings_of(user.id)
+    }
+    assert clicked == {old: None, new: pressed}
+
+
+async def test_mailing_candidates_are_the_quiet_who_did_not_stop_the_bot(
+    storage: Storage,
+) -> None:
+    # Позже регистрации: отметка активности назад не двигается.
+    now = datetime.now(UTC) + timedelta(days=30)
+    quiet = await _make_user(storage, "1")
+    stopped = await _make_user(storage, "2")
+    fresh = await _make_user(storage, "3")
+    for user, days in ((quiet, 4), (stopped, 4), (fresh, 1)):
+        await storage.touch_active(user.id, now - timedelta(days=days))
+    await storage.mark_stopped(stopped.id, now)
+
+    found = await storage.mailing_candidates(
+        messenger=MessengerKind.TELEGRAM,
+        step="R1",
+        active_after=now - timedelta(days=5),
+        active_before=now - timedelta(days=3),
+        marketing_before=now - timedelta(days=7),
+        now=now,
+        limit=10,
+    )
+
+    assert [user.id for user in found] == [quiet.id]
+    assert (
+        await storage.mailing_candidates(
+            messenger=MessengerKind.MAX,
+            step="R1",
+            active_after=now - timedelta(days=5),
+            active_before=now - timedelta(days=3),
+            marketing_before=now - timedelta(days=7),
+            now=now,
+            limit=10,
+        )
+        == []
+    )
+
+
+async def test_mailing_candidates_leave_out_payers_recent_marketing_and_sent_steps(
+    storage: Storage,
+) -> None:
+    """Отбор в базе — тот же, что и в ядре: иначе первые ``limit`` неподходящих
+    навсегда загораживали бы остальных."""
+    now = datetime.now(UTC) + timedelta(days=30)
+    payer, lapsed, marketed, claimed, old_cycle = [
+        await _make_user(storage, str(n)) for n in range(10, 15)
+    ]
+    for user in (payer, lapsed, marketed, claimed, old_cycle):
+        await storage.touch_active(user.id, now - timedelta(days=4))
+    await storage.set_tariff(payer.id, TariffId.LITE, now + timedelta(days=1))
+    await storage.set_tariff(lapsed.id, TariffId.LITE, now - timedelta(days=1))
+    await storage.claim_mailing(marketed.id, "R3", now - timedelta(days=30), now)
+    await storage.finish_mailing(
+        marketed.id,
+        "R3",
+        now - timedelta(days=30),
+        status=MailingStatus.SENT,
+        at=now - timedelta(days=6),
+    )
+    await storage.claim_mailing(claimed.id, "R1", now - timedelta(days=4), now)
+    await storage.claim_mailing(old_cycle.id, "R1", now - timedelta(days=40), now)
+
+    found = await storage.mailing_candidates(
+        messenger=MessengerKind.TELEGRAM,
+        step="R1",
+        active_after=now - timedelta(days=5),
+        active_before=now - timedelta(days=3),
+        marketing_before=now - timedelta(days=7),
+        now=now,
+        limit=10,
+    )
+
+    assert sorted(user.id for user in found) == sorted([lapsed.id, old_cycle.id])
+
+
+async def test_activity_never_moves_back(storage: Storage) -> None:
+    """Опоздавшая запись не отодвигает отметку активности назад."""
+    user = await _make_user(storage)
+    later = datetime.now(UTC) + timedelta(days=1)
+
+    await storage.touch_active(user.id, later)
+    await storage.touch_active(user.id, later - timedelta(hours=5))
+
+    fresh = await storage.get_user_by_id(user.id)
+    assert fresh is not None and fresh.last_active_at == later
+
+
+# --- Подарки со сроком (сессия 12, шаг 4) ----------------------------------
+
+
+async def test_a_gift_is_counted_until_it_expires(storage: Storage) -> None:
+    user = await _make_user(storage)
+    now = datetime.now(UTC)
+    await storage.grant_gift(
+        user.id,
+        LimitKind.PRESENTATIONS,
+        source="R2",
+        granted_at=now,
+        expires_at=now + timedelta(days=3),
+    )
+
+    assert await storage.count_gifts(user.id, LimitKind.PRESENTATIONS, now) == 1
+    assert await storage.count_gifts(user.id, LimitKind.IMAGES, now) == 0
+    later = now + timedelta(days=3)
+    assert await storage.count_gifts(user.id, LimitKind.PRESENTATIONS, later) == 0
+    (gift,) = await storage.gifts_of(user.id)
+    assert (gift.kind, gift.source, gift.granted_at) == (
+        LimitKind.PRESENTATIONS,
+        "R2",
+        now,
+    )
+    assert gift.expires_at == now + timedelta(days=3)
+
+
+async def test_a_gift_is_spent_once_even_in_parallel(storage: Storage) -> None:
+    user = await _make_user(storage)
+    now = datetime.now(UTC)
+    await storage.grant_gift(
+        user.id,
+        LimitKind.PRESENTATIONS,
+        source="R2",
+        granted_at=now,
+        expires_at=now + timedelta(days=3),
+    )
+
+    spent = await asyncio.gather(
+        *(storage.spend_gift(user.id, LimitKind.PRESENTATIONS, now) for _ in range(5))
+    )
+
+    assert sorted(spent) == [False, False, False, False, True]
+    assert await storage.count_gifts(user.id, LimitKind.PRESENTATIONS, now) == 0
+    (gift,) = await storage.gifts_of(user.id)
+    assert gift.used_at == now
+
+
+async def test_the_soonest_gift_is_spent_first_and_expired_ones_never(
+    storage: Storage,
+) -> None:
+    user = await _make_user(storage)
+    now = datetime.now(UTC)
+    for days in (5, 1, -1):
+        await storage.grant_gift(
+            user.id,
+            LimitKind.PRESENTATIONS,
+            source="R2",
+            granted_at=now - timedelta(days=3) + timedelta(days=days),
+            expires_at=now + timedelta(days=days),
+        )
+
+    assert await storage.spend_gift(user.id, LimitKind.PRESENTATIONS, now)
+
+    used = [g.expires_at for g in await storage.gifts_of(user.id) if g.used_at]
+    assert used == [now + timedelta(days=1)]
+    assert await storage.spend_gift(user.id, LimitKind.PRESENTATIONS, now)
+    assert not await storage.spend_gift(user.id, LimitKind.PRESENTATIONS, now)
+
+
+async def test_expiry_marks_only_unused_gifts_past_their_time(
+    storage: Storage,
+) -> None:
+    user = await _make_user(storage)
+    now = datetime.now(UTC)
+    for days in (-2, -1, 1):
+        await storage.grant_gift(
+            user.id,
+            LimitKind.PRESENTATIONS,
+            source="R2",
+            granted_at=now - timedelta(days=3) + timedelta(days=days),
+            expires_at=now + timedelta(days=days),
+        )
+    # Самый ранний успели потратить до срока.
+    assert await storage.spend_gift(
+        user.id, LimitKind.PRESENTATIONS, now - timedelta(days=3)
+    )
+
+    assert await storage.expire_gifts(now) == 1
+    assert await storage.expire_gifts(now) == 0
+
+    rows = sorted(await storage.gifts_of(user.id), key=lambda g: g.expires_at)
+    assert [(g.used_at is not None, g.expired_at) for g in rows] == [
+        (True, None),
+        (False, now - timedelta(days=1)),
+        (False, None),
+    ]

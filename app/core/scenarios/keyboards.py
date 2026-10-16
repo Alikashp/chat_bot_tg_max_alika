@@ -24,8 +24,10 @@ from app.core.actions import (
     deck_set_action,
     document_action,
     followup_action,
+    mailing_action,
     presentation_from_action,
     preset_action,
+    regenerate_action,
     report_from_action,
 )
 from app.core.models import Button, Keyboard
@@ -254,6 +256,11 @@ def paywall_free(continue_label: str, action: str, invite_label: str = "") -> Ke
     if invite_label:
         rows.append((Button(text=invite_label, action=Action.INVITE_FRIEND),))
     return Keyboard(rows=tuple(rows))
+
+
+def mailing(label: str, step: str) -> Keyboard:
+    """Одна кнопка под сообщением рассылки; несёт шаг (сессия 12)."""
+    return Keyboard.row(Button(text=label, action=mailing_action(step)))
 
 
 def channel_required(url: str) -> Keyboard:
@@ -526,28 +533,37 @@ def deck_back(token: str) -> Keyboard:
     return Keyboard.row(Button(text=texts.BUTTON_BACK, action=deck_back_action(token)))
 
 
-def presentation_result(report_token: str | None = None) -> Keyboard:
-    """Под итогом после файлов: доклад по ней и «Ещё одну презентацию».
+def presentation_result(
+    report_token: str | None = None, regen_token: str | None = None
+) -> Keyboard:
+    """Под итогом после файлов (сессия 12): каждая кнопка своей строкой.
 
-    Доклад — первым: это следующий шаг для того, кто готовится к выступлению.
-    Без жетона (связки выключены) остаётся одна «Ещё одну презентацию».
+    «Перегенерировать», «Доклад по презентации», «Новая презентация». Без
+    жетона перегенерации или доклада соответствующей кнопки нет. Действия
+    доклада и новой презентации — прежние: кнопки под старыми итогами с
+    прежними подписями работают так же.
     """
     rows: list[tuple[Button, ...]] = []
+    if regen_token is not None:
+        rows.append(
+            (
+                Button(
+                    text=texts.BUTTON_REGENERATE,
+                    action=regenerate_action(regen_token),
+                ),
+            )
+        )
     if report_token is not None:
         rows.append(
             (
                 Button(
-                    text=texts.BUTTON_REPORT_FROM_PRESENTATION,
+                    text=texts.BUTTON_REPORT_OF_DECK,
                     action=report_from_action(report_token),
                 ),
             )
         )
     rows.append(
-        (
-            Button(
-                text=texts.BUTTON_PRESENTATION_AGAIN, action=Action.PRESENTATION_AGAIN
-            ),
-        )
+        (Button(text=texts.BUTTON_NEW_PRESENTATION, action=Action.PRESENTATION_AGAIN),)
     )
     return Keyboard(rows=tuple(rows))
 

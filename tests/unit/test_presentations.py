@@ -209,7 +209,7 @@ async def test_the_result_message_comes_after_the_files(
     keyboard = messenger.last_text.keyboard
     assert keyboard is not None
     buttons = [(b.text, b.action) for row in keyboard.rows for b in row]
-    assert buttons[-1] == ("Ещё одну презентацию", Action.PRESENTATION_AGAIN)
+    assert buttons[-1] == ("✅ Новая презентация", Action.PRESENTATION_AGAIN)
     # «Готовлю презентацию» не остаётся висеть над готовыми файлами.
     assert messenger.text_edits[-1].text == texts.PRESENTATION_DONE
 
@@ -636,7 +636,7 @@ async def deck_ready(enabled: Deps) -> None:
 def report_button(messenger: FakeMessenger) -> str:
     """Действие кнопки «Сделать доклад по презентации» под итогом."""
     for text, action in result_buttons(messenger):
-        if text == texts.BUTTON_REPORT_FROM_PRESENTATION:
+        if text == texts.BUTTON_REPORT_OF_DECK:
             assert action is not None
             return action
     raise AssertionError("под итогом нет кнопки доклада")
@@ -660,11 +660,16 @@ async def documents_left(storage: InMemoryStorage, user: User) -> int:
 async def test_the_result_offers_a_report_first(
     enabled: Deps, owner: User, messenger: FakeMessenger
 ) -> None:
-    """Д1: под итогом — «Сделать доклад по презентации», под ней «Ещё одну»."""
+    """Д1 и сессия 12: «Перегенерировать», «Доклад по презентации», «Новая»."""
     await deck_ready(enabled)
 
     texts_of = [text for text, _ in result_buttons(messenger)]
-    assert texts_of == ["📑 Сделать доклад по презентации", "Ещё одну презентацию"]
+    # Сессия 12: три кнопки, каждая своей строкой.
+    assert texts_of == [
+        "🔄 Перегенерировать",
+        "📄 Доклад по презентации",
+        "✅ Новая презентация",
+    ]
 
 
 async def test_a_report_from_the_presentation_in_one_press(

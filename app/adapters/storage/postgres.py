@@ -27,6 +27,8 @@ from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async
 from app.adapters.storage.schema import (
     dialogs,
     generations,
+    gifts,
+    mailings,
     monthly_usage,
     payments,
     referrals,
@@ -38,11 +40,14 @@ from app.adapters.storage.schema import (
 )
 from app.core import sources
 from app.core.generations import Generation
+from app.core.gifts import Gift
 from app.core.limits import LimitKind
 from app.core.models import (
     NO_USERNAME,
     ChatTurn,
     DialogState,
+    Mailing,
+    MailingStatus,
     MessengerKind,
     Payment,
     PeriodUsage,
@@ -155,6 +160,7 @@ class PostgresStorage:
                 referral_code=referral_code,
                 support_number=support_number,
                 created_at=now,
+                last_active_at=now,
                 bonus_images=bonus_images,
                 bonus_documents=bonus_documents,
                 bonus_presentations=bonus_presentations,
@@ -373,6 +379,94 @@ class PostgresStorage:
         async with self._session() as session, session.begin():
             await session.execute(query)
 
+    async def grant_gift(
+        self,
+        user_id: UserId,
+        kind: LimitKind,
+        *,
+        source: str,
+        granted_at: datetime,
+        expires_at: datetime,
+    ) -> None:
+        query = insert(gifts).values(
+            user_id=user_id,
+            kind=kind.value,
+            source=source,
+            granted_at=granted_at,
+            expires_at=expires_at,
+        )
+        async with self._session() as session, session.begin():
+            await session.execute(query)
+
+    @staticmethod
+    def _live_gift(user_id: UserId, kind: LimitKind, now: datetime) -> list[Any]:
+        return [
+            gifts.c.user_id == user_id,
+            gifts.c.kind == kind.value,
+            gifts.c.used_at.is_(None),
+            gifts.c.expired_at.is_(None),
+            gifts.c.expires_at > now,
+        ]
+
+    async def count_gifts(self, user_id: UserId, kind: LimitKind, now: datetime) -> int:
+        query = select(func.count()).where(*self._live_gift(user_id, kind, now))
+        async with self._session() as session:
+            return int((await session.execute(query)).scalar_one())
+
+    async def spend_gift(self, user_id: UserId, kind: LimitKind, now: datetime) -> bool:
+        """Один UPDATE с условием в WHERE: самый ранний живой подарок.
+
+        Условия повторены во внешнем WHERE намеренно: из двух одновременных
+        запросов второй, дождавшись строки, перепроверяет именно их (READ
+        COMMITTED) и уже потраченный подарок второй раз не тратит.
+        """
+        soonest = (
+            select(gifts.c.id)
+            .where(*self._live_gift(user_id, kind, now))
+            .order_by(gifts.c.expires_at, gifts.c.id)
+            .limit(1)
+            .scalar_subquery()
+        )
+        query = (
+            update(gifts)
+            .where(gifts.c.id == soonest, *self._live_gift(user_id, kind, now))
+            .values(used_at=now)
+            .returning(gifts.c.id)
+        )
+        async with self._session() as session, session.begin():
+            return (await session.execute(query)).one_or_none() is not None
+
+    async def expire_gifts(self, now: datetime) -> int:
+        query = (
+            update(gifts)
+            .where(
+                gifts.c.used_at.is_(None),
+                gifts.c.expired_at.is_(None),
+                gifts.c.expires_at <= now,
+            )
+            .values(expired_at=gifts.c.expires_at)
+            .returning(gifts.c.id)
+        )
+        async with self._session() as session, session.begin():
+            return len((await session.execute(query)).all())
+
+    async def gifts_of(self, user_id: UserId) -> list[Gift]:
+        query = select(gifts).where(gifts.c.user_id == user_id).order_by(gifts.c.id)
+        async with self._session() as session:
+            rows = (await session.execute(query)).mappings().all()
+        return [
+            Gift(
+                user_id=UserId(row["user_id"]),
+                kind=LimitKind(row["kind"]),
+                source=row["source"],
+                granted_at=row["granted_at"],
+                expires_at=row["expires_at"],
+                used_at=row["used_at"],
+                expired_at=row["expired_at"],
+            )
+            for row in rows
+        ]
+
     async def claim_presentation(
         self, user_id: UserId, now: datetime, *, stale_after: timedelta
     ) -> bool:
@@ -447,6 +541,173 @@ class PostgresStorage:
         query = update(users).where(users.c.id == user_id).values(stopped_at=None)
         async with self._session() as session, session.begin():
             await session.execute(query)
+
+    async def touch_active(self, user_id: UserId, at: datetime) -> None:
+        """Условие «не раньше записанного» — в UPDATE: отметка не идёт назад."""
+        query = (
+            update(users)
+            .where(
+                users.c.id == user_id,
+                or_(users.c.last_active_at.is_(None), users.c.last_active_at < at),
+            )
+            .values(last_active_at=at)
+        )
+        async with self._session() as session, session.begin():
+            await session.execute(query)
+
+    async def claim_mailing(
+        self, user_id: UserId, step: str, cycle_key: datetime, at: datetime
+    ) -> bool:
+        """Вставка с ON CONFLICT DO NOTHING: побеждает ровно одна заявка."""
+        query = (
+            insert(mailings)
+            .values(
+                user_id=user_id,
+                step=step,
+                cycle_key=cycle_key,
+                sent_at=at,
+                status=MailingStatus.SENDING.value,
+            )
+            .on_conflict_do_nothing(constraint="uq_mailings_cycle")
+            .returning(mailings.c.id)
+        )
+        async with self._session() as session, session.begin():
+            return (await session.execute(query)).one_or_none() is not None
+
+    async def finish_mailing(
+        self,
+        user_id: UserId,
+        step: str,
+        cycle_key: datetime,
+        *,
+        status: MailingStatus,
+        at: datetime,
+        error_code: str | None = None,
+    ) -> None:
+        """Исход отправки и отметка маркетинга — одной транзакцией."""
+        row = (
+            update(mailings)
+            .where(
+                mailings.c.user_id == user_id,
+                mailings.c.step == step,
+                mailings.c.cycle_key == cycle_key,
+            )
+            .values(status=status.value, error_code=error_code, sent_at=at)
+        )
+        async with self._session() as session, session.begin():
+            await session.execute(row)
+            if status is MailingStatus.SENT:
+                await session.execute(
+                    update(users)
+                    .where(users.c.id == user_id)
+                    .values(last_marketing_at=at)
+                )
+
+    async def mark_mailing_clicked(
+        self, user_id: UserId, step: str, at: datetime
+    ) -> bool:
+        latest = (
+            select(mailings.c.id)
+            .where(mailings.c.user_id == user_id, mailings.c.step == step)
+            .order_by(mailings.c.sent_at.desc())
+            .limit(1)
+            .scalar_subquery()
+        )
+        query = (
+            update(mailings)
+            .where(mailings.c.id == latest, mailings.c.clicked_at.is_(None))
+            .values(clicked_at=at)
+            .returning(mailings.c.id)
+        )
+        async with self._session() as session, session.begin():
+            return (await session.execute(query)).one_or_none() is not None
+
+    async def mailings_of(self, user_id: UserId) -> list[Mailing]:
+        query = (
+            select(mailings)
+            .where(mailings.c.user_id == user_id)
+            .order_by(mailings.c.sent_at)
+        )
+        async with self._session() as session:
+            rows = (await session.execute(query)).mappings().all()
+        return [
+            Mailing(
+                user_id=UserId(row["user_id"]),
+                step=row["step"],
+                cycle_key=row["cycle_key"],
+                sent_at=row["sent_at"],
+                status=MailingStatus(row["status"]),
+                error_code=row["error_code"],
+                clicked_at=row["clicked_at"],
+            )
+            for row in rows
+        ]
+
+    async def mailing_candidates(
+        self,
+        *,
+        messenger: MessengerKind,
+        step: str,
+        active_after: datetime,
+        active_before: datetime,
+        marketing_before: datetime,
+        now: datetime,
+        limit: int,
+    ) -> list[User]:
+        already = (
+            select(mailings.c.id)
+            .where(
+                mailings.c.user_id == users.c.id,
+                mailings.c.step == step,
+                mailings.c.cycle_key == users.c.last_active_at,
+            )
+            .exists()
+        )
+        query = (
+            select(users)
+            .where(
+                users.c.messenger == messenger.value,
+                users.c.stopped_at.is_(None),
+                users.c.last_active_at >= active_after,
+                users.c.last_active_at < active_before,
+                or_(
+                    users.c.tariff == TariffId.FREE.value,
+                    users.c.tariff_expires_at.is_(None),
+                    users.c.tariff_expires_at <= now,
+                ),
+                or_(
+                    users.c.last_marketing_at.is_(None),
+                    users.c.last_marketing_at < marketing_before,
+                ),
+                ~already,
+            )
+            .order_by(users.c.id)
+            .limit(limit)
+        )
+        async with self._session() as session:
+            rows = (await session.execute(query)).mappings().all()
+        return [_to_user(row) for row in rows]
+
+    async def mark_first_deck(self, user_id: UserId, at: datetime) -> bool:
+        """Условие «ещё не отмечено» — в самом UPDATE: первая колода одна."""
+        query = (
+            update(users)
+            .where(users.c.id == user_id, users.c.first_deck_at.is_(None))
+            .values(first_deck_at=at)
+            .returning(users.c.id)
+        )
+        async with self._session() as session, session.begin():
+            return (await session.execute(query)).one_or_none() is not None
+
+    async def mark_free_regen_used(self, user_id: UserId, at: datetime) -> bool:
+        query = (
+            update(users)
+            .where(users.c.id == user_id, users.c.free_regen_at.is_(None))
+            .values(free_regen_at=at)
+            .returning(users.c.id)
+        )
+        async with self._session() as session, session.begin():
+            return (await session.execute(query)).one_or_none() is not None
 
     async def remember_channel_check(self, user_id: UserId, at: datetime) -> None:
         query = update(users).where(users.c.id == user_id).values(channel_checked_at=at)
@@ -1075,6 +1336,9 @@ def _to_user(row: Any) -> User:
         menu_version=row["menu_version"],
         norm_since=row["norm_since"],
         trial_order_id=row["trial_order_id"],
+        free_regen_at=row["free_regen_at"],
+        last_active_at=row["last_active_at"],
+        last_marketing_at=row["last_marketing_at"],
     )
 
 

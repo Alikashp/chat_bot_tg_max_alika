@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
+from datetime import timedelta
 
 from app.core import pending, texts
 from app.core.actions import (
@@ -26,14 +27,16 @@ from app.core.actions import (
     parse_document_action,
     parse_email_action,
     parse_followup_action,
+    parse_mailing_action,
     parse_method_action,
     parse_presentation_from_action,
     parse_preset_action,
+    parse_regenerate_action,
     parse_report_from_action,
     parse_theme_action,
 )
 from app.core.documents import DocumentTooLargeError
-from app.core.models import IncomingMessage, TariffId
+from app.core.models import IncomingMessage, TariffId, User
 from app.core.photos import PhotoTooLargeError
 from app.core.retry_context import RetryKind
 from app.core.scenarios import (
@@ -128,6 +131,11 @@ async def _handle(deps: Deps, incoming: IncomingMessage) -> None:
         await deps.storage.clear_stopped(user.id)
         user = replace(user, stopped_at=None)
         deps.logger.info("user_returned", user_id=int(user.id))
+
+    if user is not None:
+        # Любое входящее от человека — сообщение, кнопка, команда, оплата —
+        # это активность (сессия 12): от неё считается цепочка реактивации.
+        user = await _mark_active(deps, user)
 
     if incoming.start_payload is not None:
         await onboarding.start(
@@ -242,6 +250,24 @@ async def _route_action(deps: Deps, session: Session, action: str) -> None:
     deck = parse_deck_action(action)
     if deck is not None:
         await presentations.act(deps, session, deck)
+        return
+
+    regen_token = parse_regenerate_action(action)
+    if regen_token is not None:
+        # Слот сборки в базе держит одну колоду на человека — как у «Собрать».
+        await _clear_pending(deps, session)
+        await presentations.regenerate(deps, session, regen_token)
+        return
+
+    mailing_step = parse_mailing_action(action)
+    if mailing_step is not None:
+        # Кнопка рассылки: отмечаем нажатие (Р10) и открываем презентацию с
+        # шага темы — как из меню.
+        await deps.storage.mark_mailing_clicked(
+            session.user.id, mailing_step, session.now
+        )
+        await _clear_pending(deps, session)
+        await presentations.start(deps, session)
         return
 
     theme_id = parse_theme_action(action)
@@ -655,6 +681,19 @@ async def _handle_text(deps: Deps, session: Session, text: str) -> None:
 
 
 # --- Вспомогательное -----------------------------------------------------
+
+#: Как часто записывать активность. Чаще незачем: цепочка реактивации
+#: считает сутки, а запись на каждое сообщение — лишний запрос в базу.
+ACTIVITY_EVERY = timedelta(hours=1)
+
+
+async def _mark_active(deps: Deps, user: User) -> User:
+    """Отмечает активность человека — не чаще раза в ``ACTIVITY_EVERY``."""
+    now = deps.now()
+    if user.last_active_at is not None and now - user.last_active_at < ACTIVITY_EVERY:
+        return user
+    await deps.storage.touch_active(user.id, now)
+    return replace(user, last_active_at=now)
 
 
 async def _refresh_menu(deps: Deps, session: Session) -> None:

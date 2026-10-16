@@ -22,10 +22,13 @@ from uuid import uuid4
 
 from app.core import sources
 from app.core.generations import Generation
+from app.core.gifts import Gift
 from app.core.limits import LimitKind
 from app.core.models import (
     NO_USERNAME,
     DialogState,
+    Mailing,
+    MailingStatus,
     MessengerKind,
     Payment,
     PeriodUsage,
@@ -67,6 +70,9 @@ class InMemoryStorage:
         self._period_usage: dict[tuple[UserId, datetime], PeriodUsage] = {}
         self._dialogs: dict[UserId, DialogState] = {}
         self._dialogs_touched: dict[UserId, datetime] = {}
+        self._first_decks: dict[UserId, datetime] = {}
+        self._mailings: dict[tuple[UserId, str, datetime], Mailing] = {}
+        self._gifts: list[Gift] = []
         #: Учёт обращений к провайдерам. Публичный намеренно: в тестах по
         #: нему проверяют, что попытка записана, — так же, как в бою по
         #: таблице generations.
@@ -130,6 +136,7 @@ class InMemoryStorage:
             referral_code=referral_code,
             support_number=support_number,
             created_at=self._now(),
+            last_active_at=self._now(),
             bonus_images=bonus_images,
             bonus_documents=bonus_documents,
             bonus_presentations=bonus_presentations,
@@ -258,6 +265,64 @@ class InMemoryStorage:
             bonus_presentations=user.bonus_presentations + presentations,
         )
 
+    async def grant_gift(
+        self,
+        user_id: UserId,
+        kind: LimitKind,
+        *,
+        source: str,
+        granted_at: datetime,
+        expires_at: datetime,
+    ) -> None:
+        self._require_user(user_id)
+        self._gifts.append(
+            Gift(
+                user_id=user_id,
+                kind=kind,
+                source=source,
+                granted_at=granted_at,
+                expires_at=expires_at,
+            )
+        )
+
+    def _live_gifts(self, user_id: UserId, kind: LimitKind, now: datetime) -> list[int]:
+        """Номера подарков, которые можно потратить, — ранний срок первым."""
+        live = [
+            index
+            for index, gift in enumerate(self._gifts)
+            if gift.user_id == user_id
+            and gift.kind is kind
+            and gift.used_at is None
+            and gift.expired_at is None
+            and gift.expires_at > now
+        ]
+        return sorted(live, key=lambda index: self._gifts[index].expires_at)
+
+    async def count_gifts(self, user_id: UserId, kind: LimitKind, now: datetime) -> int:
+        return len(self._live_gifts(user_id, kind, now))
+
+    async def spend_gift(self, user_id: UserId, kind: LimitKind, now: datetime) -> bool:
+        live = self._live_gifts(user_id, kind, now)
+        if not live:
+            return False
+        self._gifts[live[0]] = replace(self._gifts[live[0]], used_at=now)
+        return True
+
+    async def expire_gifts(self, now: datetime) -> int:
+        expired = 0
+        for index, gift in enumerate(self._gifts):
+            if (
+                gift.used_at is None
+                and gift.expired_at is None
+                and gift.expires_at <= now
+            ):
+                self._gifts[index] = replace(gift, expired_at=gift.expires_at)
+                expired += 1
+        return expired
+
+    async def gifts_of(self, user_id: UserId) -> list[Gift]:
+        return [gift for gift in self._gifts if gift.user_id == user_id]
+
     async def claim_presentation(
         self, user_id: UserId, now: datetime, *, stale_after: timedelta
     ) -> bool:
@@ -288,6 +353,113 @@ class InMemoryStorage:
     async def clear_stopped(self, user_id: UserId) -> None:
         user = self._require_user(user_id)
         self._users[user_id] = replace(user, stopped_at=None)
+
+    async def touch_active(self, user_id: UserId, at: datetime) -> None:
+        user = self._require_user(user_id)
+        if user.last_active_at is None or user.last_active_at < at:
+            self._users[user_id] = replace(user, last_active_at=at)
+
+    async def claim_mailing(
+        self, user_id: UserId, step: str, cycle_key: datetime, at: datetime
+    ) -> bool:
+        self._require_user(user_id)
+        key = (user_id, step, cycle_key)
+        if key in self._mailings:
+            return False
+        self._mailings[key] = Mailing(
+            user_id=user_id,
+            step=step,
+            cycle_key=cycle_key,
+            sent_at=at,
+            status=MailingStatus.SENDING,
+        )
+        return True
+
+    async def finish_mailing(
+        self,
+        user_id: UserId,
+        step: str,
+        cycle_key: datetime,
+        *,
+        status: MailingStatus,
+        at: datetime,
+        error_code: str | None = None,
+    ) -> None:
+        key = (user_id, step, cycle_key)
+        self._mailings[key] = replace(
+            self._mailings[key], status=status, error_code=error_code, sent_at=at
+        )
+        if status is MailingStatus.SENT:
+            user = self._require_user(user_id)
+            self._users[user_id] = replace(user, last_marketing_at=at)
+
+    async def mark_mailing_clicked(
+        self, user_id: UserId, step: str, at: datetime
+    ) -> bool:
+        mine = [
+            row
+            for row in self._mailings.values()
+            if row.user_id == user_id and row.step == step
+        ]
+        if not mine:
+            return False
+        latest = max(mine, key=lambda row: row.sent_at)
+        if latest.clicked_at is not None:
+            return False
+        key = (user_id, step, latest.cycle_key)
+        self._mailings[key] = replace(latest, clicked_at=at)
+        return True
+
+    async def mailings_of(self, user_id: UserId) -> list[Mailing]:
+        return sorted(
+            (row for row in self._mailings.values() if row.user_id == user_id),
+            key=lambda row: row.sent_at,
+        )
+
+    async def mailing_candidates(
+        self,
+        *,
+        messenger: MessengerKind,
+        step: str,
+        active_after: datetime,
+        active_before: datetime,
+        marketing_before: datetime,
+        now: datetime,
+        limit: int,
+    ) -> list[User]:
+        found = [
+            user
+            for user in self._users.values()
+            if user.messenger is messenger
+            and user.stopped_at is None
+            and user.last_active_at is not None
+            and active_after <= user.last_active_at < active_before
+            and (
+                user.tariff is TariffId.FREE
+                or user.tariff_expires_at is None
+                or user.tariff_expires_at <= now
+            )
+            and (
+                user.last_marketing_at is None
+                or user.last_marketing_at < marketing_before
+            )
+            and (user.id, step, user.last_active_at) not in self._mailings
+        ]
+        return sorted(found, key=lambda user: user.id)[:limit]
+
+    async def mark_first_deck(self, user_id: UserId, at: datetime) -> bool:
+        self._require_user(user_id)
+        if user_id in self._first_decks:
+            return False
+        self._first_decks[user_id] = at
+        return True
+
+    async def mark_free_regen_used(self, user_id: UserId, at: datetime) -> bool:
+        user = self._require_user(user_id)
+        if user.free_regen_at is not None:
+            return False
+        self._users[user_id] = replace(user, free_regen_at=at)
+        return True
 
     async def remember_channel_check(self, user_id: UserId, at: datetime) -> None:
         user = self._require_user(user_id)

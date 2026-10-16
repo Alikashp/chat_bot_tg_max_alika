@@ -85,6 +85,17 @@ users = Table(
     # Заказ, по которому выдан пробный период (фаза 11, часть 3). NULL —
     # пробного периода не было. Отметка — та же, что «один раз на человека».
     Column("trial_order_id", String(36), nullable=True),
+    # Когда человеку доставили первую презентацию (сессия 12). Ставится один
+    # раз: перегенерировать бесплатно можно только её.
+    Column("first_deck_at", DateTime(timezone=True), nullable=True),
+    # Когда потрачена бесплатная перегенерация первой бесплатной
+    # презентации. NULL — не тратилась; одна на человека.
+    Column("free_regen_at", DateTime(timezone=True), nullable=True),
+    # Последнее входящее от человека (сессия 12): от неё считается цепочка
+    # реактивации. Пишется не чаще раза в час.
+    Column("last_active_at", DateTime(timezone=True), nullable=True, index=True),
+    # Последнее маркетинговое сообщение: не чаще одного в семь дней.
+    Column("last_marketing_at", DateTime(timezone=True), nullable=True),
     # Когда выдали разовый бонус за подписку на канал. NULL — не выдавали.
     # Бонус убран в сессии 8; отметки остались как история и больше не
     # ставятся, а начисленные картинки так и лежат в bonus_images.
@@ -152,6 +163,55 @@ star_cancels = Table(
         nullable=False,
     ),
     Column("queued_at", DateTime(timezone=True), nullable=False),
+)
+
+#: Отправки шагов цепочки реактивации (сессия 12). Текста сообщения здесь
+#: нет — только кто, какой шаг, в каком цикле, когда, чем кончилось и когда
+#: нажали кнопку. Уникальность (человек, шаг, цикл) — защита от второй
+#: отправки при повторном и параллельном проходе.
+mailings = Table(
+    "mailings",
+    metadata,
+    Column("id", BigInteger, primary_key=True, autoincrement=True),
+    Column(
+        "user_id",
+        BigInteger,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column("step", String(4), nullable=False),
+    # last_active_at человека на момент отправки: новый цикл — новый ключ.
+    Column("cycle_key", DateTime(timezone=True), nullable=False),
+    Column("sent_at", DateTime(timezone=True), nullable=False),
+    Column("status", String(16), nullable=False),
+    # Имя класса ошибки доставки, без её текста.
+    Column("error_code", String(64), nullable=True),
+    Column("clicked_at", DateTime(timezone=True), nullable=True),
+    UniqueConstraint("user_id", "step", "cycle_key", name="uq_mailings_cycle"),
+)
+
+#: Подарки со сроком (сессия 12, шаг 4): пока только презентация из R2.
+#: Строка на подарок, чтобы было видно: начислен, использован, сгорел.
+gifts = Table(
+    "gifts",
+    metadata,
+    Column("id", BigInteger, primary_key=True, autoincrement=True),
+    Column(
+        "user_id",
+        BigInteger,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    ),
+    # Вид ресурса из LimitKind: presentations.
+    Column("kind", String(16), nullable=False),
+    # Откуда подарок: шаг рассылки, R2.
+    Column("source", String(8), nullable=False),
+    Column("granted_at", DateTime(timezone=True), nullable=False),
+    Column("expires_at", DateTime(timezone=True), nullable=False),
+    Column("used_at", DateTime(timezone=True), nullable=True),
+    # Сгорел: ставится равным сроку проходом expire_gifts.
+    Column("expired_at", DateTime(timezone=True), nullable=True),
 )
 
 #: Позиция в журнале звёздных транзакций бота, до которой сверка всё

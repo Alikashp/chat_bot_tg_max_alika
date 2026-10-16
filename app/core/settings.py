@@ -119,6 +119,13 @@ class CoreSettings:
     #: продлеваются и засчитываются как раньше.
     stars_enabled: bool = False
 
+    #: Цепочка реактивации R1–R3 (сессия 12), только Telegram. Общий
+    #: выключатель и флаг на каждый шаг; по умолчанию всё выключено.
+    mailings_enabled: bool = False
+    mailing_r1_enabled: bool = False
+    mailing_r2_enabled: bool = False
+    mailing_r3_enabled: bool = False
+
     #: Длина периода месячной нормы бесплатного тарифа. Отсчёт — от
     #: регистрации, дальше каждые столько же дней (core/limits.py).
     free_period_days: int = 30

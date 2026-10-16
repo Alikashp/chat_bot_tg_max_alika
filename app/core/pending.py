@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 
 #: Ждём описание будущей картинки (§2.3).
 AWAIT_IMAGE_PROMPT = "await:image"
@@ -32,6 +33,12 @@ _AWAIT_DOCUMENT_PREFIX = "await:doc:"
 
 #: Ждём тему презентации (фаза 10).
 AWAIT_PRESENTATION_TOPIC = "await:pres"
+
+#: Ждём тему презентации после R1 или R2 (сессия 13). За префиксом — до
+#: какого момента ждём, в ISO 8601 с поясом. Рассылка пришла сама, человек
+#: мог её и не читать: бессрочное ожидание превратило бы его вопрос в чат
+#: через неделю в тему презентации.
+_AWAIT_MAILING_TOPIC_PREFIX = "await:pres:mail:"
 
 #: Ждём новую тему для экрана параметров презентации (сессия 7). За
 #: префиксом — жетон черновика, а не тема: тема лежит в черновике в памяти,
@@ -170,8 +177,34 @@ def parse_await_document(pending: str | None) -> str | None:
 
 
 def is_awaiting_presentation_topic(pending: str | None) -> bool:
-    """Ждём ли тему презентации."""
-    return pending == AWAIT_PRESENTATION_TOPIC
+    """Ждём ли тему презентации — из меню или после рассылки.
+
+    Срок ожидания после рассылки здесь не проверяется: истёкшее ожидание
+    снимает маршрутизатор до разбора сообщения (``mailing_topic_until``).
+    """
+    return (
+        pending == AWAIT_PRESENTATION_TOPIC or mailing_topic_until(pending) is not None
+    )
+
+
+def await_mailing_topic(until: datetime) -> str:
+    """Состояние «ждём тему презентации после рассылки до ``until``»."""
+    if until.tzinfo is None:
+        raise ValueError("срок ожидания — только с часовым поясом")
+    return f"{_AWAIT_MAILING_TOPIC_PREFIX}{until.isoformat()}"
+
+
+def mailing_topic_until(pending: str | None) -> datetime | None:
+    """До какого момента ждём тему после рассылки; None — ждём не её."""
+    if pending is None or not pending.startswith(_AWAIT_MAILING_TOPIC_PREFIX):
+        return None
+    try:
+        until = datetime.fromisoformat(
+            pending.removeprefix(_AWAIT_MAILING_TOPIC_PREFIX)
+        )
+    except ValueError:
+        return None
+    return until if until.tzinfo is not None else None
 
 
 def await_deck_topic(token: str) -> str:

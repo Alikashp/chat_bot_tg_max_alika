@@ -254,8 +254,16 @@ async def test_an_unused_gift_burns_after_three_days(
 
     clock.advance(minutes=1)
     assert (await left(on, user)).total_left == 0
-    await build(on, messenger)
+    # Ожидание темы после R2 к этому времени снято (сессия 13) — заходим
+    # через меню: подарка нет, пейволл.
+    await handle(
+        on,
+        IncomingMessage(
+            chat=CHAT, external_user_id="7", action=Action.MENU_PRESENTATIONS
+        ),
+    )
     assert presentations.requests == []
+    assert messenger.last_text.text.startswith("Это была бесплатная презентация")
 
     await gifts.expire(storage, logger, clock.now)
 

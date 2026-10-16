@@ -200,3 +200,18 @@ def test_mailings_are_off_by_default_and_switch_on_step_by_step() -> None:
     )
     assert on.mailings_enabled and on.mailing_r2_enabled
     assert not on.mailing_r1_enabled and not on.mailing_r3_enabled
+
+
+def test_the_topic_wait_after_a_mailing_is_a_day_by_default() -> None:
+    from app.main import build_core_settings
+
+    settings = Settings.model_validate(VALID_ENV)
+    assert settings.mailing_topic_wait_hours == 24
+    core = build_core_settings(
+        Settings.model_validate({**VALID_ENV, "mailing_topic_wait_hours": 6}),
+        "bot",
+        referral_link_host="t.me",
+    )
+    assert core.mailing_topic_wait_hours == 6
+    with pytest.raises(ValidationError):
+        Settings.model_validate({**VALID_ENV, "mailing_topic_wait_hours": 0})

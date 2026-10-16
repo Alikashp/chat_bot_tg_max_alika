@@ -168,8 +168,10 @@ class Mailer:
             )
         if step is not R3 and user.pending is None:
             # Текст обещает: «напиши тему одним сообщением». Значит,
-            # следующее сообщение — тема, а не вопрос в чат.
-            await storage.set_pending(user.id, pending.AWAIT_PRESENTATION_TOPIC)
+            # следующее сообщение — тема, а не вопрос в чат, но не дольше
+            # настройки: через неделю это уже обычный вопрос (сессия 13).
+            wait = timedelta(hours=self.deps.settings.mailing_topic_wait_hours)
+            await storage.set_pending(user.id, pending.await_mailing_topic(now + wait))
 
     async def _finish(
         self,

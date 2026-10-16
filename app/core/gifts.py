@@ -41,6 +41,19 @@ class Gift:
     expired_at: datetime | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class GiftGrant:
+    """Подарок, который выдаётся вместе с отметкой «доставлено» (сессия 13).
+
+    Кому и когда — берётся из самой отправки: подарок начисляется тому, кто
+    получил сообщение, в момент доставки.
+    """
+
+    kind: LimitKind
+    source: str
+    expires_at: datetime
+
+
 def r2_expiry(sent_at: datetime) -> datetime:
     return sent_at + timedelta(days=R2_GIFT_DAYS)
 

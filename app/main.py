@@ -450,6 +450,7 @@ def build_core_settings(
         mailing_r1_enabled=settings.mailing_r1_enabled,
         mailing_r2_enabled=settings.mailing_r2_enabled,
         mailing_r3_enabled=settings.mailing_r3_enabled,
+        mailing_topic_wait_hours=settings.mailing_topic_wait_hours,
         offer_url=settings.offer_url,
         privacy_url=settings.privacy_url,
         docs_version=settings.docs_version,

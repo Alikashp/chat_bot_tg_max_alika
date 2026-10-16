@@ -62,6 +62,9 @@ SEND_UNTIL_HOUR = 20
 #: Не больше одного маркетингового сообщения в 7 дней на человека.
 MARKETING_EVERY = timedelta(days=7)
 
+#: Сколько раз пробовать записать исход уже ушедшего сообщения.
+FINISH_ATTEMPTS = 3
+
 #: Сколько кандидатов брать из базы за раз.
 BATCH = 100
 
@@ -156,20 +159,28 @@ class Mailer:
             )
             return
 
-        await self._finish(user, step, cycle, MailingStatus.SENT, now)
-        if step is R2:
-            # Подарок — только после доставки: не дошло — обещания не было.
-            await storage.grant_gift(
-                user.id,
-                LimitKind.PRESENTATIONS,
+        # Подарок — только доставленному R2 и в одной записи с отметкой
+        # «доставлено» (сессия 13): не дошло — обещания не было, а «sent» без
+        # подарка не бывает.
+        gift = (
+            gifts.GiftGrant(
+                kind=LimitKind.PRESENTATIONS,
                 source=gifts.R2_GIFT_SOURCE,
-                granted_at=now,
                 expires_at=gifts.r2_expiry(now),
             )
+            if step is R2
+            else None
+        )
+        if not await self._finish(
+            user, step, cycle, MailingStatus.SENT, now, gift=gift
+        ):
+            return
         if step is not R3 and user.pending is None:
             # Текст обещает: «напиши тему одним сообщением». Значит,
-            # следующее сообщение — тема, а не вопрос в чат.
-            await storage.set_pending(user.id, pending.AWAIT_PRESENTATION_TOPIC)
+            # следующее сообщение — тема, а не вопрос в чат, но не дольше
+            # настройки: через неделю это уже обычный вопрос (сессия 13).
+            wait = timedelta(hours=self.deps.settings.mailing_topic_wait_hours)
+            await storage.set_pending(user.id, pending.await_mailing_topic(now + wait))
 
     async def _finish(
         self,
@@ -179,17 +190,48 @@ class Mailer:
         status: MailingStatus,
         now: datetime,
         error_code: str | None = None,
-    ) -> None:
-        await self.deps.storage.finish_mailing(
-            user.id, step.name, cycle, status=status, at=now, error_code=error_code
+        gift: gifts.GiftGrant | None = None,
+    ) -> bool:
+        """Записывает исход отправки; True — записан.
+
+        Сообщение уже ушло, и потерять его исход — значит оставить человека
+        без обещанного подарка. Поэтому запись повторяется. Повтор безопасен:
+        хранилище ставит исход только строке в ``sending``, и если первая
+        попытка на деле прошла, а потерялся лишь ответ, вторая ничего не
+        меняет — это и есть «записано».
+        """
+        failed: str | None = None
+        for _ in range(FINISH_ATTEMPTS):
+            try:
+                done = await self.deps.storage.finish_mailing(
+                    user.id,
+                    step.name,
+                    cycle,
+                    status=status,
+                    at=now,
+                    error_code=error_code,
+                    gift=gift,
+                )
+            except Exception as error:
+                failed = type(error).__name__
+                continue
+            if not done and failed is None:
+                # Исход уже стоит, и не нами: отправку довёл другой проход.
+                return False
+            self.deps.logger.info(
+                "mailing_sent",
+                user_id=user.id,
+                step=step.name,
+                status=status.value,
+                error=error_code,
+            )
+            return True
+        # База так и не приняла исход. Строка остаётся «sending»: шаг этого
+        # цикла больше не уйдёт, а «sent» без подарка не появится.
+        self.deps.logger.error(
+            "mailing_finish_failed", user_id=user.id, step=step.name, error=failed
         )
-        self.deps.logger.info(
-            "mailing_sent",
-            user_id=user.id,
-            step=step.name,
-            status=status.value,
-            error=error_code,
-        )
+        return False
 
     def _message(self, step: Step, user: User) -> tuple[str, Keyboard | None]:
         if step is R1:

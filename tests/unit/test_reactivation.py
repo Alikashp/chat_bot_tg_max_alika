@@ -17,6 +17,7 @@ import pytest
 
 from app.adapters.storage.memory import InMemoryStorage
 from app.core import support, texts
+from app.core.actions import Action
 from app.core.mailing import Mailer
 from app.core.models import (
     Chat,
@@ -34,6 +35,7 @@ from app.core.scenarios.reach import WatchedMessenger
 from app.ports.messenger import RecipientGoneError
 from tests.fakes import (
     FakeCards,
+    FakeLLM,
     FakeLogger,
     FakeMessenger,
     FakePresentations,
@@ -587,3 +589,162 @@ async def test_without_presentations_nothing_is_promised(
     await mailer(replace(on, presentations=None)).run()
 
     assert messenger.texts == []
+
+
+# --- Сессия 13, Д1: ожидание темы после рассылки — не дольше суток ----------
+
+
+def chat_message(**fields: object) -> IncomingMessage:
+    return IncomingMessage(
+        chat=Chat(messenger=MessengerKind.TELEGRAM, chat_id="7"),
+        external_user_id="7",
+        **fields,  # type: ignore[arg-type]
+    )
+
+
+def asked_for_parameters(messenger: FakeMessenger) -> bool:
+    keyboard = messenger.last_text.keyboard
+    labels = [b.text for row in keyboard.rows for b in row] if keyboard else []
+    return texts.BUTTON_DECK_BUILD in labels
+
+
+@pytest.mark.parametrize("days", [4, 11], ids=["R1", "R2"])
+async def test_a_message_a_day_after_the_mailing_goes_to_the_chat(
+    on: Deps,
+    storage: InMemoryStorage,
+    messenger: FakeMessenger,
+    clock: FrozenClock,
+    llm: FakeLLM,
+    days: int,
+) -> None:
+    """Д1: прошли сутки — сообщение уже не тема, а вопрос в чат."""
+    user = await quiet(storage)
+    clock.advance(days=days, hours=1)
+    await mailer(on).run()
+    await storage.add_bonus(user.id, presentations=1)
+    clock.advance(hours=24)
+
+    await handle(on, chat_message(text="Почему небо голубое?"))
+
+    assert len(llm.calls) == 1
+    assert not asked_for_parameters(messenger)
+    fresh = await storage.get_user_by_id(user.id)
+    assert fresh is not None and fresh.pending is None
+
+
+@pytest.mark.parametrize("days", [4, 11], ids=["R1", "R2"])
+async def test_a_message_within_the_day_is_the_topic(
+    on: Deps,
+    storage: InMemoryStorage,
+    messenger: FakeMessenger,
+    clock: FrozenClock,
+    llm: FakeLLM,
+    days: int,
+) -> None:
+    """Д1: в пределах суток — тема презентации."""
+    user = await quiet(storage)
+    clock.advance(days=days, hours=1)
+    await mailer(on).run()
+    await storage.add_bonus(user.id, presentations=1)
+    clock.advance(hours=23, minutes=59)
+
+    await handle(on, chat_message(text="Фотосинтез"))
+
+    assert llm.calls == []
+    assert asked_for_parameters(messenger)
+
+
+async def test_the_topic_wait_follows_the_setting(
+    on: Deps,
+    storage: InMemoryStorage,
+    messenger: FakeMessenger,
+    clock: FrozenClock,
+    llm: FakeLLM,
+) -> None:
+    short = replace(on, settings=replace(on.settings, mailing_topic_wait_hours=2))
+    user = await quiet(storage)
+    clock.advance(days=4, hours=1)
+    await mailer(short).run()
+    await storage.add_bonus(user.id, presentations=1)
+    clock.advance(hours=2)
+
+    await handle(short, chat_message(text="Почему небо голубое?"))
+
+    assert len(llm.calls) == 1
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"action": Action.MENU_PROFILE},
+        {"action": Action.INVITE_FRIEND},
+        {"start_payload": ""},
+    ],
+    ids=["menu", "button", "command"],
+)
+async def test_any_other_action_drops_the_topic_wait(
+    on: Deps,
+    storage: InMemoryStorage,
+    messenger: FakeMessenger,
+    clock: FrozenClock,
+    llm: FakeLLM,
+    fields: dict[str, object],
+) -> None:
+    """Д1: кнопка меню или команда — ожидание темы снято, дальше обычный чат."""
+    user = await quiet(storage)
+    clock.advance(days=4, hours=1)
+    await mailer(on).run()
+    await storage.add_bonus(user.id, presentations=1)
+    clock.advance(minutes=5)
+
+    await handle(on, chat_message(**fields))
+    await handle(on, chat_message(text="Почему небо голубое?"))
+
+    assert len(llm.calls) == 1
+    assert not asked_for_parameters(messenger)
+
+
+def test_the_mailing_wait_keeps_its_deadline() -> None:
+    from datetime import UTC, datetime
+
+    from app.core import pending
+
+    until = datetime(2026, 10, 17, 12, 0, tzinfo=UTC)
+    state = pending.await_mailing_topic(until)
+
+    assert pending.mailing_topic_until(state) == until
+    assert pending.is_awaiting_presentation_topic(state)
+    assert pending.mailing_topic_until(pending.AWAIT_PRESENTATION_TOPIC) is None
+    assert pending.mailing_topic_until("await:pres:mail:вчера") is None
+    assert pending.mailing_topic_until("await:pres:mail:2026-10-17T12:00:00") is None
+    with pytest.raises(ValueError):
+        pending.await_mailing_topic(until.replace(tzinfo=None))
+
+
+async def test_a_photo_drops_the_topic_wait(
+    on: Deps, storage: InMemoryStorage, clock: FrozenClock
+) -> None:
+    user = await quiet(storage)
+    clock.advance(days=4, hours=1)
+    await mailer(on).run()
+
+    await handle(on, chat_message(photo_ref="photo-1"))
+
+    fresh = await storage.get_user_by_id(user.id)
+    assert fresh is not None and fresh.pending is None
+
+
+async def test_a_file_within_the_day_is_the_material(
+    on: Deps, storage: InMemoryStorage, messenger: FakeMessenger, clock: FrozenClock
+) -> None:
+    """Файл в пределах суток — материал презентации, как после кнопки меню."""
+    user = await quiet(storage)
+    clock.advance(days=4, hours=1)
+    await mailer(on).run()
+    await storage.add_bonus(user.id, presentations=1)
+
+    await handle(on, chat_message(document_ref="file-1", document_name="конспект.txt"))
+
+    # Файл ушёл в проверку материала, а не в «такое я пока не умею».
+    assert len(messenger.downloads_limited_to) == 1
+    assert messenger.last_text.text != texts.unsupported_input().text

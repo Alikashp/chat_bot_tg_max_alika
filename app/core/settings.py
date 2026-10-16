@@ -125,6 +125,9 @@ class CoreSettings:
     mailing_r1_enabled: bool = False
     mailing_r2_enabled: bool = False
     mailing_r3_enabled: bool = False
+    #: Сколько часов после R1 и R2 следующее сообщение считается темой
+    #: презентации (сессия 13). Позже — обычный вопрос в чат.
+    mailing_topic_wait_hours: int = 24
 
     #: Длина периода месячной нормы бесплатного тарифа. Отсчёт — от
     #: регистрации, дальше каждые столько же дней (core/limits.py).

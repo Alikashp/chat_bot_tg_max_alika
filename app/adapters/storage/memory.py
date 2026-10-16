@@ -22,7 +22,7 @@ from uuid import uuid4
 
 from app.core import sources
 from app.core.generations import Generation
-from app.core.gifts import Gift
+from app.core.gifts import Gift, GiftGrant
 from app.core.limits import LimitKind
 from app.core.models import (
     NO_USERNAME,
@@ -384,14 +384,31 @@ class InMemoryStorage:
         status: MailingStatus,
         at: datetime,
         error_code: str | None = None,
-    ) -> None:
+        gift: GiftGrant | None = None,
+    ) -> bool:
+        # Ни одного await между проверкой и записями: в памяти это и есть
+        # одна транзакция.
         key = (user_id, step, cycle_key)
+        row = self._mailings[key]
+        if row.status is not MailingStatus.SENDING:
+            return False
+        user = self._require_user(user_id)
         self._mailings[key] = replace(
-            self._mailings[key], status=status, error_code=error_code, sent_at=at
+            row, status=status, error_code=error_code, sent_at=at
         )
         if status is MailingStatus.SENT:
-            user = self._require_user(user_id)
             self._users[user_id] = replace(user, last_marketing_at=at)
+            if gift is not None:
+                self._gifts.append(
+                    Gift(
+                        user_id=user_id,
+                        kind=gift.kind,
+                        source=gift.source,
+                        granted_at=at,
+                        expires_at=gift.expires_at,
+                    )
+                )
+        return True
 
     async def mark_mailing_clicked(
         self, user_id: UserId, step: str, at: datetime

@@ -254,8 +254,16 @@ async def test_an_unused_gift_burns_after_three_days(
 
     clock.advance(minutes=1)
     assert (await left(on, user)).total_left == 0
-    await build(on, messenger)
+    # Ожидание темы после R2 к этому времени снято (сессия 13) — заходим
+    # через меню: подарка нет, пейволл.
+    await handle(
+        on,
+        IncomingMessage(
+            chat=CHAT, external_user_id="7", action=Action.MENU_PRESENTATIONS
+        ),
+    )
     assert presentations.requests == []
+    assert messenger.last_text.text.startswith("Это была бесплатная презентация")
 
     await gifts.expire(storage, logger, clock.now)
 
@@ -311,3 +319,97 @@ async def test_a_gift_taken_in_parallel_falls_back_in_order(
         )
     else:
         assert after.bonus == before.bonus - 1
+
+
+# --- Сессия 13, Д2: подарок — в одной записи с отметкой «доставлено» -------
+
+
+async def test_a_failure_after_delivery_never_leaves_a_sent_r2_without_a_gift(
+    on: Deps, storage: InMemoryStorage, clock: FrozenClock
+) -> None:
+    """Д2: сбой отдельной записи подарка раньше оставлял R2 «sent» без него."""
+
+    async def broken(*_: object, **__: object) -> None:
+        raise ConnectionError("база отвалилась")
+
+    storage.grant_gift = broken  # type: ignore[method-assign]
+
+    user = await r2_sent(on, storage, clock)
+
+    sent = [r for r in await storage.mailings_of(user.id) if r.status.value == "sent"]
+    assert [r.step for r in sent] == ["R2"]
+    assert len(await storage.gifts_of(user.id)) == 1
+
+
+async def test_a_failed_finish_is_retried_without_a_second_gift(
+    on: Deps, storage: InMemoryStorage, clock: FrozenClock
+) -> None:
+    """Д2: запись прошла, а ответ потерялся — повтор не даёт второго подарка."""
+    finish = storage.finish_mailing
+    lost: list[str] = []
+
+    async def lost_answer(*args: object, **kwargs: object) -> bool:
+        done = await finish(*args, **kwargs)  # type: ignore[arg-type]
+        if not lost:
+            lost.append("ответ потерян")
+            raise ConnectionError("ответ базы потерян")
+        return done
+
+    storage.finish_mailing = lost_answer  # type: ignore[method-assign]
+
+    user = await r2_sent(on, storage, clock)
+
+    assert [(r.step, r.status.value) for r in await storage.mailings_of(user.id)] == [
+        ("R2", "sent")
+    ]
+    assert len(await storage.gifts_of(user.id)) == 1
+    # Записанное считается записанным: ожидание темы после R2 поставлено.
+    fresh = await storage.get_user_by_id(user.id)
+    assert fresh is not None and fresh.pending is not None
+
+
+async def test_a_finish_that_failed_before_writing_is_retried(
+    on: Deps, storage: InMemoryStorage, clock: FrozenClock
+) -> None:
+    """Д2: база отказала до записи — повтор записывает «sent» вместе с подарком."""
+    finish = storage.finish_mailing
+    failures = ["первая попытка"]
+
+    async def flaky(*args: object, **kwargs: object) -> bool:
+        if failures:
+            failures.pop()
+            raise ConnectionError("база моргнула")
+        return await finish(*args, **kwargs)  # type: ignore[arg-type]
+
+    storage.finish_mailing = flaky  # type: ignore[method-assign]
+
+    user = await r2_sent(on, storage, clock)
+
+    assert [(r.step, r.status.value) for r in await storage.mailings_of(user.id)] == [
+        ("R2", "sent")
+    ]
+    assert len(await storage.gifts_of(user.id)) == 1
+
+
+async def test_a_finish_that_keeps_failing_leaves_neither_sent_nor_gift(
+    on: Deps, storage: InMemoryStorage, clock: FrozenClock, logger: FakeLogger
+) -> None:
+    """База лежит дольше повторов: строка остаётся «sending», подарка нет —
+    но и «sent» без подарка нет. Проход идёт дальше."""
+
+    async def down(*_: object, **__: object) -> bool:
+        raise ConnectionError("база лежит")
+
+    storage.finish_mailing = down  # type: ignore[method-assign]
+
+    user = await r2_sent(on, storage, clock)
+
+    assert [(r.step, r.status.value) for r in await storage.mailings_of(user.id)] == [
+        ("R2", "sending")
+    ]
+    assert await storage.gifts_of(user.id) == []
+    assert "mailing_finish_failed" in repr(logger.events)
+    # Исход не записан — ожидание темы не ставится: база недоступна, и
+    # обещание без записи держать нечем.
+    fresh = await storage.get_user_by_id(user.id)
+    assert fresh is not None and fresh.pending is None

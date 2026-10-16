@@ -136,6 +136,7 @@ async def _handle(deps: Deps, incoming: IncomingMessage) -> None:
         # Любое входящее от человека — сообщение, кнопка, команда, оплата —
         # это активность (сессия 12): от неё считается цепочка реактивации.
         user = await _mark_active(deps, user)
+        user = await _drop_mailing_wait(deps, user, incoming)
 
     if incoming.start_payload is not None:
         await onboarding.start(
@@ -685,6 +686,34 @@ async def _handle_text(deps: Deps, session: Session, text: str) -> None:
 #: Как часто записывать активность. Чаще незачем: цепочка реактивации
 #: считает сутки, а запись на каждое сообщение — лишний запрос в базу.
 ACTIVITY_EVERY = timedelta(hours=1)
+
+
+async def _drop_mailing_wait(deps: Deps, user: User, incoming: IncomingMessage) -> User:
+    """Снимает ожидание темы после рассылки, если оно кончилось (сессия 13).
+
+    Кончается оно по сроку и от любого другого действия: кнопки, команды,
+    фото, оплаты. Тему держат только сообщение и файл — то, о чём просит
+    рассылка, — и только пока срок не прошёл. Срок сверяется здесь, до
+    разбора сообщения: дальше ожидание после рассылки ничем не отличается
+    от ожидания темы из меню.
+    """
+    until = pending.mailing_topic_until(user.pending)
+    if until is None:
+        return user
+    if deps.now() < until and _could_be_topic(incoming):
+        return user
+    await deps.storage.set_pending(user.id, None)
+    return replace(user, pending=None)
+
+
+def _could_be_topic(incoming: IncomingMessage) -> bool:
+    """Тему держат только текст и файл.
+
+    У кнопки, команды, фото и оплаты текста нет — они ожидание снимают.
+    Подпись кнопки меню — текст, но её маршрут сам снимает ожидание, как у
+    любого пункта меню.
+    """
+    return incoming.document_ref is not None or bool(incoming.text)
 
 
 async def _mark_active(deps: Deps, user: User) -> User:

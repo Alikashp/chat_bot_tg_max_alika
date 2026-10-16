@@ -24,6 +24,7 @@ from app.adapters.storage.postgres import PostgresStorage, create_engine
 from app.adapters.storage.schema import metadata
 from app.core import support
 from app.core.generations import Generation, GenerationKind, GenerationStatus
+from app.core.gifts import GiftGrant
 from app.core.limits import LimitKind
 from app.core.models import (
     NO_USERNAME,
@@ -2053,3 +2054,73 @@ async def test_expiry_marks_only_unused_gifts_past_their_time(
         (False, now - timedelta(days=1)),
         (False, None),
     ]
+
+
+# --- Сессия 13, Д2: подарок в одной транзакции с «доставлено» ---------------
+
+
+def _r2_gift(now: datetime) -> GiftGrant:
+    return GiftGrant(
+        kind=LimitKind.PRESENTATIONS,
+        source="R2",
+        expires_at=now + timedelta(days=3),
+    )
+
+
+async def test_a_sent_mailing_carries_its_gift_once(storage: Storage) -> None:
+    user = await _make_user(storage)
+    now = datetime.now(UTC)
+    await storage.claim_mailing(user.id, "R2", now, now)
+
+    first = await storage.finish_mailing(
+        user.id, "R2", now, status=MailingStatus.SENT, at=now, gift=_r2_gift(now)
+    )
+    again = await storage.finish_mailing(
+        user.id, "R2", now, status=MailingStatus.SENT, at=now, gift=_r2_gift(now)
+    )
+
+    assert (first, again) == (True, False)
+    (gift,) = await storage.gifts_of(user.id)
+    assert (gift.granted_at, gift.expires_at) == (now, now + timedelta(days=3))
+    (row,) = await storage.mailings_of(user.id)
+    assert row.status is MailingStatus.SENT
+
+
+async def test_a_parallel_finish_grants_one_gift(storage: Storage) -> None:
+    user = await _make_user(storage)
+    now = datetime.now(UTC)
+    await storage.claim_mailing(user.id, "R2", now, now)
+
+    done = await asyncio.gather(
+        *(
+            storage.finish_mailing(
+                user.id,
+                "R2",
+                now,
+                status=MailingStatus.SENT,
+                at=now,
+                gift=_r2_gift(now),
+            )
+            for _ in range(5)
+        )
+    )
+
+    assert sorted(done) == [False, False, False, False, True]
+    assert len(await storage.gifts_of(user.id)) == 1
+
+
+@pytest.mark.parametrize(
+    "status", [MailingStatus.BLOCKED, MailingStatus.ERROR], ids=["blocked", "error"]
+)
+async def test_an_undelivered_mailing_grants_no_gift(
+    storage: Storage, status: MailingStatus
+) -> None:
+    user = await _make_user(storage)
+    now = datetime.now(UTC)
+    await storage.claim_mailing(user.id, "R2", now, now)
+
+    await storage.finish_mailing(
+        user.id, "R2", now, status=status, at=now, gift=_r2_gift(now)
+    )
+
+    assert await storage.gifts_of(user.id) == []

@@ -365,6 +365,9 @@ class Settings(BaseSettings):
     mailing_r1_enabled: bool = False
     mailing_r2_enabled: bool = False
     mailing_r3_enabled: bool = False
+    #: Сколько часов после R1 и R2 бот ждёт тему презентации (сессия 13).
+    #: Сообщение позже — обычный вопрос в чат.
+    mailing_topic_wait_hours: Annotated[int, Field(ge=1, le=24 * 7)] = 24
 
     # --- Фискальные чеки (54-ФЗ) -----------------------------------------
 

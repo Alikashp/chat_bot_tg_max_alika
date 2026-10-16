@@ -360,8 +360,11 @@ class InMemoryStorage:
         self,
         *,
         messenger: MessengerKind,
+        step: str,
         active_after: datetime,
         active_before: datetime,
+        marketing_before: datetime,
+        now: datetime,
         limit: int,
     ) -> list[User]:
         found = [
@@ -371,6 +374,16 @@ class InMemoryStorage:
             and user.stopped_at is None
             and user.last_active_at is not None
             and active_after <= user.last_active_at < active_before
+            and (
+                user.tariff is TariffId.FREE
+                or user.tariff_expires_at is None
+                or user.tariff_expires_at <= now
+            )
+            and (
+                user.last_marketing_at is None
+                or user.last_marketing_at < marketing_before
+            )
+            and (user.id, step, user.last_active_at) not in self._mailings
         ]
         return sorted(found, key=lambda user: user.id)[:limit]
 

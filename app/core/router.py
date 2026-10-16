@@ -27,6 +27,7 @@ from app.core.actions import (
     parse_document_action,
     parse_email_action,
     parse_followup_action,
+    parse_mailing_action,
     parse_method_action,
     parse_presentation_from_action,
     parse_preset_action,
@@ -256,6 +257,17 @@ async def _route_action(deps: Deps, session: Session, action: str) -> None:
         # Слот сборки в базе держит одну колоду на человека — как у «Собрать».
         await _clear_pending(deps, session)
         await presentations.regenerate(deps, session, regen_token)
+        return
+
+    mailing_step = parse_mailing_action(action)
+    if mailing_step is not None:
+        # Кнопка рассылки: отмечаем нажатие (Р10) и открываем презентацию с
+        # шага темы — как из меню.
+        await deps.storage.mark_mailing_clicked(
+            session.user.id, mailing_step, session.now
+        )
+        await _clear_pending(deps, session)
+        await presentations.start(deps, session)
         return
 
     theme_id = parse_theme_action(action)

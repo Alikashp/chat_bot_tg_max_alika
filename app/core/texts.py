@@ -1032,6 +1032,42 @@ def button_continue(*, lite: Tariff, trial: Trial | None) -> str:
     return f"🚀 Продолжить за {_price(price, RUB)}"
 
 
+# --- Рассылка реактивации (сессия 12) ------------------------------------
+
+#: Тексты дословно от заказчика. В R1 перенос строки в поручении — перенос
+#: по ширине, а не абзац: фраза одна.
+MAILING_R1 = (
+    "Есть тема следующего доклада? Напиши её одним сообщением — через пару "
+    "минут пришлю презентацию в PDF и PowerPoint."
+)
+MAILING_R2 = (
+    "Дарим тебе ещё одну презентацию 🎁\nДействует 3 дня — успей сделать к семинару."
+)
+BUTTON_MAILING_R1 = "📊 Написать тему"
+BUTTON_MAILING_R2 = "Сделать презентацию"
+
+
+def mailing_r1() -> Screen:
+    return Screen(text=MAILING_R1, buttons=(BUTTON_MAILING_R1,))
+
+
+def mailing_r2() -> Screen:
+    return Screen(text=MAILING_R2, buttons=(BUTTON_MAILING_R2,))
+
+
+def mailing_r3(url: str) -> Screen:
+    """Ссылка в тексте, а не только в кнопке: так она работает и при пересылке."""
+    return Screen(
+        text=(
+            "Если у друга тоже горит доклад — просто перешли ему это сообщение.\n"
+            "Ему презентация в подарок, тебе тоже 🎁\n"
+            "\n"
+            f"👉 {url}"
+        ),
+        next_step="переслать другу — ссылка в тексте",
+    )
+
+
 def paywall_messages(*, invite_messages: int) -> Screen:
     """Тот же экран для сообщений.
 
@@ -1785,6 +1821,9 @@ def _all_screens() -> tuple[Screen, ...]:
     return (
         onboarding(),
         onboarding(from_presentations=True),
+        mailing_r1(),
+        mailing_r2(),
+        mailing_r3("https://t.me/testbot?start=ref_code1"),
         chat_answer("Ответ на вопрос.", offer_new_dialog=False),
         chat_answer("Ответ на вопрос.", offer_new_dialog=True),
         chat_answer(

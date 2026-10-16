@@ -311,14 +311,20 @@ class Storage(Protocol):
         self,
         *,
         messenger: MessengerKind,
+        step: str,
         active_after: datetime,
         active_before: datetime,
+        marketing_before: datetime,
+        now: datetime,
         limit: int,
     ) -> list[User]:
-        """Кто молчит с ``active_after`` по ``active_before`` и не остановил бота.
+        """Кому шаг ``step`` положен прямо сейчас — грубым отбором в базе.
 
-        Тариф и прочие условия проверяет ядро: здесь — только грубый отбор,
-        чтобы не тянуть всех людей подряд.
+        Молчит с ``active_after`` по ``active_before``, не остановил бота,
+        бесплатный тариф (нет действующего оплаченного срока), маркетинга не
+        было с ``marketing_before``, а этот шаг текущего цикла ещё не заведён:
+        иначе первые ``limit`` уже обработанных навсегда загораживали бы
+        остальных. Ядро перепроверяет всё по каждому.
         """
         ...
 

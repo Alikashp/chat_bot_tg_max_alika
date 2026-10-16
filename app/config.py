@@ -359,6 +359,13 @@ class Settings(BaseSettings):
     #: звёздам остаётся, выключается только продажа.
     stars_enabled: bool = False
 
+    #: Цепочка реактивации R1–R3 (сессия 12) — только Telegram, в MAX её нет.
+    #: Общий выключатель и флаг на каждый шаг; по умолчанию всё выключено.
+    mailings_enabled: bool = False
+    mailing_r1_enabled: bool = False
+    mailing_r2_enabled: bool = False
+    mailing_r3_enabled: bool = False
+
     # --- Фискальные чеки (54-ФЗ) -----------------------------------------
 
     #: Отправлять ли чек вместе с платежом.

@@ -24,6 +24,7 @@ from app.core.actions import (
     deck_set_action,
     document_action,
     followup_action,
+    mailing_action,
     presentation_from_action,
     preset_action,
     regenerate_action,
@@ -255,6 +256,11 @@ def paywall_free(continue_label: str, action: str, invite_label: str = "") -> Ke
     if invite_label:
         rows.append((Button(text=invite_label, action=Action.INVITE_FRIEND),))
     return Keyboard(rows=tuple(rows))
+
+
+def mailing(label: str, step: str) -> Keyboard:
+    """Одна кнопка под сообщением рассылки; несёт шаг (сессия 12)."""
+    return Keyboard.row(Button(text=label, action=mailing_action(step)))
 
 
 def channel_required(url: str) -> Keyboard:

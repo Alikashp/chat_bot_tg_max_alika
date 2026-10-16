@@ -1884,8 +1884,11 @@ async def test_mailing_candidates_are_the_quiet_who_did_not_stop_the_bot(
 
     found = await storage.mailing_candidates(
         messenger=MessengerKind.TELEGRAM,
+        step="R1",
         active_after=now - timedelta(days=5),
         active_before=now - timedelta(days=3),
+        marketing_before=now - timedelta(days=7),
+        now=now,
         limit=10,
     )
 
@@ -1893,12 +1896,52 @@ async def test_mailing_candidates_are_the_quiet_who_did_not_stop_the_bot(
     assert (
         await storage.mailing_candidates(
             messenger=MessengerKind.MAX,
+            step="R1",
             active_after=now - timedelta(days=5),
             active_before=now - timedelta(days=3),
+            marketing_before=now - timedelta(days=7),
+            now=now,
             limit=10,
         )
         == []
     )
+
+
+async def test_mailing_candidates_leave_out_payers_recent_marketing_and_sent_steps(
+    storage: Storage,
+) -> None:
+    """Отбор в базе — тот же, что и в ядре: иначе первые ``limit`` неподходящих
+    навсегда загораживали бы остальных."""
+    now = datetime.now(UTC) + timedelta(days=30)
+    payer, lapsed, marketed, claimed, old_cycle = [
+        await _make_user(storage, str(n)) for n in range(10, 15)
+    ]
+    for user in (payer, lapsed, marketed, claimed, old_cycle):
+        await storage.touch_active(user.id, now - timedelta(days=4))
+    await storage.set_tariff(payer.id, TariffId.LITE, now + timedelta(days=1))
+    await storage.set_tariff(lapsed.id, TariffId.LITE, now - timedelta(days=1))
+    await storage.claim_mailing(marketed.id, "R3", now - timedelta(days=30), now)
+    await storage.finish_mailing(
+        marketed.id,
+        "R3",
+        now - timedelta(days=30),
+        status=MailingStatus.SENT,
+        at=now - timedelta(days=6),
+    )
+    await storage.claim_mailing(claimed.id, "R1", now - timedelta(days=4), now)
+    await storage.claim_mailing(old_cycle.id, "R1", now - timedelta(days=40), now)
+
+    found = await storage.mailing_candidates(
+        messenger=MessengerKind.TELEGRAM,
+        step="R1",
+        active_after=now - timedelta(days=5),
+        active_before=now - timedelta(days=3),
+        marketing_before=now - timedelta(days=7),
+        now=now,
+        limit=10,
+    )
+
+    assert sorted(user.id for user in found) == sorted([lapsed.id, old_cycle.id])
 
 
 async def test_activity_never_moves_back(storage: Storage) -> None:

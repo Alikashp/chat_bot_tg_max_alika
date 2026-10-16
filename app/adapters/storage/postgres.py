@@ -557,10 +557,22 @@ class PostgresStorage:
         self,
         *,
         messenger: MessengerKind,
+        step: str,
         active_after: datetime,
         active_before: datetime,
+        marketing_before: datetime,
+        now: datetime,
         limit: int,
     ) -> list[User]:
+        already = (
+            select(mailings.c.id)
+            .where(
+                mailings.c.user_id == users.c.id,
+                mailings.c.step == step,
+                mailings.c.cycle_key == users.c.last_active_at,
+            )
+            .exists()
+        )
         query = (
             select(users)
             .where(
@@ -568,6 +580,16 @@ class PostgresStorage:
                 users.c.stopped_at.is_(None),
                 users.c.last_active_at >= active_after,
                 users.c.last_active_at < active_before,
+                or_(
+                    users.c.tariff == TariffId.FREE.value,
+                    users.c.tariff_expires_at.is_(None),
+                    users.c.tariff_expires_at <= now,
+                ),
+                or_(
+                    users.c.last_marketing_at.is_(None),
+                    users.c.last_marketing_at < marketing_before,
+                ),
+                ~already,
             )
             .order_by(users.c.id)
             .limit(limit)

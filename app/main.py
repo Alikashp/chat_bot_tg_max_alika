@@ -53,6 +53,7 @@ from app.core import retention
 from app.core.billing import Billing
 from app.core.channel import channel_username
 from app.core.decks import Draft
+from app.core.mailing import Mailer
 from app.core.models import MessengerKind
 from app.core.receipts import FiscalSettings
 from app.core.reconcile import Reconciler
@@ -68,6 +69,7 @@ from app.infra.examples import load_examples
 from app.infra.handoff import MemoryHandoff
 from app.infra.logging import configure_logging, get_logger
 from app.infra.queue import JobQueue
+from app.infra.ratelimit import TokenBucket
 from app.infra.retry import RetryPolicy
 from app.infra.scheduler import Periodic
 from app.infra.server import (
@@ -144,6 +146,8 @@ class Wiring:
     billing: Billing
     #: Сверка зависших заказов картой: доводит то, что не довело уведомление.
     reconciler: Reconciler
+    #: Цепочка реактивации R1–R3 (сессия 12). Только Telegram.
+    mailer: Mailer
 
 
 def _payment_notice_key(notification: dict[str, Any]) -> str | None:
@@ -233,6 +237,11 @@ _PAYMENT_QUESTION_WORKERS = 2
 #: Как часто удалять молчащую историю переписки. Срок — 30 дней, так что
 #: час опоздания ничего не значит, а проход — один DELETE по индексу.
 _DIALOGS_INTERVAL_SECONDS = 3600
+
+#: Проход рассылки — раз в 10 минут: окно отправки пять часов, а шаг живёт
+#: двое суток, так что чаще незачем. Темп — не больше 20 сообщений в секунду.
+_MAILINGS_INTERVAL_SECONDS = 600
+_MAILING_RATE = 20
 
 #: Сколько текстов для «Повторить» и «Ещё вариант» держим в памяти. В худшем
 #: случае — сообщения чата по 4 096 знаков: около 40 МБ; обычно описание
@@ -437,6 +446,10 @@ def build_core_settings(
         subscription_days=settings.subscription_days,
         trial_enabled=settings.trial_enabled,
         stars_enabled=settings.stars_enabled,
+        mailings_enabled=settings.mailings_enabled,
+        mailing_r1_enabled=settings.mailing_r1_enabled,
+        mailing_r2_enabled=settings.mailing_r2_enabled,
+        mailing_r3_enabled=settings.mailing_r3_enabled,
         offer_url=settings.offer_url,
         privacy_url=settings.privacy_url,
         docs_version=settings.docs_version,
@@ -611,6 +624,12 @@ async def build_wiring(settings: Settings) -> Wiring:
             by_messenger=by_messenger,
             after=timedelta(seconds=settings.reconcile_after_seconds),
             window=timedelta(hours=settings.reconcile_window_hours),
+        ),
+        # Своё ведро на 20 сообщений в секунду и свой проход вне очереди
+        # обновлений: рассылка не задерживает ответы людям (правило 6).
+        mailer=Mailer(
+            deps=deps,
+            pace=TokenBucket(rate=_MAILING_RATE, burst=1).acquire,
         ),
     )
 
@@ -1006,9 +1025,18 @@ async def run() -> None:
         interval_seconds=_DIALOGS_INTERVAL_SECONDS,
     )
 
+    # Цепочка реактивации (сессия 12): сама проверяет выключатели и окно
+    # 15:00–20:00 по Москве, поэтому запускается всегда.
+    mailings = Periodic(
+        "mailings",
+        wiring.mailer.run,
+        interval_seconds=_MAILINGS_INTERVAL_SECONDS,
+    )
+
     for each in queues:
         each.start()
     billing.start()
+    mailings.start()
     reconcile.start()
     dialogs.start()
     runner = web.AppRunner(app, access_log=None)
@@ -1056,6 +1084,7 @@ async def run() -> None:
         await billing.stop()
         await reconcile.stop()
         await dialogs.stop()
+        await mailings.stop()
         await site.stop()
         abandoned = 0
         for each in queues:

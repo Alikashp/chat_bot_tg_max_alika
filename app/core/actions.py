@@ -88,6 +88,10 @@ THEME_PREFIX = "v:theme:"
 REPORT_FROM_PREFIX = "x:rep:"
 PRESENTATION_FROM_PREFIX = "x:pres:"
 
+#: Кнопка под сообщением рассылки реактивации (сессия 12). За префиксом —
+#: шаг (R1, R2): по нажатию отмечается время нажатия этого шага.
+MAILING_PREFIX = "ml:"
+
 #: «🔄 Перегенерировать» под готовой презентацией (сессия 12). За префиксом —
 #: жетон копии черновика: параметры живут в памяти, тема в базу не пишется.
 REGENERATE_PREFIX = "v:regen:"
@@ -141,6 +145,17 @@ def parse_theme_action(action: str) -> str | None:
 def report_from_action(token: str) -> str:
     """«Сделать доклад по презентации» с жетоном её темы."""
     return f"{REPORT_FROM_PREFIX}{token}"
+
+
+def mailing_action(step: str) -> str:
+    """Действие кнопки под сообщением шага рассылки."""
+    return f"{MAILING_PREFIX}{step}"
+
+
+def parse_mailing_action(action: str) -> str | None:
+    if not action.startswith(MAILING_PREFIX):
+        return None
+    return action.removeprefix(MAILING_PREFIX) or None
 
 
 def regenerate_action(token: str) -> str:

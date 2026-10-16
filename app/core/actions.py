@@ -88,6 +88,10 @@ THEME_PREFIX = "v:theme:"
 REPORT_FROM_PREFIX = "x:rep:"
 PRESENTATION_FROM_PREFIX = "x:pres:"
 
+#: «🔄 Перегенерировать» под готовой презентацией (сессия 12). За префиксом —
+#: жетон копии черновика: параметры живут в памяти, тема в базу не пишется.
+REGENERATE_PREFIX = "v:regen:"
+
 #: Префикс покупки тарифа. За ним идёт идентификатор тарифа.
 BUY_PREFIX = "t:buy:"
 
@@ -137,6 +141,17 @@ def parse_theme_action(action: str) -> str | None:
 def report_from_action(token: str) -> str:
     """«Сделать доклад по презентации» с жетоном её темы."""
     return f"{REPORT_FROM_PREFIX}{token}"
+
+
+def regenerate_action(token: str) -> str:
+    """Действие «собрать ту же презентацию заново»."""
+    return f"{REGENERATE_PREFIX}{token}"
+
+
+def parse_regenerate_action(action: str) -> str | None:
+    if not action.startswith(REGENERATE_PREFIX):
+        return None
+    return action.removeprefix(REGENERATE_PREFIX) or None
 
 
 def parse_report_from_action(action: str) -> str | None:

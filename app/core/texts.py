@@ -548,6 +548,12 @@ PRESENTATION_IN_PROGRESS = "Презентация уже готовится —
 
 BUTTON_PRESENTATION_AGAIN = "Ещё одну презентацию"
 BUTTON_REPORT_FROM_PRESENTATION = "📑 Сделать доклад по презентации"
+#: Кнопки под итогом готовой презентации с сессии 12, каждая своей строкой.
+#: Прежние подписи выше остаются в сообщениях, отправленных раньше: их
+#: действия те же, и работают они как раньше.
+BUTTON_REGENERATE = "🔄 Перегенерировать"
+BUTTON_REPORT_OF_DECK = "📄 Доклад по презентации"
+BUTTON_NEW_PRESENTATION = "✅ Новая презентация"
 BUTTON_PRESENTATION_FROM_REPORT = "📑 Сделать презентацию по докладу"
 
 #: Кнопку-связку уже нажимали: доклад или презентация по ней уже сделаны или
@@ -764,7 +770,7 @@ def presentation_done() -> Screen:
 def presentation_result(*, with_pdf: bool = True) -> Screen:
     return Screen(
         text=PRESENTATION_RESULT if with_pdf else PRESENTATION_RESULT_PPTX_ONLY,
-        buttons=(BUTTON_REPORT_FROM_PRESENTATION, BUTTON_PRESENTATION_AGAIN),
+        buttons=(BUTTON_REGENERATE, BUTTON_REPORT_OF_DECK, BUTTON_NEW_PRESENTATION),
     )
 
 

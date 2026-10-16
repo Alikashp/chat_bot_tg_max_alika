@@ -29,6 +29,7 @@ from app.core.actions import (
     parse_method_action,
     parse_presentation_from_action,
     parse_preset_action,
+    parse_regenerate_action,
     parse_report_from_action,
     parse_theme_action,
 )
@@ -242,6 +243,13 @@ async def _route_action(deps: Deps, session: Session, action: str) -> None:
     deck = parse_deck_action(action)
     if deck is not None:
         await presentations.act(deps, session, deck)
+        return
+
+    regen_token = parse_regenerate_action(action)
+    if regen_token is not None:
+        # Слот сборки в базе держит одну колоду на человека — как у «Собрать».
+        await _clear_pending(deps, session)
+        await presentations.regenerate(deps, session, regen_token)
         return
 
     theme_id = parse_theme_action(action)

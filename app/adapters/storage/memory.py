@@ -67,6 +67,7 @@ class InMemoryStorage:
         self._period_usage: dict[tuple[UserId, datetime], PeriodUsage] = {}
         self._dialogs: dict[UserId, DialogState] = {}
         self._dialogs_touched: dict[UserId, datetime] = {}
+        self._first_decks: dict[UserId, datetime] = {}
         #: Учёт обращений к провайдерам. Публичный намеренно: в тестах по
         #: нему проверяют, что попытка записана, — так же, как в бою по
         #: таблице generations.
@@ -288,6 +289,20 @@ class InMemoryStorage:
     async def clear_stopped(self, user_id: UserId) -> None:
         user = self._require_user(user_id)
         self._users[user_id] = replace(user, stopped_at=None)
+
+    async def mark_first_deck(self, user_id: UserId, at: datetime) -> bool:
+        self._require_user(user_id)
+        if user_id in self._first_decks:
+            return False
+        self._first_decks[user_id] = at
+        return True
+
+    async def mark_free_regen_used(self, user_id: UserId, at: datetime) -> bool:
+        user = self._require_user(user_id)
+        if user.free_regen_at is not None:
+            return False
+        self._users[user_id] = replace(user, free_regen_at=at)
+        return True
 
     async def remember_channel_check(self, user_id: UserId, at: datetime) -> None:
         user = self._require_user(user_id)

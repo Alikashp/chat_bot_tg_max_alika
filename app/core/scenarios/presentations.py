@@ -319,6 +319,25 @@ async def act(deps: Deps, session: Session, action: DeckAction) -> None:
     await _set_value(deps, session, action.token, draft, action.field, action.value)
 
 
+async def regenerate(deps: Deps, session: Session, token: str) -> None:
+    """«🔄 Перегенерировать»: та же колода заново, по копии черновика (сессия 12).
+
+    Черновика нет (перезапуск, шесть часов) — честное «параметры устарели»;
+    эта кнопка уже сработала — «уже собрана», новая кнопка под новым итогом.
+    """
+    if deps.presentations is None or deps.drafts is None:
+        await _unavailable(deps, session)
+        return
+    draft = deps.drafts.peek(token)
+    if draft is None:
+        if deps.drafts.was_taken(token):
+            await _say(deps, session, texts.deck_already_built())
+            return
+        await _gone(deps, session)
+        return
+    await _build_draft(deps, session, token, draft)
+
+
 async def choose_theme(deps: Deps, session: Session, theme_id: str) -> None:
     """Кнопка оформления из версии до экрана параметров (В5).
 
@@ -587,9 +606,14 @@ async def _say(deps: Deps, session: Session, screen: texts.Screen) -> None:
 
 
 async def _build(deps: Deps, session: Session, token: str, draft: Draft) -> bool:
-    """Проверка остатка, захват слота — и сборка под ним. True — доставлено."""
+    """Проверка остатка, захват слота — и сборка под ним. True — доставлено.
+
+    Бесплатная перегенерация первой бесплатной презентации (сессия 12)
+    остатка не требует: она его и не тратит.
+    """
+    free = await _free_regeneration(deps, session, draft)
     allowance = await spending.current_allowance(deps, session, LimitKind.PRESENTATIONS)
-    if allowance.exhausted:
+    if not free and allowance.exhausted:
         await paywall.show(deps, session, LimitKind.PRESENTATIONS)
         return False
 
@@ -600,7 +624,7 @@ async def _build(deps: Deps, session: Session, token: str, draft: Draft) -> bool
         return False
 
     try:
-        delivered = await _build_claimed(deps, session, token, draft)
+        delivered = await _build_claimed(deps, session, token, draft, free=free)
         if delivered:
             # Черновик и жетон доклада уходят раньше слота: нажатие «Собрать»,
             # пришедшее в миг освобождения слота, иначе нашло бы черновик на
@@ -614,8 +638,21 @@ async def _build(deps: Deps, session: Session, token: str, draft: Draft) -> bool
         await deps.storage.release_presentation(session.user.id)
 
 
+async def _free_regeneration(deps: Deps, session: Session, draft: Draft) -> bool:
+    """Положена ли этой сборке бесплатная перегенерация (сессия 12).
+
+    Только копии черновика первой бесплатной колоды, только на бесплатном
+    тарифе и только пока перегенерация не потрачена. Человек перечитывается:
+    снимок сессии мог устареть на соседнем нажатии.
+    """
+    if not draft.free_regen or not session.tariff.is_free:
+        return False
+    fresh = await deps.storage.get_user_by_id(session.user.id)
+    return fresh is not None and fresh.free_regen_at is None
+
+
 async def _build_claimed(
-    deps: Deps, session: Session, token: str, draft: Draft
+    deps: Deps, session: Session, token: str, draft: Draft, *, free: bool = False
 ) -> bool:
     """Собрать, доставить, списать — в этом порядке и только в нём."""
     assert deps.presentations is not None
@@ -706,8 +743,14 @@ async def _build_claimed(
         return False
 
     # Файлы у человека — это и есть доставка. Списываем до сообщений после
-    # них: их сбой не отменяет того, что презентацию уже получили.
-    await spending.charge(deps, session, LimitKind.PRESENTATIONS)
+    # них: их сбой не отменяет того, что презентацию уже получили. Бесплатная
+    # перегенерация тратит свою отметку вместо презентации; если её успели
+    # потратить параллельно — обычное списание.
+    if not free or not await deps.storage.mark_free_regen_used(
+        session.user.id, deps.now()
+    ):
+        await spending.charge(deps, session, LimitKind.PRESENTATIONS)
+    first = await deps.storage.mark_first_deck(session.user.id, deps.now())
     deps.logger.info(
         "presentation_delivered",
         user_id=int(session.user.id),
@@ -721,10 +764,17 @@ async def _build_claimed(
         if deps.handoff is not None
         else None
     )
+    # «Перегенерировать» — копия черновика под новым жетоном: тема и
+    # параметры остаются в памяти (В6). Бесплатна перегенерация только у
+    # первой колоды бесплатного тарифа.
+    assert deps.drafts is not None
+    regen_token = deps.drafts.put(
+        replace(draft, report_token=None, free_regen=first and session.tariff.is_free)
+    )
     await deps.messenger.send_text(
         session.chat,
         texts.presentation_result(with_pdf=built.pdf is not None).text,
-        keyboard=keyboards.presentation_result(report_token),
+        keyboard=keyboards.presentation_result(report_token, regen_token),
     )
     return True
 

@@ -1752,3 +1752,29 @@ async def test_reconciliation_picks_pending_card_orders_of_the_right_age(
     assert [order.id for order in found] == [due.id]
     assert no_external.id not in [order.id for order in found]
     assert too_old == []
+
+
+async def test_the_first_deck_and_the_free_regeneration_are_marked_once(
+    storage: Storage,
+) -> None:
+    """Сессия 12: обе отметки ставятся одной условной операцией и один раз."""
+    user = await _make_user(storage)
+    at = datetime.now(UTC)
+
+    assert await storage.mark_first_deck(user.id, at) is True
+    assert await storage.mark_first_deck(user.id, at) is False
+    assert await storage.mark_free_regen_used(user.id, at) is True
+    assert await storage.mark_free_regen_used(user.id, at) is False
+    fresh = await storage.get_user_by_id(user.id)
+    assert fresh is not None and fresh.free_regen_at is not None
+
+
+async def test_a_free_regeneration_is_spent_once_concurrently(storage: Storage) -> None:
+    user = await _make_user(storage)
+    at = datetime.now(UTC)
+
+    spent = await asyncio.gather(
+        *(storage.mark_free_regen_used(user.id, at) for _ in range(10))
+    )
+
+    assert sum(spent) == 1

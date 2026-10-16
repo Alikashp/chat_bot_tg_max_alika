@@ -268,6 +268,18 @@ class Storage(Protocol):
         """Снимает отметку: человек снова что-то сделал в боте."""
         ...
 
+    async def mark_first_deck(self, user_id: UserId, at: datetime) -> bool:
+        """Отмечает первую доставленную презентацию. False — уже была раньше.
+
+        Отметка одна на человека и ставится одной условной операцией: по ней
+        решается, положена ли бесплатная перегенерация (сессия 12).
+        """
+        ...
+
+    async def mark_free_regen_used(self, user_id: UserId, at: datetime) -> bool:
+        """Тратит бесплатную перегенерацию. False — она уже потрачена."""
+        ...
+
     async def remember_channel_check(self, user_id: UserId, at: datetime) -> None:
         """Запоминает, что Telegram подтвердил подписку на канал в ``at``."""
         ...

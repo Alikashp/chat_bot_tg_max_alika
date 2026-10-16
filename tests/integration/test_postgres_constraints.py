@@ -448,3 +448,54 @@ async def test_old_retry_texts_leave_the_database(engine: AsyncEngine) -> None:
         None,
     ]
     assert "Секрет" not in repr(found)
+
+
+def _free_regeneration() -> object:
+    path = (
+        Path(__file__).resolve().parents[2]
+        / "migrations"
+        / "versions"
+        / "c9e5a1b7d830_free_regeneration.py"
+    )
+    spec = importlib.util.spec_from_file_location("free_regeneration", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+async def test_people_who_had_decks_get_their_first_deck_mark(
+    engine: AsyncEngine,
+) -> None:
+    """Сессия 12: первая колода — по удачной сборке в учёте; повтор ничего не меняет."""
+    migration = _free_regeneration()
+    ids = await _make_users(engine, 3)
+    early = datetime(2026, 9, 1, tzinfo=UTC)
+    late = datetime(2026, 9, 5, tzinfo=UTC)
+    async with engine.begin() as connection:
+        for user_id, at, status in (
+            (ids[0], late, "success"),
+            (ids[0], early, "success"),
+            (ids[1], early, "failed"),
+        ):
+            await connection.execute(
+                text(
+                    "INSERT INTO generations (user_id, kind, model, status, "
+                    "duration_ms, created_at) VALUES "
+                    "(:u, 'presentation', 'fibonacci:doklad', :s, 0, :at)"
+                ),
+                {"u": user_id, "s": status, "at": at},
+            )
+        for _ in range(2):
+            await connection.execute(text(migration.BACKFILL_SQL))  # type: ignore[attr-defined]
+        found = (
+            (
+                await connection.execute(
+                    text("SELECT first_deck_at FROM users ORDER BY id")
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+    assert found == [early, None, None]

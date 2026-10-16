@@ -448,6 +448,27 @@ class PostgresStorage:
         async with self._session() as session, session.begin():
             await session.execute(query)
 
+    async def mark_first_deck(self, user_id: UserId, at: datetime) -> bool:
+        """Условие «ещё не отмечено» — в самом UPDATE: первая колода одна."""
+        query = (
+            update(users)
+            .where(users.c.id == user_id, users.c.first_deck_at.is_(None))
+            .values(first_deck_at=at)
+            .returning(users.c.id)
+        )
+        async with self._session() as session, session.begin():
+            return (await session.execute(query)).one_or_none() is not None
+
+    async def mark_free_regen_used(self, user_id: UserId, at: datetime) -> bool:
+        query = (
+            update(users)
+            .where(users.c.id == user_id, users.c.free_regen_at.is_(None))
+            .values(free_regen_at=at)
+            .returning(users.c.id)
+        )
+        async with self._session() as session, session.begin():
+            return (await session.execute(query)).one_or_none() is not None
+
     async def remember_channel_check(self, user_id: UserId, at: datetime) -> None:
         query = update(users).where(users.c.id == user_id).values(channel_checked_at=at)
         async with self._session() as session, session.begin():
@@ -1075,6 +1096,7 @@ def _to_user(row: Any) -> User:
         menu_version=row["menu_version"],
         norm_since=row["norm_since"],
         trial_order_id=row["trial_order_id"],
+        free_regen_at=row["free_regen_at"],
     )
 
 

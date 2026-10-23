@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import re
 import signal
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -127,9 +128,14 @@ class MaxWiring:
 
 @dataclass(slots=True)
 class Settlement:
-    """Приём уведомлений об оплате картой. None, если карты не настроены."""
+    """Приём уведомлений об оплате картой. None, если карты не настроены.
 
-    handle: Callable[[dict[str, Any]], Awaitable[None]]
+    ``handle`` возвращает, разобрано ли уведомление до конца. False — оплату
+    подтвердить не вышло (ЮKassa ещё не ответила «оплачено» или не ответила
+    вовсе), и повтор того же уведомления надо пустить, а не отбросить.
+    """
+
+    handle: Callable[[dict[str, Any]], Awaitable[bool]]
 
 
 @dataclass(slots=True)
@@ -686,7 +692,49 @@ async def _settle_refund(
     logger.info("payment_refunded", user_id=int(user.id))
 
 
-def _build_settlement(by_messenger: dict[MessengerKind, Deps]) -> Settlement:
+#: Через сколько секунд переспросить ЮKassa, если по уведомлению «оплачено»
+#: она ещё не ответила «оплачено» или не ответила вовсе (сессия 14, шаг 3).
+#: Вместе — четверть минуты: дольше держать обработчик незачем, дальше заказ
+#: доведут вопрос по требованию и сверка.
+_NOTICE_RECHECK_SECONDS = (1.0, 2.0, 4.0, 8.0)
+
+#: Событие уведомления, после которого платёж должен быть оплачен.
+_PAID_EVENT = "payment.succeeded"
+
+
+def _notice_event(notification: dict[str, Any]) -> str:
+    """Название события для лога: только «слово.слово», иначе «other»."""
+    event = notification.get("event")
+    if isinstance(event, str) and re.fullmatch(r"[a-z_]{1,32}\.[a-z_]{1,32}", event):
+        return event
+    return "other"
+
+
+def _settle_job(
+    settlement: Settlement, dedup: Deduplicator
+) -> Callable[[dict[str, Any]], Awaitable[None]]:
+    """Задача очереди уведомлений: неподтвердившее забывает свой ключ.
+
+    Ключ — номер заказа. Запомненный после неудачи, он отбросил бы как
+    дубликат повтор того же уведомления в ближайшие десять минут, и заказ
+    ждал бы сверку (сессия 14, шаг 3).
+    """
+
+    async def job(notification: dict[str, Any]) -> None:
+        if await settlement.handle(notification):
+            return
+        key = _payment_notice_key(notification)
+        if key is not None:
+            dedup.forget(key)
+
+    return job
+
+
+def _build_settlement(
+    by_messenger: dict[MessengerKind, Deps],
+    *,
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+) -> Settlement:
     """Приём уведомлений об оплате картой.
 
     Уведомление здесь — только повод переспросить: статус читается у ЮKassa
@@ -705,26 +753,30 @@ def _build_settlement(by_messenger: dict[MessengerKind, Deps]) -> Settlement:
     """
     any_deps = next(iter(by_messenger.values()))
 
-    async def handle(notification: dict[str, Any]) -> None:
+    async def handle(notification: dict[str, Any]) -> bool:
+        event = _notice_event(notification)
+        # Каждое уведомление — строкой в логе: без неё «не пришло» и «пришло,
+        # но не подтвердило» неотличимы (сессия 14, шаг 3).
+        any_deps.logger.info("payment_notice_received", notice=event)
         refunded_payment = refunded_payment_id_of(notification)
         if refunded_payment is not None:
             await _settle_refund(by_messenger, refunded_payment)
-            return
+            return True
 
         order_id = order_id_of(notification)
         if order_id is None:
             logger.warning("payment_notice_without_order")
-            return
+            return True
 
         order = await any_deps.storage.get_payment(order_id)
         if order is None or order.external_id is None:
             logger.warning("payment_notice_unknown_order")
-            return
+            return True
 
         user = await any_deps.storage.get_user_by_id(order.user_id)
         if user is None:
             logger.error("payment_user_missing", user_id=int(order.user_id))
-            return
+            return True
 
         deps = by_messenger.get(user.messenger)
         if deps is None or deps.cards is None:
@@ -737,20 +789,48 @@ def _build_settlement(by_messenger: dict[MessengerKind, Deps]) -> Settlement:
                 user_id=int(user.id),
                 messenger=user.messenger.value,
             )
-            return
+            return True
 
-        if not await deps.cards.is_paid(order.external_id, expected_rub=order.amount):
-            logger.info("payment_notice_not_paid")
-            return
+        # По «оплачено» переспрашиваем: ЮKassa могла ещё не ответить так же, а
+        # уведомление уже принято с ответом 200 и повторено не будет. Отмена и
+        # прочее — окончательные исходы: один вопрос.
+        waits = _NOTICE_RECHECK_SECONDS if event == _PAID_EVENT else ()
+        failure: str | None = None
+        attempts = 0
+        for wait in (0.0, *waits):
+            if wait:
+                await sleep(wait)
+            attempts += 1
+            try:
+                paid = await deps.cards.is_paid(
+                    order.external_id, expected_rub=order.amount
+                )
+            except Exception as error:
+                failure = type(error).__name__
+                continue
+            if paid:
+                break
+            failure = None
+        else:
+            deps.logger.info(
+                "payment_notice_not_paid",
+                user_id=int(user.id),
+                notice=event,
+                attempts=attempts,
+                error=failure,
+            )
+            # Для отмены ждать нечего; для «оплачено» — пусть повтор пройдёт.
+            return event != _PAID_EVENT
 
         renewal = await payments.is_card_renewal(deps, order)
         confirmed = await payments.confirm(deps, order_id)
         if confirmed is None:
-            return
+            return True
 
         await payments.announce(
             deps, session_for(deps, user), confirmed, renewal=renewal
         )
+        return True
 
     return Settlement(handle=handle)
 
@@ -921,7 +1001,7 @@ async def run() -> None:
         # уведомление несколько раз, а работа по нему одна.
         settle_queue: JobQueue[dict[str, Any]] = JobQueue(
             "payment-notices",
-            wiring.settlement.handle,
+            _settle_job(wiring.settlement, dedup),
             capacity=settings.queue_capacity,
             workers=4,
         )

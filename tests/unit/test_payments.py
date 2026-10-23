@@ -22,7 +22,7 @@ from app.core.scenarios import payments, subscriptions
 from app.core.scenarios.deps import Deps, Session
 from app.core.tariffs import tariff_of
 from app.ports.payments import PaymentMethod, PaymentStatus
-from tests.fakes import FakeCards, FakeLogger, FakeMessenger, FakeStars
+from tests.fakes import FakeCards, FakeLogger, FakeMessenger, FakeStars, FrozenClock
 
 PRO = TariffId.PRO
 
@@ -801,11 +801,13 @@ async def test_a_payment_we_cannot_record_is_never_offered(
     Такого быть не должно: ключом идемпотентности служит наш заказ. Но если
     провайдер всё же вернул чужой платёж, отдавать ссылку нельзя.
     """
+    # Чужой заказ — на другую покупку: заказ на ту же без ссылки выглядел бы
+    # соседним нажатием, которое ещё делает свою (сессия 14).
     taken = await storage.create_payment(
         user_id=session.user.id,
-        tariff=PRO,
+        tariff=TariffId.LITE,
         method=PaymentMethod.CARD.value,
-        amount=599,
+        amount=299,
         currency="RUB",
         docs_version="2026-08-31",
     )
@@ -932,10 +934,19 @@ async def test_the_provider_is_asked_before_the_grant(
 
 
 async def test_a_concurrent_extension_is_recounted_not_lost(
-    deps: Deps, session: Session, storage: InMemoryStorage, stars: FakeStars
+    deps: Deps,
+    session: Session,
+    storage: InMemoryStorage,
+    stars: FakeStars,
+    clock: FrozenClock,
 ) -> None:
-    """Два разных заказа почти разом: оба месяца на месте, а не один."""
+    """Два разных заказа почти разом: оба месяца на месте, а не один.
+
+    Второй счёт — после срока жизни первого: пока он жив, повторное нажатие
+    отдаёт его же (сессия 14).
+    """
     await payments.start_stars(deps, session, PRO)
+    clock.advance(minutes=deps.settings.payment_link_ttl_minutes + 1)
     await payments.start_stars(deps, session, PRO)
     first, second = (invoice.order_id for invoice in stars.invoices)
 

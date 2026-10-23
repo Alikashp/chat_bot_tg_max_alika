@@ -26,6 +26,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import replace
 from datetime import datetime, timedelta
 
@@ -45,7 +46,12 @@ from app.core.receipts import Receipt, receipt_for
 from app.core.scenarios import keyboards
 from app.core.scenarios.deps import Deps, Session
 from app.core.tariffs import RUB, STARS, TRIAL, stars_price, tariff_of
-from app.ports.payments import PaymentMethod, PaymentStatus, SubscriptionStatus
+from app.ports.payments import (
+    ChargeStatus,
+    PaymentMethod,
+    PaymentStatus,
+    SubscriptionStatus,
+)
 from app.ports.storage import GrantOutcome
 
 
@@ -104,7 +110,7 @@ async def start_card(deps: Deps, session: Session, tariff_id: TariffId) -> None:
 
     tariff = tariff_of(tariff_id)
     recurring = deps.cards.recurring
-    order = await _open_order(
+    found = await _order_with_link(
         deps,
         session,
         tariff_id,
@@ -112,21 +118,29 @@ async def start_card(deps: Deps, session: Session, tariff_id: TariffId) -> None:
         amount=tariff.price_rub,
         currency=RUB,
     )
-    # Сохранять способ оплаты просим только тогда, когда собираемся им
-    # пользоваться. Иначе провайдер хранил бы карту человека без причины, а
-    # мы обещали бы продление, которого не будет.
-    url = await _card_link(deps, session, order, save_method=recurring)
-    if url is None:
+    if found is None:
         return
+    order, created = found
+    if created:
+        # Сохранять способ оплаты просим только тогда, когда собираемся им
+        # пользоваться. Иначе провайдер хранил бы карту человека без причины,
+        # а мы обещали бы продление, которого не будет.
+        url = await _card_link(deps, session, order, save_method=recurring)
+        if url is None:
+            return
+        receipt_to = None
+    else:
+        url, receipt_to = await _same_link(deps, session, order)
 
     await _show_order(
         deps,
         session,
         tariff_id,
-        amount=tariff.price_rub,
+        amount=order.amount,
         currency=RUB,
         url=url,
         recurring=recurring,
+        receipt_to=receipt_to,
     )
 
 
@@ -170,7 +184,7 @@ async def start_trial(deps: Deps, session: Session) -> None:
         await ask_for_email(deps, session, TRIAL.tariff, trial=True)
         return
 
-    order = await _open_order(
+    found = await _order_with_link(
         deps,
         session,
         TRIAL.tariff,
@@ -179,13 +193,18 @@ async def start_trial(deps: Deps, session: Session) -> None:
         currency=RUB,
         trial=True,
     )
-    # Карта сохраняется всегда: ради неё пробный период и затевается — через
-    # три дня по ней списывается полная цена.
-    url = await _card_link(deps, session, order, save_method=True)
-    if url is None:
+    if found is None:
         return
-
-    receipt_to = session.user.email or "" if deps.settings.receipts_ready else ""
+    order, created = found
+    if created:
+        # Карта сохраняется всегда: ради неё пробный период и затевается —
+        # через три дня по ней списывается полная цена.
+        url = await _card_link(deps, session, order, save_method=True)
+        if url is None:
+            return
+        receipt_to = session.user.email or "" if deps.settings.receipts_ready else ""
+    else:
+        url, receipt_to = await _same_link(deps, session, order)
     first_charge = deps.now() + timedelta(days=TRIAL.days)
     screen = texts.trial_order(
         first_charge=texts.format_date(
@@ -230,14 +249,15 @@ async def _card_link(
             ),
         )
     except Exception as error:
-        # Заказ остаётся в pending и просто протухнет. Денег с человека при
-        # этом не взяли, поэтому и отменять нечего.
+        # Денег с человека не взяли, а ссылки он не видел — заказ закрываем,
+        # чтобы следующее нажатие не ждало его ссылку (сессия 14).
         deps.logger.warning(
             "payment_start_failed",
             user_id=int(session.user.id),
             method=PaymentMethod.CARD.value,
             error=repr(error),
         )
+        await deps.storage.mark_canceled(order.id)
         await _say(deps, session, texts.payment_failed().text)
         return None
 
@@ -245,13 +265,20 @@ async def _card_link(
         # Платёж уже привязан к другому заказу. Ссылку отдавать нельзя:
         # подтвердить по ней оплату мы не сможем, а деньги человек отдаст.
         deps.logger.error("payment_id_taken", user_id=int(session.user.id))
+        await deps.storage.mark_canceled(order.id)
         await _say(deps, session, texts.payment_failed().text)
         return None
 
     if intent.confirmation_url is None:
         deps.logger.error("payment_without_url", user_id=int(session.user.id))
+        await deps.storage.mark_canceled(order.id)
         await _say(deps, session, texts.payment_failed().text)
         return None
+    await deps.storage.remember_link(
+        order.id,
+        url=intent.confirmation_url,
+        receipt_email=session.user.email if deps.settings.receipts_ready else None,
+    )
     return intent.confirmation_url
 
 
@@ -369,7 +396,7 @@ async def start_stars(deps: Deps, session: Session, tariff_id: TariffId) -> None
         return
 
     stars = _stars_price(deps, tariff_id)
-    order = await _open_order(
+    found = await _order_with_link(
         deps,
         session,
         tariff_id,
@@ -377,31 +404,41 @@ async def start_stars(deps: Deps, session: Session, tariff_id: TariffId) -> None
         amount=stars,
         currency=STARS,
     )
-
-    title, description = texts.invoice(tariff_id, days=deps.settings.subscription_days)
-    try:
-        link = await deps.stars.subscription_link(
-            title=title,
-            description=description,
-            order_id=order.id,
-            stars=stars,
-            period_days=deps.settings.subscription_days,
-        )
-    except Exception as error:
-        deps.logger.warning(
-            "payment_start_failed",
-            user_id=int(session.user.id),
-            method=PaymentMethod.STARS.value,
-            error=repr(error),
-        )
-        await _say(deps, session, texts.payment_failed().text)
+    if found is None:
         return
+    order, created = found
+    if created:
+        title, description = texts.invoice(
+            tariff_id, days=deps.settings.subscription_days
+        )
+        try:
+            link = await deps.stars.subscription_link(
+                title=title,
+                description=description,
+                order_id=order.id,
+                stars=order.amount,
+                period_days=deps.settings.subscription_days,
+            )
+        except Exception as error:
+            deps.logger.warning(
+                "payment_start_failed",
+                user_id=int(session.user.id),
+                method=PaymentMethod.STARS.value,
+                error=repr(error),
+            )
+            await deps.storage.mark_canceled(order.id)
+            await _say(deps, session, texts.payment_failed().text)
+            return
+        await deps.storage.remember_link(order.id, url=link, receipt_email=None)
+    else:
+        assert order.confirmation_url is not None
+        link = order.confirmation_url
 
     await _show_order(
         deps,
         session,
         tariff_id,
-        amount=stars,
+        amount=order.amount,
         currency=STARS,
         url=link,
         recurring=True,
@@ -772,8 +809,12 @@ async def _show_order(
     currency: str,
     url: str,
     recurring: bool,
+    receipt_to: str | None = None,
 ) -> None:
     """Экран оформления заказа: условия и кнопка оплаты в одном сообщении.
+
+    ``receipt_to`` — почта чека уже выданной ссылки (сессия 14); None —
+    ссылка новая, и чек уйдёт на нынешнюю почту человека.
 
     Вместе, а не по отдельности: согласие человек даёт нажатием кнопки
     оплаты (§4.11 оферты), и если условия остались в предыдущем сообщении,
@@ -788,11 +829,12 @@ async def _show_order(
     # Адрес человек назвал парой сообщений раньше и мог ошибиться в букве.
     # Увидев его перед оплатой, ошибку он заметит; получив пустоту вместо
     # чека — уже нет. У звёзд чека от нас не бывает вовсе.
-    receipt_to = (
-        session.user.email or ""
-        if currency == RUB and deps.settings.receipts_ready
-        else ""
-    )
+    if receipt_to is None:
+        receipt_to = (
+            session.user.email or ""
+            if currency == RUB and deps.settings.receipts_ready
+            else ""
+        )
     screen = texts.payment_order(
         tariff_id,
         days=deps.settings.subscription_days,
@@ -1055,7 +1097,24 @@ def _new_expiry(
     return now + days
 
 
-async def _open_order(
+# --- Одна живая ссылка на одну покупку (сессия 14) -------------------------
+#
+# В бою оплата подтверждалась сверкой через 10–14 минут, и за эти минуты
+# человек снова жал «за 1 ₽», получал новую рабочую ссылку и платил второй
+# раз. Пока у человека есть неоплаченный заказ на ту же покупку, моложе срока
+# жизни ссылки, любая кнопка покупки отдаёт ту же ссылку.
+
+#: Заказ без ссылки моложе этого считается «ссылку делают прямо сейчас»:
+#: запрос к ЮKassa дольше не идёт (YOOKASSA_TIMEOUT_SECONDS — 20 с).
+_LINK_MAKING = timedelta(seconds=60)
+#: Сколько второе нажатие ждёт ссылку, которую делает первое.
+_LINK_WAIT_SECONDS = 15.0
+_LINK_POLL_SECONDS = 0.1
+#: Сколько раз заменить отменённую ЮKassa ссылку за одно нажатие.
+_LINK_ROUNDS = 3
+
+
+async def _order_with_link(
     deps: Deps,
     session: Session,
     tariff_id: TariffId,
@@ -1064,23 +1123,153 @@ async def _open_order(
     amount: int,
     currency: str,
     trial: bool = False,
-) -> Payment:
-    """Заводит заказ вместе с редакцией документов, показанных человеку.
+) -> tuple[Payment, bool] | None:
+    """Живой заказ на ту же покупку со ссылкой — или новый, ещё без неё.
 
-    Версия хранится в самом заказе и живёт пять лет — столько же, сколько
-    данные о платежах. Именно она, а не текущая настройка, попадёт потом в
-    запись о согласии: спорить придётся о том, что человек видел, а не о том,
-    что опубликовано сегодня.
+    Второе значение — новый ли заказ: ему ссылку делает вызывающий. None —
+    разговор уже окончен: заказ оказался оплачен и проведён, или ссылку
+    соседнего нажатия дождаться не вышло.
     """
-    return await deps.storage.create_payment(
-        user_id=session.user.id,
-        tariff=tariff_id,
-        method=method.value,
-        amount=amount,
-        currency=currency,
-        docs_version=deps.settings.docs_version,
-        trial=trial,
+    now = deps.now()
+    linked_after = now - timedelta(minutes=deps.settings.payment_link_ttl_minutes)
+    for _ in range(_LINK_ROUNDS):
+        order, created = await deps.storage.open_or_create_payment(
+            user_id=session.user.id,
+            tariff=tariff_id,
+            method=method.value,
+            amount=amount,
+            currency=currency,
+            docs_version=deps.settings.docs_version,
+            trial=trial,
+            linked_after=linked_after,
+            making_after=now - _LINK_MAKING,
+        )
+        if created:
+            return order, True
+        if order.confirmation_url is None:
+            waited = await _wait_for_link(deps, order)
+            if waited is None:
+                await _say(deps, session, texts.payment_link_coming().text)
+                return None
+            order = waited
+        if method is not PaymentMethod.CARD or order.external_id is None:
+            # У звёзд спросить о счёте некого: оплата приходит от Telegram.
+            return order, False
+        state = await _link_state(deps, order)
+        if state is ChargeStatus.PENDING:
+            return order, False
+        if state is ChargeStatus.CHARGED and await _settle(deps, session, order):
+            return None
+        fresh = await deps.storage.get_payment(order.id)
+        if fresh is not None and fresh.status != PaymentStatus.PENDING.value:
+            # Заказ провели уведомление или сверка — и человеку уже сказали.
+            return None
+        # Платёж ЮKassa отменила (не оплачен вовремя) или по нему больше не
+        # заплатить: ссылка мертва, заказ закрываем и заводим новый.
+        await deps.storage.mark_canceled(order.id)
+        deps.logger.info(
+            "payment_link_replaced", user_id=int(session.user.id), payment_id=order.id
+        )
+    await _say(deps, session, texts.payment_failed().text)
+    return None
+
+
+async def settle_on_demand(deps: Deps, session: Session) -> bool:
+    """Спрашивает ЮKassa о живых ссылках человека и проводит оплаченные.
+
+    Зовётся кнопками покупки, профилем и тарифами (сессия 14, шаг 2):
+    уведомление могло опоздать, а сверка доходит до заказа только через
+    десять минут. Спрашиваются только ссылки моложе срока жизни: старые —
+    дело сверки, и дёргать ЮKassa на каждом открытии профиля незачем.
+    True — что-то провели, и человеку уже сказано, что тариф включён.
+    """
+    if deps.cards is None:
+        return False
+    linked = await deps.storage.linked_orders(
+        session.user.id,
+        method=PaymentMethod.CARD.value,
+        created_after=deps.now()
+        - timedelta(minutes=deps.settings.payment_link_ttl_minutes),
     )
+    settled = False
+    for order in linked:
+        settled = await _settle(deps, session, order) or settled
+    return settled
+
+
+async def _wait_for_link(deps: Deps, order: Payment) -> Payment | None:
+    """Ждёт ссылку, которую делает соседнее нажатие; None — не дождались."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + _LINK_WAIT_SECONDS
+    while loop.time() < deadline:
+        await asyncio.sleep(_LINK_POLL_SECONDS)
+        fresh = await deps.storage.get_payment(order.id)
+        if fresh is None or fresh.status != PaymentStatus.PENDING.value:
+            return None
+        if fresh.confirmation_url is not None:
+            return fresh
+    return None
+
+
+async def _link_state(deps: Deps, order: Payment) -> ChargeStatus:
+    """Что ЮKassa знает о платеже по ссылке. Не ответила — считаем живым.
+
+    Живым, а не мёртвым: мёртвая означала бы вторую ссылку, а вторая рабочая
+    ссылка — это вторая оплата. Хуже, чем лишний раз показать ту же.
+    """
+    assert deps.cards is not None and order.external_id is not None
+    try:
+        return await deps.cards.charge_status(order.external_id)
+    except Exception as error:
+        deps.logger.warning(
+            "payment_link_check_failed",
+            user_id=int(order.user_id),
+            error=type(error).__name__,
+        )
+        return ChargeStatus.PENDING
+
+
+async def _same_link(deps: Deps, session: Session, order: Payment) -> tuple[str, str]:
+    """Ссылка живого заказа и почта её чека; о сменённой почте — честно."""
+    assert order.confirmation_url is not None
+    issued = order.receipt_email or "" if deps.settings.receipts_ready else ""
+    current = session.user.email
+    if issued and current and current != issued:
+        await _say(
+            deps, session, texts.email_kept_for_next(new=current, issued=issued).text
+        )
+    return order.confirmation_url, issued
+
+
+async def _settle(deps: Deps, session: Session, order: Payment) -> bool:
+    """Спрашивает ЮKassa о платеже и, если он оплачен, проводит заказ.
+
+    Тем же ``confirm``, что уведомление и сверка: выдача остаётся одной,
+    кто бы ни успел первым. True — провели этим вызовом и человеку сказали.
+    """
+    assert deps.cards is not None and order.external_id is not None
+    try:
+        paid = await deps.cards.is_paid(order.external_id, expected_rub=order.amount)
+    except Exception as error:
+        deps.logger.warning(
+            "payment_check_failed",
+            user_id=int(order.user_id),
+            error=type(error).__name__,
+        )
+        return False
+    if not paid:
+        return False
+    renewal = await is_card_renewal(deps, order)
+    confirmed = await confirm(deps, order.id)
+    if confirmed is None:
+        return False
+    deps.logger.info(
+        "payment_confirmed_on_demand",
+        user_id=int(order.user_id),
+        payment_id=order.id,
+    )
+    await announce(deps, session, confirmed, renewal=renewal)
+    return True
 
 
 def _stars_on_sale(deps: Deps) -> bool:

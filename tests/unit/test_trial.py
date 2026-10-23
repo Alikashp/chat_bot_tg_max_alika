@@ -80,6 +80,14 @@ async def _take(trial: Deps, session: Session, cards: FakeCards) -> Payment:
     return order
 
 
+async def _two_links(trial: Deps, session: Session, clock: FrozenClock) -> None:
+    """Две ссылки на 1 ₽. Пока первая жива, вторую не дают (сессия 14) —
+    поэтому вторая берётся, когда срок жизни первой вышел."""
+    await payments.start_trial(trial, session)
+    clock.advance(minutes=trial.settings.payment_link_ttl_minutes + 1)
+    await payments.start_trial(trial, session)
+
+
 def _offered(messenger: FakeMessenger) -> bool:
     return any(sent.text == texts.trial_offer().text for sent in messenger.texts)
 
@@ -247,8 +255,7 @@ async def test_a_second_paid_ruble_gives_no_second_trial(
     clock: FrozenClock,
 ) -> None:
     """Две ссылки взяты до оплаты, оплачены обе — пробный период один."""
-    await payments.start_trial(trial, session)
-    await payments.start_trial(trial, session)
+    await _two_links(trial, session, clock)
     first, second = (order_id for order_id, _ in cards.created)
     assert await payments.confirm(trial, first) is not None
     clock.advance(hours=1)
@@ -268,10 +275,13 @@ async def test_a_second_paid_ruble_gives_no_second_trial(
 
 
 async def test_two_orders_confirmed_at_once_give_one_trial(
-    trial: Deps, session: Session, cards: FakeCards, storage: InMemoryStorage
+    trial: Deps,
+    session: Session,
+    cards: FakeCards,
+    storage: InMemoryStorage,
+    clock: FrozenClock,
 ) -> None:
-    await payments.start_trial(trial, session)
-    await payments.start_trial(trial, session)
+    await _two_links(trial, session, clock)
     first, second = (order_id for order_id, _ in cards.created)
 
     granted = await asyncio.gather(
@@ -632,7 +642,13 @@ async def test_another_address_returns_to_the_trial_not_to_a_tariff(
     messenger: FakeMessenger,
     storage: InMemoryStorage,
 ) -> None:
-    """«Другая почта» на экране пробного заказа ведёт обратно к пробному."""
+    """«Другая почта» на экране пробного заказа ведёт обратно к пробному.
+
+    С сессии 14 — к той же ссылке: неоплаченный платёж ЮKassa не поменять,
+    а вторая рабочая ссылка — это вторая оплата. Новая почта — для следующих
+    чеков (подробно — tests/unit/test_one_live_link.py).
+    """
+    cards.paid = False
     fiscal = replace(
         trial,
         settings=replace(
@@ -666,9 +682,10 @@ async def test_another_address_returns_to_the_trial_not_to_a_tariff(
         ),
     )
 
-    assert [amount for _, amount in cards.created] == [1, 1]
-    receipt = cards.receipts[-1]
-    assert receipt is not None and receipt.email == "new@mail.ru"
+    assert [amount for _, amount in cards.created] == [1]
+    assert messenger.last_text.text.startswith("Пробный период")
+    user = await storage.get_user_by_id(session.user.id)
+    assert user is not None and user.email == "new@mail.ru"
 
 
 # --- Возврат --------------------------------------------------------------
@@ -723,8 +740,7 @@ async def test_refunding_an_unused_ruble_keeps_the_trial(
     clock: FrozenClock,
 ) -> None:
     """Лишний 1 ₽ вернули — пробный период, оплаченный первым, остаётся."""
-    await payments.start_trial(trial, session)
-    await payments.start_trial(trial, session)
+    await _two_links(trial, session, clock)
     first, second = (order_id for order_id, _ in cards.created)
     await payments.confirm(trial, first)
     clock.advance(hours=1)

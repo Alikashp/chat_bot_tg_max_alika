@@ -340,6 +340,10 @@ payments = Table(
     Column("docs_version", String(32), nullable=True),
     # Заказ на пробный период: 1 ₽ за три дня «Лайта» с сохранением карты.
     Column("trial", Boolean, nullable=False, server_default=false()),
+    # Выданная ссылка на оплату и почта её чека (сессия 14): повторное
+    # нажатие отдаёт ту же ссылку, а не заводит вторую рабочую.
+    Column("confirmation_url", Text, nullable=True),
+    Column("receipt_email", String(254), nullable=True),
     CheckConstraint("amount > 0", name="ck_payments_amount"),
 )
 

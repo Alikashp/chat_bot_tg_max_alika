@@ -478,6 +478,11 @@ class FakeCards:
         #: Чеки, ушедшие вместе с платежами, — по одному на каждый вызов.
         #: None означает, что чек не отправляли вовсе.
         self.receipts: list[Receipt | None] = []
+        #: Создание платежа отдаёт управление петле: так два нажатия разом
+        #: правда идут одновременно (сессия 14).
+        self.slow: bool = False
+        #: Сбой вопроса «чем кончился платёж» — отдельно от прочих.
+        self.status_error: Exception | None = None
 
     async def create_payment(
         self,
@@ -490,6 +495,8 @@ class FakeCards:
     ) -> PaymentIntent:
         if self.error is not None:
             raise self.error
+        if self.slow:
+            await asyncio.sleep(0.05)
         self.saved_requested = save_method
         self.receipts.append(receipt)
         self.created.append((order_id, amount_rub))
@@ -531,7 +538,12 @@ class FakeCards:
         self.status_asked.append(external_id)
         if self.error is not None:
             raise self.error
-        return self.states[external_id]
+        if self.status_error is not None:
+            raise self.status_error
+        if external_id in self.states:
+            return self.states[external_id]
+        # Платёж по ссылке: его исход — тот же, что отвечает «оплачено ли».
+        return ChargeStatus.CHARGED if self.paid else ChargeStatus.PENDING
 
     async def saved_method_of(self, external_id: str) -> str | None:
         return self.saved_method

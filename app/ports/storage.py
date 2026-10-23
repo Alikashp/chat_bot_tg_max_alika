@@ -416,6 +416,55 @@ class Storage(Protocol):
         """
         ...
 
+    async def open_or_create_payment(
+        self,
+        *,
+        user_id: UserId,
+        tariff: TariffId,
+        method: str,
+        amount: int,
+        currency: str,
+        docs_version: str,
+        trial: bool,
+        linked_after: datetime,
+        making_after: datetime,
+    ) -> tuple[Payment, bool]:
+        """Живой неоплаченный заказ на ту же покупку — или новый (сессия 14).
+
+        Та же покупка — тот же тариф, способ и признак пробного периода.
+        Живой — со ссылкой, выданной не раньше ``linked_after``, или ещё без
+        ссылки, но заведённый не раньше ``making_after``: его ссылку прямо
+        сейчас делает соседнее нажатие. Найти и завести — одна операция:
+        двумя запросами два одновременных нажатия оба увидели бы «нет» и
+        завели бы два заказа. Второе значение — завели ли новый.
+        """
+        ...
+
+    async def remember_link(
+        self, payment_id: str, *, url: str, receipt_email: str | None
+    ) -> None:
+        """Запоминает выданную ссылку и почту её чека."""
+        ...
+
+    async def mark_canceled(self, payment_id: str) -> bool:
+        """Заказ без денег закрыт: ссылка не открылась или ЮKassa её отменила.
+
+        Только из ``pending``. True — закрыли этим вызовом.
+        """
+        ...
+
+    async def linked_orders(
+        self, user_id: UserId, *, method: str, created_after: datetime
+    ) -> list[Payment]:
+        """Неоплаченные заказы человека с выданной ссылкой, новые первыми.
+
+        Автосписания сюда не попадают: ссылки у них нет — человек их не
+        оплачивает, они списываются сами. Ссылка запоминается только после
+        того, как платёж привязан к заказу, поэтому у каждого найденного
+        заказа есть и номер платежа у провайдера.
+        """
+        ...
+
     async def ever_paid(self, user_id: UserId) -> bool:
         """Платил ли человек хоть раз: есть ли оплаченный или возвращённый заказ.
 

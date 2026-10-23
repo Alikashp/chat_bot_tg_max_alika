@@ -2124,3 +2124,134 @@ async def test_an_undelivered_mailing_grants_no_gift(
     )
 
     assert await storage.gifts_of(user.id) == []
+
+
+# --- Сессия 14: одна живая ссылка на одну покупку ---------------------------
+
+
+async def _open(
+    storage: Storage,
+    user: User,
+    now: datetime,
+    *,
+    tariff: TariffId = TariffId.LITE,
+    method: str = "card",
+    trial: bool = True,
+) -> tuple[Payment, bool]:
+    return await storage.open_or_create_payment(
+        user_id=user.id,
+        tariff=tariff,
+        method=method,
+        amount=1 if trial else 299,
+        currency="RUB",
+        docs_version="2026-10-12",
+        trial=trial,
+        linked_after=now - timedelta(minutes=60),
+        making_after=now - timedelta(seconds=60),
+    )
+
+
+async def test_a_live_order_is_found_instead_of_a_new_one(storage: Storage) -> None:
+    user = await _make_user(storage)
+    now = datetime.now(UTC)
+    first, created = await _open(storage, user, now)
+    assert created
+    await storage.attach_external_id(first.id, "yk-1")
+    await storage.remember_link(first.id, url="https://pay/1", receipt_email="a@b.ru")
+
+    again, created_again = await _open(storage, user, now)
+
+    assert (again.id, created_again) == (first.id, False)
+    assert (again.confirmation_url, again.receipt_email) == ("https://pay/1", "a@b.ru")
+
+
+async def test_an_order_being_made_is_found_too(storage: Storage) -> None:
+    """Ссылки ещё нет — её делает соседнее нажатие: второго заказа не будет."""
+    user = await _make_user(storage)
+    now = datetime.now(UTC)
+    first, _ = await _open(storage, user, now)
+
+    again, created = await _open(storage, user, now)
+
+    assert (again.id, created) == (first.id, False)
+
+
+async def test_an_order_without_a_link_waits_only_a_minute(storage: Storage) -> None:
+    """Ссылку делают не дольше минуты: старше — упавшее нажатие, не живое."""
+    user = await _make_user(storage)
+    now = datetime.now(UTC)
+    first, _ = await _open(storage, user, now)
+
+    soon, created_soon = await _open(storage, user, now + timedelta(seconds=59))
+    assert (soon.id, created_soon) == (first.id, False)
+
+    _, created_later = await _open(storage, user, now + timedelta(seconds=61))
+    assert created_later
+
+
+async def test_other_purchases_and_dead_orders_are_not_live(storage: Storage) -> None:
+    user = await _make_user(storage)
+    now = datetime.now(UTC)
+    first, _ = await _open(storage, user, now)
+    await storage.remember_link(first.id, url="https://pay/1", receipt_email=None)
+
+    for kwargs in (
+        {"trial": False},
+        {"tariff": TariffId.PRO, "trial": False},
+        {"method": "stars"},
+    ):
+        _, created = await _open(storage, user, now, **kwargs)
+        assert created, kwargs
+
+    # Через срок жизни ссылки — заказ уже не живой.
+    later, created = await _open(storage, user, now + timedelta(minutes=61))
+    assert created and later.id != first.id
+    # Закрытый — тоже.
+    assert await storage.mark_canceled(later.id)
+    assert not await storage.mark_canceled(later.id)
+    _, created = await _open(storage, user, now + timedelta(minutes=61))
+    assert created
+
+
+async def test_parallel_presses_open_one_order(storage: Storage) -> None:
+    user = await _make_user(storage)
+    now = datetime.now(UTC)
+
+    opened = await asyncio.gather(*(_open(storage, user, now) for _ in range(5)))
+
+    assert sum(created for _, created in opened) == 1
+    assert len({order.id for order, _ in opened}) == 1
+
+
+async def test_linked_orders_are_the_pending_ones_with_a_link(storage: Storage) -> None:
+    user = await _make_user(storage)
+    now = datetime.now(UTC)
+    old, _ = await _open(storage, user, now)
+    await storage.attach_external_id(old.id, "yk-old")
+    await storage.remember_link(old.id, url="https://pay/old", receipt_email=None)
+    newer, _ = await _open(storage, user, now, trial=False)
+    await storage.attach_external_id(newer.id, "yk-new")
+    await storage.remember_link(newer.id, url="https://pay/new", receipt_email=None)
+    # Без ссылки (автосписание) и оплаченный — не в счёт.
+    renewal = await storage.create_payment(
+        user_id=user.id,
+        tariff=TariffId.LITE,
+        method="card",
+        amount=299,
+        currency="RUB",
+        docs_version="2026-10-12",
+    )
+    await storage.attach_external_id(renewal.id, "yk-renewal")
+
+    found = await storage.linked_orders(
+        user.id, method="card", created_after=now - timedelta(minutes=60)
+    )
+
+    assert {order.id for order in found} == {old.id, newer.id}
+    assert found[0].created_at >= found[-1].created_at
+    assert (
+        await storage.linked_orders(
+            user.id, method="card", created_after=datetime.now(UTC) + timedelta(days=1)
+        )
+        == []
+    )

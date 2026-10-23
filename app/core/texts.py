@@ -1349,6 +1349,36 @@ def email_bad() -> Screen:
     return Screen(text=EMAIL_BAD, next_step="ждём почту ещё раз")
 
 
+def email_kept_for_next(*, new: str, issued: str) -> Screen:
+    """Почту сменили, когда ссылка уже выдана (сессия 14).
+
+    Неоплаченный платёж ЮKassa не отменить и не поменять, а вторая рабочая
+    ссылка — это вторая оплата. Поэтому ссылка остаётся прежней, и человеку
+    честно сказано, куда уйдёт её чек.
+    """
+    return Screen(
+        text=(
+            f"Почту {new} запомнил — на неё придут следующие чеки.\n"
+            f"Эта ссылка уже выдана, чек по ней уйдёт на {issued} 👇"
+        ),
+        next_step="следом — экран заказа с той же ссылкой",
+    )
+
+
+#: Два нажатия разом: ссылку первого ещё делает ЮKassa, и дождаться её не
+#: вышло. Второй ссылки не заводим — первая придёт сама.
+PAYMENT_LINK_COMING = (
+    "Ссылка на оплату уже готовится — пришлю её следующим сообщением 👇"
+)
+
+
+def payment_link_coming() -> Screen:
+    return Screen(
+        text=PAYMENT_LINK_COMING,
+        next_step="ссылку пришлёт соседнее нажатие",
+    )
+
+
 #: Что человек увидит на кнопке отмены и в напоминаниях.
 BUTTON_SUBSCRIPTION = "⚙️ Подписка"
 BUTTON_SUBSCRIPTION_OFF = "Отключить продление"
@@ -1908,6 +1938,8 @@ def _all_screens() -> tuple[Screen, ...]:
         tariffs_screen(with_presentations=False),
         payment_methods(TariffId.PRO, price_rub=599, stars=524),
         email_ask(),
+        email_kept_for_next(new="second@mail.ru", issued="alika@mail.ru"),
+        payment_link_coming(),
         email_bad(),
         payment_order(
             TariffId.PRO,

@@ -779,6 +779,121 @@ class PostgresStorage:
             )
         return payment
 
+    async def open_or_create_payment(
+        self,
+        *,
+        user_id: UserId,
+        tariff: TariffId,
+        method: str,
+        amount: int,
+        currency: str,
+        docs_version: str,
+        trial: bool,
+        linked_after: datetime,
+        making_after: datetime,
+    ) -> tuple[Payment, bool]:
+        """Поиск и запись — под транзакционной блокировкой на человека.
+
+        Условный INSERT здесь не годится: неоплаченные заказы остаются в
+        базе навсегда, и уникальность по покупке заперла бы её. Поэтому два
+        одновременных нажатия разводит рекомендательная блокировка по номеру
+        человека: второе ждёт конца транзакции первого и уже видит его заказ.
+        """
+        live = (
+            select(payments)
+            .where(
+                payments.c.user_id == user_id,
+                payments.c.status == PaymentStatus.PENDING.value,
+                payments.c.tariff == tariff.value,
+                payments.c.method == method,
+                payments.c.trial.is_(trial),
+                or_(
+                    (payments.c.confirmation_url.is_not(None))
+                    & (payments.c.created_at >= linked_after),
+                    (payments.c.confirmation_url.is_(None))
+                    & (payments.c.created_at >= making_after),
+                ),
+            )
+            .order_by(payments.c.created_at.desc())
+            .limit(1)
+        )
+        async with self._session() as session, session.begin():
+            await session.execute(
+                select(func.pg_advisory_xact_lock(_ORDER_LOCK, int(user_id)))
+            )
+            row = (await session.execute(live)).one_or_none()
+            if row is not None:
+                return _to_payment(row), False
+            payment = Payment(
+                id=str(uuid4()),
+                user_id=user_id,
+                tariff=tariff,
+                method=method,
+                amount=amount,
+                currency=currency,
+                status=PaymentStatus.PENDING.value,
+                created_at=self._now(),
+                docs_version=docs_version,
+                trial=trial,
+            )
+            await session.execute(
+                insert(payments).values(
+                    id=payment.id,
+                    user_id=int(user_id),
+                    tariff=tariff.value,
+                    method=method,
+                    amount=amount,
+                    currency=currency,
+                    status=payment.status,
+                    created_at=payment.created_at,
+                    docs_version=docs_version,
+                    trial=trial,
+                )
+            )
+        return payment, True
+
+    async def remember_link(
+        self, payment_id: str, *, url: str, receipt_email: str | None
+    ) -> None:
+        query = (
+            update(payments)
+            .where(payments.c.id == payment_id)
+            .values(confirmation_url=url, receipt_email=receipt_email)
+        )
+        async with self._session() as session, session.begin():
+            await session.execute(query)
+
+    async def mark_canceled(self, payment_id: str) -> bool:
+        query = (
+            update(payments)
+            .where(
+                payments.c.id == payment_id,
+                payments.c.status == PaymentStatus.PENDING.value,
+            )
+            .values(status=PaymentStatus.CANCELED.value)
+            .returning(payments.c.id)
+        )
+        async with self._session() as session, session.begin():
+            return (await session.execute(query)).one_or_none() is not None
+
+    async def linked_orders(
+        self, user_id: UserId, *, method: str, created_after: datetime
+    ) -> list[Payment]:
+        query = (
+            select(payments)
+            .where(
+                payments.c.user_id == user_id,
+                payments.c.status == PaymentStatus.PENDING.value,
+                payments.c.method == method,
+                payments.c.confirmation_url.is_not(None),
+                payments.c.created_at >= created_after,
+            )
+            .order_by(payments.c.created_at.desc())
+        )
+        async with self._session() as session:
+            rows = (await session.execute(query)).all()
+        return [_to_payment(row) for row in rows]
+
     async def ever_paid(self, user_id: UserId) -> bool:
         query = (
             select(payments.c.id)
@@ -1330,6 +1445,8 @@ def _to_payment(row: Any) -> Payment:
         paid_at=row.paid_at,
         docs_version=row.docs_version,
         trial=row.trial,
+        confirmation_url=row.confirmation_url,
+        receipt_email=row.receipt_email,
     )
 
 
@@ -1372,6 +1489,10 @@ def _utc_now() -> datetime:
 #: Статусы заказа, при которых деньги у человека были взяты.
 #: Единственная строка таблицы ``star_ledger``.
 _LEDGER_ROW = 1
+
+#: Пространство рекомендательных блокировок заказа (сессия 14): первое число
+#: пары, второе — номер человека. Своё, чтобы не пересечься с чужими.
+_ORDER_LOCK = 14_001
 
 _MONEY_TAKEN = (PaymentStatus.PAID.value, PaymentStatus.REFUNDED.value)
 

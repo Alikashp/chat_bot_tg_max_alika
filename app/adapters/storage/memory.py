@@ -510,6 +510,88 @@ class InMemoryStorage:
         self._payments[payment.id] = payment
         return payment
 
+    async def open_or_create_payment(
+        self,
+        *,
+        user_id: UserId,
+        tariff: TariffId,
+        method: str,
+        amount: int,
+        currency: str,
+        docs_version: str,
+        trial: bool,
+        linked_after: datetime,
+        making_after: datetime,
+    ) -> tuple[Payment, bool]:
+        # Ни одного await между поиском и записью: в памяти это и есть
+        # атомарность.
+        live = [
+            order
+            for order in self._payments.values()
+            if order.user_id == user_id
+            and order.status == PaymentStatus.PENDING.value
+            and order.tariff is tariff
+            and order.method == method
+            and order.trial is trial
+            and (
+                order.created_at >= linked_after
+                if order.confirmation_url is not None
+                else order.created_at >= making_after
+            )
+        ]
+        if live:
+            return max(live, key=lambda order: order.created_at), False
+        payment = Payment(
+            id=str(uuid4()),
+            user_id=user_id,
+            tariff=tariff,
+            method=method,
+            amount=amount,
+            currency=currency,
+            status=PaymentStatus.PENDING.value,
+            created_at=self._now(),
+            docs_version=docs_version,
+            trial=trial,
+        )
+        self._payments[payment.id] = payment
+        return payment, True
+
+    async def remember_link(
+        self, payment_id: str, *, url: str, receipt_email: str | None
+    ) -> None:
+        order = self._payments[payment_id]
+        self._payments[payment_id] = replace(
+            order, confirmation_url=url, receipt_email=receipt_email
+        )
+
+    async def mark_canceled(self, payment_id: str) -> bool:
+        order = self._payments.get(payment_id)
+        if order is None or order.status != PaymentStatus.PENDING.value:
+            return False
+        self._payments[payment_id] = replace(order, status=PaymentStatus.CANCELED.value)
+        return True
+
+    async def linked_orders(
+        self, user_id: UserId, *, method: str, created_after: datetime
+    ) -> list[Payment]:
+        found = [
+            order
+            for order in self._payments.values()
+            if order.user_id == user_id
+            and order.status == PaymentStatus.PENDING.value
+            and order.method == method
+            and order.confirmation_url is not None
+            and order.created_at >= created_after
+        ]
+        return sorted(found, key=lambda order: order.created_at, reverse=True)
+
+    def orders_of(self, user_id: UserId) -> list[Payment]:
+        """Все заказы человека по порядку — только для тестов."""
+        return sorted(
+            (order for order in self._payments.values() if order.user_id == user_id),
+            key=lambda order: order.created_at,
+        )
+
     async def ever_paid(self, user_id: UserId) -> bool:
         return any(
             payment.user_id == user_id

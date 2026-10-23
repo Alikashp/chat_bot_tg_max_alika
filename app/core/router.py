@@ -333,6 +333,13 @@ async def _route_action(deps: Deps, session: Session, action: str) -> None:
         await repeat.share_last(deps, session, share_kind)
         return
 
+    if _is_purchase(action) and await payments.settle_on_demand(deps, session):
+        # Человек уже заплатил, а уведомление не дошло: вместо новой ссылки
+        # тариф включён и об этом сказано (сессия 14, шаг 2).
+        return
+    if action in _SHOWS_TARIFF and await payments.settle_on_demand(deps, session):
+        session = await _refreshed(deps, session)
+
     bought = parse_buy_action(action)
     if bought is not None:
         await _open_payment(deps, session, bought)
@@ -431,6 +438,29 @@ async def _route_action(deps: Deps, session: Session, action: str) -> None:
             # Кнопка из версии, которой больше нет. Тупика быть не должно.
             deps.logger.warning("unknown_action", user_id=int(session.user.id))
             await _say(deps, session, texts.unsupported_input().text)
+
+
+#: Кнопки, которые показывают тариф человека: оплату, прошедшую минуту назад,
+#: они обязаны уже видеть (сессия 14, шаг 2).
+_SHOWS_TARIFF = frozenset(
+    {Action.MENU_PROFILE, Action.MENU_TARIFFS, Action.OPEN_TARIFFS}
+)
+
+
+def _is_purchase(action: str) -> bool:
+    """Кнопка покупки: тариф, способ оплаты, пробный период, другая почта."""
+    return (
+        action in (Action.TRIAL, Action.PAYWALL_TRIAL)
+        or parse_buy_action(action) is not None
+        or parse_method_action(action) is not None
+        or parse_email_action(action) is not None
+    )
+
+
+async def _refreshed(deps: Deps, session: Session) -> Session:
+    """Тот же разговор, но с человеком, перечитанным после выдачи тарифа."""
+    user = await deps.storage.get_user_by_id(session.user.id)
+    return replace(session, user=user) if user is not None else session
 
 
 async def _open_payment(deps: Deps, session: Session, tariff_id: str) -> None:

@@ -1174,6 +1174,29 @@ async def _order_with_link(
     return None
 
 
+async def settle_on_demand(deps: Deps, session: Session) -> bool:
+    """Спрашивает ЮKassa о живых ссылках человека и проводит оплаченные.
+
+    Зовётся кнопками покупки, профилем и тарифами (сессия 14, шаг 2):
+    уведомление могло опоздать, а сверка доходит до заказа только через
+    десять минут. Спрашиваются только ссылки моложе срока жизни: старые —
+    дело сверки, и дёргать ЮKassa на каждом открытии профиля незачем.
+    True — что-то провели, и человеку уже сказано, что тариф включён.
+    """
+    if deps.cards is None:
+        return False
+    linked = await deps.storage.linked_orders(
+        session.user.id,
+        method=PaymentMethod.CARD.value,
+        created_after=deps.now()
+        - timedelta(minutes=deps.settings.payment_link_ttl_minutes),
+    )
+    settled = False
+    for order in linked:
+        settled = await _settle(deps, session, order) or settled
+    return settled
+
+
 async def _wait_for_link(deps: Deps, order: Payment) -> Payment | None:
     """Ждёт ссылку, которую делает соседнее нажатие; None — не дождались."""
     loop = asyncio.get_running_loop()

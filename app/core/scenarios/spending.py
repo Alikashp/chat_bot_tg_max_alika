@@ -28,17 +28,32 @@ from app.core.limits import (
     norm_renewal,
     tariff_continues,
 )
-from app.core.models import User
+from app.core.models import Subscription, User
 from app.core.scenarios.deps import Deps, Session
-from app.ports.payments import SubscriptionStatus
+from app.ports.payments import PaymentMethod, SubscriptionStatus
 
 
 async def renewing(deps: Deps, session: Session) -> bool:
     """Ждём ли очередного списания по подписке."""
-    subscription = await deps.storage.get_subscription(session.user.id)
+    return will_renew(deps, await deps.storage.get_subscription(session.user.id))
+
+
+def will_renew(deps: Deps, subscription: Subscription | None) -> bool:
+    """Продлится ли эта подписка сама.
+
+    Карточная — только там, где карта сейчас продаётся: в Telegram без неё
+    (сессия 15) мы по карте больше не списываем, и подписка лишь дорабатывает
+    оплаченный срок. Обещать «продлится сам» здесь значило бы оставить
+    человека без тарифа в тот день, когда он на него рассчитывал.
+    """
+    if (
+        subscription is None
+        or subscription.status == SubscriptionStatus.CANCELLED.value
+    ):
+        return False
     return (
-        subscription is not None
-        and subscription.status != SubscriptionStatus.CANCELLED.value
+        subscription.method != PaymentMethod.CARD.value
+        or deps.settings.card_sales_enabled
     )
 
 

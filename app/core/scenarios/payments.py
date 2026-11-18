@@ -43,9 +43,9 @@ from app.core.models import (
     User,
 )
 from app.core.receipts import Receipt, receipt_for
-from app.core.scenarios import keyboards
+from app.core.scenarios import keyboards, spending
 from app.core.scenarios.deps import Deps, Session
-from app.core.tariffs import RUB, STARS, TRIAL, stars_price, tariff_of
+from app.core.tariffs import PAID_TARIFFS, RUB, STARS, TRIAL, stars_price, tariff_of
 from app.ports.payments import (
     ChargeStatus,
     PaymentMethod,
@@ -69,7 +69,7 @@ async def choose_method(deps: Deps, session: Session, tariff_id: TariffId) -> No
         await _payments_not_ready(deps, session)
         return
 
-    cards = deps.cards is not None
+    cards = _cards_on_sale(deps)
     stars = _stars_price(deps, tariff_id) if _stars_on_sale(deps) else None
 
     if cards and stars is not None:
@@ -93,8 +93,11 @@ async def choose_method(deps: Deps, session: Session, tariff_id: TariffId) -> No
 
 async def start_card(deps: Deps, session: Session, tariff_id: TariffId) -> None:
     """Заводит заказ и показывает условия вместе со ссылкой на оплату."""
-    if deps.cards is None:
-        await _payments_not_ready(deps, session)
+    if deps.cards is None or not _cards_on_sale(deps):
+        # Кнопка «💳 Картой» живёт в переписке и после того, как карту в
+        # Telegram выключили (сессия 15). Платежа ЮKassa по ней нет — ведём к
+        # тому способу, который продаётся сейчас.
+        await choose_method(deps, session, tariff_id)
         return
 
     if await _renews_otherwise(deps, session, PaymentMethod.CARD):
@@ -158,6 +161,10 @@ async def trial_offered(deps: Deps, session: Session) -> bool:
     """
     if not deps.settings.trial_enabled or not deps.settings.documents_ready:
         return False
+    if not deps.settings.card_sales_enabled:
+        # Пробный период оплачивается картой — там, где её не продаём
+        # (Telegram, сессия 15), его нет.
+        return False
     if deps.cards is None or not deps.cards.recurring:
         return False
     return not await deps.storage.ever_paid(session.user.id)
@@ -173,7 +180,7 @@ async def start_trial(deps: Deps, session: Session) -> None:
     if deps.cards is None or not await trial_offered(deps, session):
         await deps.messenger.send_text(
             session.chat,
-            texts.tariffs_screen(with_presentations=deps.presentations_on).text,
+            tariffs_screen(deps).text,
             keyboard=keyboards.tariffs(),
             show_menu=False,
         )
@@ -291,17 +298,34 @@ async def ask_for_email(
     почта», заметив опечатку на экране заказа. ``trial`` — вернуться надо к
     пробному периоду, а не к обычной оплате тарифа.
     """
+    if not _cards_on_sale(deps):
+        # Почта нужна только для чека карточной оплаты. Где карту не продаём
+        # (Telegram, сессия 15), «Другая почта» из старого заказа ведёт туда
+        # же, куда вела бы покупка.
+        if trial:
+            await start_trial(deps, session)
+        else:
+            await choose_method(deps, session, tariff_id)
+        return
     target = TRIAL_TARGET if trial else tariff_id.value
     await deps.storage.set_pending(session.user.id, pending.await_email(target))
     await deps.messenger.send_text(session.chat, texts.email_ask().text)
 
 
-async def remember_email(deps: Deps, session: Session, written: str) -> None:
+async def remember_email(deps: Deps, session: Session, written: str) -> bool:
     """Принимает почту для чека и возвращает человека к оплате.
 
     Ожидание снимается только на годном адресе. Иначе опечатка выкидывала бы
     человека из покупки в обычный чат, и он бы даже не понял, что произошло.
+
+    False — почта уже не нужна: её спросили до того, как карту в этом
+    мессенджере выключили (сессия 15). Ожидание снято, а сообщение человека
+    вызывающий обрабатывает как обычное — оно могло быть вовсе не почтой.
     """
+    if not deps.settings.card_sales_enabled:
+        await _clear_pending(deps, session)
+        deps.logger.info("receipt_email_not_needed", user_id=int(session.user.id))
+        return False
     target = pending.parse_await_email(session.user.pending)
     tariff_id = TRIAL.tariff if target == TRIAL_TARGET else _tariff(target)
     if tariff_id is None:
@@ -309,15 +333,15 @@ async def remember_email(deps: Deps, session: Session, written: str) -> None:
         await _clear_pending(deps, session)
         await deps.messenger.send_text(
             session.chat,
-            texts.tariffs_screen(with_presentations=deps.presentations_on).text,
+            tariffs_screen(deps).text,
             keyboard=keyboards.tariffs(),
         )
-        return
+        return True
 
     email = normalise_email(written)
     if email is None:
         await deps.messenger.send_text(session.chat, texts.email_bad().text)
-        return
+        return True
 
     await deps.storage.set_email(session.user.id, email)
     await deps.storage.set_pending(session.user.id, None)
@@ -327,8 +351,9 @@ async def remember_email(deps: Deps, session: Session, written: str) -> None:
     with_email = replace(session, user=replace(session.user, email=email))
     if target == TRIAL_TARGET:
         await start_trial(deps, with_email)
-        return
+        return True
     await start_card(deps, with_email, tariff_id)
+    return True
 
 
 def _tariff(tariff_id: str | None) -> TariffId | None:
@@ -516,9 +541,12 @@ async def _renews_otherwise(
     кнопки способов живут в переписке, и нажать старую можно когда угодно.
     """
     subscription = await deps.storage.get_subscription(session.user.id)
+    # Не продлится сама — второго списания не будет: карточная подписка в
+    # Telegram без продажи картой только дорабатывает срок (сессия 15), и
+    # звёзды для неё — замена, а не вторая подписка.
     if (
         subscription is None
-        or subscription.status == SubscriptionStatus.CANCELLED.value
+        or not spending.will_renew(deps, subscription)
         or subscription.method == method.value
     ):
         return False
@@ -774,12 +802,13 @@ async def announce(
         else deps.today()
     )
     subscription = await deps.storage.get_subscription(order.user_id)
-    renewing = (
-        subscription is not None
-        and subscription.status != SubscriptionStatus.CANCELLED.value
-    )
+    renewing = spending.will_renew(deps, subscription)
 
-    if order.trial:
+    if order.trial and not deps.settings.card_sales_enabled:
+        # Заказ на 1 ₽ из тех, что созданы до выключения карты, оплачен
+        # позже (сессия 15). Списания 299 ₽ после него не будет.
+        screen = texts.trial_started_not_renewing(until=texts.format_date(day))
+    elif order.trial:
         screen = texts.trial_started(
             until=texts.format_date(day), amount=tariff_of(order.tariff).price_rub
         )
@@ -852,18 +881,22 @@ async def _show_order(
         session.chat,
         screen.text,
         keyboard=_order_keyboard(
-            deps, email_target=tariff_id.value, url=url, receipt_to=receipt_to
+            deps,
+            email_target=tariff_id.value,
+            url=url,
+            receipt_to=receipt_to,
+            currency=currency,
         ),
         show_menu=False,
     )
 
 
 def _order_keyboard(
-    deps: Deps, *, email_target: str, url: str, receipt_to: str
+    deps: Deps, *, email_target: str, url: str, receipt_to: str, currency: str = RUB
 ) -> Keyboard:
     """Кнопки экрана заказа: оплатить, прочитать условия, поправить почту."""
     rows: list[tuple[Button, ...]] = [
-        (Button(text=texts.BUTTON_PAY_OPEN, url=url),),
+        (Button(text=texts.pay_button(currency), url=url),),
         (
             Button(text=texts.BUTTON_OFFER, url=deps.settings.offer_url),
             Button(text=texts.BUTTON_PRIVACY, url=deps.settings.privacy_url),
@@ -1270,6 +1303,43 @@ async def _settle(deps: Deps, session: Session, order: Payment) -> bool:
     )
     await announce(deps, session, confirmed, renewal=renewal)
     return True
+
+
+def _cards_on_sale(deps: Deps) -> bool:
+    """Продаём ли сейчас подписки картой в этом мессенджере (сессия 15).
+
+    Ключи магазина и продажа — разные вещи, как у звёзд: в Telegram ключи
+    остаются, чтобы довести уже созданные заказы, а продавать картой там
+    нельзя.
+    """
+    return deps.cards is not None and deps.settings.card_sales_enabled
+
+
+def shown_stars(deps: Deps, tariff_id: TariffId) -> int | None:
+    """Цена в звёздах там, где цена покупки — только в звёздах; иначе None.
+
+    Где карту не продают (Telegram, сессия 15), рублёвая цена — не цена
+    покупки, и экраны называют звёзды, даже если звёзды сейчас выключены:
+    купить можно будет только за них.
+    """
+    if deps.settings.card_sales_enabled:
+        return None
+    return _stars_price(deps, tariff_id)
+
+
+def renewal_stars(deps: Deps, tariff_id: TariffId) -> int | None:
+    """Цена продления звёздами — только когда звёзды правда продаются."""
+    return _stars_price(deps, tariff_id) if _stars_on_sale(deps) else None
+
+
+def tariffs_screen(deps: Deps) -> texts.Screen:
+    """Витрина тарифов с той ценой, по которой их здесь можно купить."""
+    stars = (
+        None
+        if deps.settings.card_sales_enabled
+        else {tariff_id: _stars_price(deps, tariff_id) for tariff_id in PAID_TARIFFS}
+    )
+    return texts.tariffs_screen(with_presentations=deps.presentations_on, stars=stars)
 
 
 def _stars_on_sale(deps: Deps) -> bool:

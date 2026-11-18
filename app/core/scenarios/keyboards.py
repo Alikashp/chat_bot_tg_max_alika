@@ -30,7 +30,7 @@ from app.core.actions import (
     regenerate_action,
     report_from_action,
 )
-from app.core.models import Button, Keyboard
+from app.core.models import Button, Keyboard, TariffId
 from app.core.tariffs import PAID_TARIFFS
 
 #: Постоянное меню (§2.1, фаза 10).
@@ -314,6 +314,23 @@ def my_subscription() -> Keyboard:
     """
     return Keyboard.row(
         Button(text=texts.BUTTON_MY_SUBSCRIPTION, action=Action.SUBSCRIPTION)
+    )
+
+
+def renew_by_stars(tariff_id: TariffId, stars: int | None) -> Keyboard:
+    """Под сообщением «сам тариф не продлится» (Telegram, сессия 15).
+
+    Кнопка ведёт к обычной покупке того же тарифа: покупка в Telegram и так
+    идёт звёздами, а условия заказа человек увидит до оплаты. Звёзды не
+    продаются — продлевать нечем, и остаётся выход в тарифы.
+    """
+    if stars is None:
+        return tariffs_or_profile()
+    return Keyboard.row(
+        Button(
+            text=texts.button_renew_stars(stars), action=buy_action(tariff_id.value)
+        ),
+        Button(text=texts.MENU_PROFILE, action=Action.MENU_PROFILE),
     )
 
 

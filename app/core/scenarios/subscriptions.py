@@ -28,7 +28,7 @@ from datetime import datetime, timedelta
 from app.core import texts
 from app.core.limits import current_day
 from app.core.models import Payment, StarCancel, Subscription, User
-from app.core.scenarios import keyboards, payments
+from app.core.scenarios import keyboards, payments, spending
 from app.core.scenarios.deps import Deps, Session, session_for
 from app.core.tariffs import RUB, tariff_of
 from app.ports.payments import (
@@ -55,6 +55,15 @@ async def show(deps: Deps, session: Session) -> None:
     if subscription.status == SubscriptionStatus.CANCELLED.value:
         screen = texts.subscription_stopped(subscription.tariff, until=until)
         keyboard = keyboards.tariffs_or_profile()
+    elif not spending.will_renew(deps, subscription):
+        # Карточная подписка там, где карту больше не продаём (Telegram,
+        # сессия 15): ни «следующего списания», ни «проверь карту» — срок
+        # дорабатывает, а продлить можно звёздами.
+        stars = payments.renewal_stars(deps, subscription.tariff)
+        screen = texts.subscription_not_renewing(
+            subscription.tariff, until=until, stars=stars
+        )
+        keyboard = keyboards.renew_by_stars(subscription.tariff, stars)
     elif subscription.status == SubscriptionStatus.PAST_DUE.value:
         screen = texts.subscription_failing(
             subscription.tariff,

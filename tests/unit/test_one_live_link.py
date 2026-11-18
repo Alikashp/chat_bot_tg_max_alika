@@ -74,7 +74,8 @@ def links(messenger: FakeMessenger) -> list[str]:
         if sent.keyboard is not None
         for row in sent.keyboard.rows
         for button in row
-        if button.text == texts.BUTTON_PAY_OPEN and button.url
+        if button.text in (texts.BUTTON_PAY_OPEN, texts.BUTTON_PAY_OPEN_STARS)
+        and button.url
     ]
 
 

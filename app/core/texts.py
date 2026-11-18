@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date
 
@@ -994,20 +995,24 @@ _FREE_SPENT = {
 }
 
 
-def paywall_free(kind: LimitKind, *, lite: Tariff, trial: Trial | None) -> Screen:
+def paywall_free(
+    kind: LimitKind, *, lite: Tariff, trial: Trial | None, stars: int | None = None
+) -> Screen:
     """Пейволл бесплатного тарифа: предложение Лайта (сессия 11).
 
     Образец заказчика — у презентаций, остальные написаны по нему: что
     кончилось бесплатное, «нужно ещё?» с предложением, что даёт Лайт —
     начиная с того, что кончилось. ``trial`` — пробный период, если он сейчас
     положен человеку: тогда «на 3 дня за 1 ₽», иначе цена Лайта в месяц.
+    ``stars`` — цена Лайта в звёздах там, где продаём только за звёзды
+    (Telegram, сессия 15): рублёвой цены покупки там быть не должно.
     Все числа — из реестра тарифов: поменяли тариф — поменялся и экран.
     """
     ask = "Нужна ещё?" if kind is LimitKind.PRESENTATIONS else "Нужно ещё?"
     offer = (
         f"Открой всё на {_days(trial.days)} за {_price(trial.price_rub, RUB)}:"
         if trial is not None
-        else f"Открой всё за {_price(lite.price_rub, RUB)} в месяц:"
+        else f"Открой всё за {_lite_price(lite, stars)} в месяц:"
     )
     per_day = f"{_messages(lite.daily_messages)} в день"
     gives = {
@@ -1022,14 +1027,21 @@ def paywall_free(kind: LimitKind, *, lite: Tariff, trial: Trial | None) -> Scree
     }[kind]
     return Screen(
         text=f"{_FREE_SPENT[kind]}\n{ask} {offer}\n{gives}",
-        buttons=(button_continue(lite=lite, trial=trial),),
+        buttons=(button_continue(lite=lite, trial=trial, stars=stars),),
     )
 
 
-def button_continue(*, lite: Tariff, trial: Trial | None) -> str:
+def button_continue(
+    *, lite: Tariff, trial: Trial | None, stars: int | None = None
+) -> str:
     """Кнопка к условиям пробного периода или к заказу Лайта."""
-    price = trial.price_rub if trial is not None else lite.price_rub
-    return f"🚀 Продолжить за {_price(price, RUB)}"
+    if trial is not None:
+        return f"🚀 Продолжить за {_price(trial.price_rub, RUB)}"
+    return f"🚀 Продолжить за {_lite_price(lite, stars)}"
+
+
+def _lite_price(lite: Tariff, stars: int | None) -> str:
+    return _price(stars, STARS) if stars is not None else _price(lite.price_rub, RUB)
 
 
 # --- Рассылка реактивации (сессия 12) ------------------------------------
@@ -1255,12 +1267,16 @@ PAYMENTS_SOON = "Оплата скоро заработает 🙏 А пока �
 BUTTON_PAY_CARD = "💳 Картой"
 BUTTON_PAY_STARS = "⭐ Звёздами"
 BUTTON_PAY_OPEN = "💳 Перейти к оплате"
+#: Та же кнопка у счёта в звёздах: карточный значок там врал бы (сессия 15).
+BUTTON_PAY_OPEN_STARS = "⭐ Перейти к оплате"
 BUTTON_OFFER = "📄 Оферта"
 BUTTON_PRIVACY = "🔒 Данные"
 BUTTON_EMAIL_CHANGE = "✏️ Другая почта"
 
 
-def tariffs_screen(*, with_presentations: bool) -> Screen:
+def tariffs_screen(
+    *, with_presentations: bool, stars: Mapping[TariffId, int] | None = None
+) -> Screen:
     """Все три тарифа одним сообщением (§2.8).
 
     Одним, а не тремя: тремя сообщениями сравнить их нельзя — пока листаешь
@@ -1269,9 +1285,16 @@ def tariffs_screen(*, with_presentations: bool) -> Screen:
 
     Отсюда и превышение обычного потолка в пять строк. Здесь сравнение и есть
     смысл экрана, поэтому потолок поднят явно и только для него.
+
+    ``stars`` — цены в звёздах там, где продаём только за звёзды (Telegram,
+    сессия 15). Тогда рублёвой цены на карточках нет: купить за неё нельзя.
     """
     blocks = [
-        _tariff_block(tariff_id, with_presentations=with_presentations)
+        _tariff_block(
+            tariff_id,
+            with_presentations=with_presentations,
+            stars=stars[tariff_id] if stars is not None else None,
+        )
         for tariff_id in PAID_TARIFFS
     ]
     return Screen(
@@ -1281,12 +1304,12 @@ def tariffs_screen(*, with_presentations: bool) -> Screen:
     )
 
 
-def _tariff_block(tariff_id: TariffId, *, with_presentations: bool) -> str:
+def _tariff_block(
+    tariff_id: TariffId, *, with_presentations: bool, stars: int | None
+) -> str:
     tariff = TARIFFS[tariff_id]
-    title = (
-        f"{TARIFF_ICONS[tariff_id]} {TARIFF_TITLES[tariff_id]} — "
-        f"{_rubles(tariff.price_rub)} ₽/мес"
-    )
+    price = _price(stars, STARS) if stars is not None else _price(tariff.price_rub, RUB)
+    title = f"{TARIFF_ICONS[tariff_id]} {TARIFF_TITLES[tariff_id]} — {price}/мес"
     if tariff_id is TariffId.PRO:
         title = f"{title} · {POPULAR_MARK}"
     features = tariff_features(tariff_id, with_presentations=with_presentations)
@@ -1409,6 +1432,11 @@ def payment_methods(tariff_id: TariffId, *, price_rub: int, stars: int) -> Scree
     )
 
 
+def pay_button(currency: str) -> str:
+    """Подпись кнопки оплаты на экране заказа — по валюте заказа."""
+    return BUTTON_PAY_OPEN_STARS if currency == STARS else BUTTON_PAY_OPEN
+
+
 def payment_order(
     tariff_id: TariffId,
     *,
@@ -1475,7 +1503,7 @@ def payment_order(
     # в букве человек мог парой сообщений раньше, а заметить это — здесь;
     # без кнопки исправить ошибку он смог бы только через месяц, на
     # следующей оплате.
-    buttons: tuple[str, ...] = (BUTTON_PAY_OPEN, BUTTON_OFFER, BUTTON_PRIVACY)
+    buttons: tuple[str, ...] = (pay_button(currency), BUTTON_OFFER, BUTTON_PRIVACY)
     if receipt_to:
         buttons = (*buttons, BUTTON_EMAIL_CHANGE)
     return Screen(
@@ -1699,6 +1727,95 @@ def subscription_other_method(*, by_stars: bool) -> Screen:
             "и оформи подписку заново 👇"
         ),
         buttons=(BUTTON_SUBSCRIPTION_OFF, MENU_PROFILE),
+    )
+
+
+# --- Telegram: продлеваем только звёздами (сессия 15) --------------------
+#
+# Карточная подписка в Telegram больше не списывается: оплаченный срок
+# дорабатывает, а продлить можно звёздами. Слова «карта» в этих текстах нет
+# намеренно — в Telegram ни один экран не должен вести к ней даже словом.
+
+#: Вторая строка, когда звёзды сейчас не продаются: звать к ним нельзя.
+_TARIFFS_BELOW = "Тарифы — по кнопке 👇"
+
+
+def button_renew_stars(stars: int) -> str:
+    return f"⭐ Продлить за {stars} ⭐"
+
+
+def _renew_by_stars(stars: int | None) -> str:
+    if stars is None:
+        return _TARIFFS_BELOW
+    return f"Продлить можно звёздами: {stars} ⭐ за {_days(30)} 👇"
+
+
+def _renew_buttons(stars: int | None) -> tuple[str, ...]:
+    if stars is None:
+        return (MENU_TARIFFS, MENU_PROFILE)
+    return (button_renew_stars(stars), MENU_PROFILE)
+
+
+def subscription_not_renewing(
+    tariff_id: TariffId, *, until: str, stars: int | None
+) -> Screen:
+    """Экран подписки: карточная в Telegram дорабатывает и сама не продлится."""
+    return Screen(
+        text=(
+            f"Тариф «{TARIFF_TITLES[tariff_id]}» работает до {until} — "
+            "сам он больше не продлится.\n"
+            f"{_renew_by_stars(stars)}"
+        ),
+        buttons=_renew_buttons(stars),
+    )
+
+
+def subscription_ends_tomorrow(
+    tariff_id: TariffId, *, on: str, stars: int | None
+) -> Screen:
+    """За сутки до конца срока карточной подписки в Telegram (шаг 2).
+
+    Замена напоминанию «спишем 299 ₽»: списания не будет, и человеку важно
+    узнать это до того, как тариф кончится, а не после.
+    """
+    return Screen(
+        text=(
+            f"Завтра, {on}, закончится тариф «{TARIFF_TITLES[tariff_id]}» — "
+            "сам он не продлится.\n"
+            f"{_renew_by_stars(stars)}"
+        ),
+        buttons=_renew_buttons(stars),
+    )
+
+
+def subscription_term_over(tariff_id: TariffId, *, stars: int | None) -> Screen:
+    """Срок уже прошёл, а списание по нему не состоялось и не состоится.
+
+    Так кончаются сроки, накопившиеся, пока ключей магазина не было:
+    предупредить за сутки уже не вышло, и сообщение одно — сейчас.
+    """
+    return Screen(
+        text=(
+            f"Тариф «{TARIFF_TITLES[tariff_id]}» закончился — "
+            "сам он больше не продлится.\n"
+            f"{_renew_by_stars(stars)}"
+        ),
+        buttons=_renew_buttons(stars),
+    )
+
+
+def trial_started_not_renewing(*, until: str) -> Screen:
+    """Пробный период из заказа, оплаченного после выключения карты.
+
+    Обещать «потом 299 ₽» нельзя: списания не будет.
+    """
+    title, _, _ = _trial_terms()
+    return Screen(
+        text=(
+            f"Готово! Пробный «{title}» включён до {until}.\n"
+            "Сам он не продлится — за день до конца напомню, как продлить 👇"
+        ),
+        buttons=_menu_buttons(),
     )
 
 
@@ -1998,6 +2115,20 @@ def _all_screens() -> tuple[Screen, ...]:
         subscription_cancelled(TariffId.PRO, until="30 сентября"),
         subscription_cancel_failed(),
         subscription_other_method(by_stars=True),
+        subscription_not_renewing(TariffId.LITE, until="31 августа", stars=262),
+        subscription_not_renewing(TariffId.LITE, until="31 августа", stars=None),
+        subscription_ends_tomorrow(TariffId.LITE, on="31 августа", stars=262),
+        subscription_ends_tomorrow(TariffId.LITE, on="31 августа", stars=None),
+        subscription_term_over(TariffId.MAX, stars=1304),
+        subscription_term_over(TariffId.MAX, stars=None),
+        trial_started_not_renewing(until="31 августа"),
+        tariffs_screen(
+            with_presentations=True,
+            stars={TariffId.LITE: 262, TariffId.PRO: 525, TariffId.MAX: 1304},
+        ),
+        paywall_free(
+            LimitKind.PRESENTATIONS, lite=TARIFFS[TariffId.LITE], trial=None, stars=262
+        ),
         subscription_other_method(by_stars=False),
         subscription_reminder(TariffId.PRO, amount=599, currency=RUB, on="30 сентября"),
         subscription_price_changed(

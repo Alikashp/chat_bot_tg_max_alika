@@ -645,6 +645,25 @@ class Storage(Protocol):
         """Подписки, по которым пора списывать."""
         ...
 
+    async def subscriptions_ending(
+        self,
+        since: datetime,
+        until: datetime,
+        *,
+        messenger: MessengerKind,
+        limit: int,
+    ) -> list[Subscription]:
+        """Карточные подписки мессенджера, срок которых кончается в окне.
+
+        Для мессенджера, где карту больше не продаём (Telegram, сессия 15):
+        списаний по ним не будет, и за сутки до конца срока человеку говорят,
+        что тариф сам не продлится. Берутся все действующие карточные — с
+        напоминанием перед списанием и без, — о которых по этому сроку ещё
+        не говорили (``reminded_for``). Отбор по мессенджеру — в самой
+        выборке: иначе подписки другого мессенджера занимали бы предел.
+        """
+        ...
+
     async def subscriptions_to_remind(
         self, since: datetime, until: datetime, *, limit: int
     ) -> list[Subscription]:

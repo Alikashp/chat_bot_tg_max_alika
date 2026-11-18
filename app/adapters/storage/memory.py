@@ -779,6 +779,26 @@ class InMemoryStorage:
         due.sort(key=lambda subscription: subscription.next_charge_at)
         return due[:limit]
 
+    async def subscriptions_ending(
+        self,
+        since: datetime,
+        until: datetime,
+        *,
+        messenger: MessengerKind,
+        limit: int,
+    ) -> list[Subscription]:
+        due = [
+            subscription
+            for subscription in self._subscriptions.values()
+            if subscription.status == SubscriptionStatus.ACTIVE.value
+            and subscription.method == PaymentMethod.CARD.value
+            and self._users[subscription.user_id].messenger is messenger
+            and since < subscription.next_charge_at <= until
+            and subscription.reminded_for != subscription.next_charge_at
+        ]
+        due.sort(key=lambda subscription: subscription.next_charge_at)
+        return due[:limit]
+
     async def subscriptions_to_remind(
         self, since: datetime, until: datetime, *, limit: int
     ) -> list[Subscription]:

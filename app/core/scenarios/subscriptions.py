@@ -155,7 +155,12 @@ async def remind(deps: Deps, subscription: Subscription) -> None:
     Отметку ставим после отправки, а не до. Порядок выбран в пользу лишнего
     напоминания: пропустить обязательное предупреждение хуже, чем прислать
     его дважды.
+
+    Где карту больше не продаём (Telegram, сессия 15), «спишем 299 ₽» —
+    неправда: о конце такого срока говорит ``notify_ending``.
     """
+    if not spending.will_renew(deps, subscription):
+        return
     user = await deps.storage.get_user_by_id(subscription.user_id)
     if user is None:
         deps.logger.error(
@@ -178,6 +183,40 @@ async def remind(deps: Deps, subscription: Subscription) -> None:
     )
     await deps.storage.mark_reminded(subscription.user_id, subscription.next_charge_at)
     deps.logger.info("subscription_reminded", user_id=int(subscription.user_id))
+
+
+async def notify_ending(deps: Deps, subscription: Subscription) -> None:
+    """За сутки до конца срока карточной подписки, которая не продлится.
+
+    Где карту больше не продаём (Telegram, сессия 15), с карты ничего не
+    списывается: срок дорабатывает, а человек заранее узнаёт, когда тариф
+    кончится и что продлить можно звёздами. Отметка — та же, что у
+    напоминания: о каждом сроке говорим один раз.
+    """
+    if spending.will_renew(deps, subscription):
+        return
+    user = await deps.storage.get_user_by_id(subscription.user_id)
+    if user is None:
+        deps.logger.error(
+            "subscription_user_missing", user_id=int(subscription.user_id)
+        )
+        return
+
+    stars = payments.renewal_stars(deps, subscription.tariff)
+    screen = texts.subscription_ends_tomorrow(
+        subscription.tariff,
+        on=texts.format_date(
+            current_day(subscription.next_charge_at, deps.settings.timezone)
+        ),
+        stars=stars,
+    )
+    await deps.messenger.send_text(
+        session_for(deps, user).chat,
+        screen.text,
+        keyboard=keyboards.renew_by_stars(subscription.tariff, stars),
+    )
+    await deps.storage.mark_reminded(subscription.user_id, subscription.next_charge_at)
+    deps.logger.info("subscription_ending_notified", user_id=int(user.id))
 
 
 async def cancel_replaced(deps: Deps, pending: StarCancel) -> None:
@@ -215,7 +254,13 @@ async def check_price(deps: Deps, subscription: Subscription) -> None:
     планировщика всю неделю до списания.
     """
     price = tariff_of(subscription.tariff).price_rub
-    changed = subscription.currency == RUB and price != subscription.amount
+    # Подписка, которая не продлится (карта в Telegram, сессия 15): по новой
+    # цене списывать не будем, и предупреждать о ней незачем.
+    changed = (
+        subscription.currency == RUB
+        and price != subscription.amount
+        and spending.will_renew(deps, subscription)
+    )
 
     if changed:
         user = await deps.storage.get_user_by_id(subscription.user_id)
@@ -275,6 +320,13 @@ async def charge(deps: Deps, subscription: Subscription) -> None:
 
     if subscription.method == PaymentMethod.STARS.value:
         await _await_stars(deps, subscription, user)
+        return
+
+    if not spending.will_renew(deps, subscription):
+        # Карточная подписка там, где карту больше не продаём (Telegram,
+        # сессия 15). Проверка стоит до вопроса о магазине: сроки,
+        # накопившиеся без ключей, после их возвращения тоже не списываются.
+        await _term_over(deps, subscription, user)
         return
 
     method_id = subscription.payment_method_id
@@ -609,6 +661,33 @@ async def _end(deps: Deps, subscription: Subscription, user: User) -> None:
         session_for(deps, user).chat,
         screen.text,
         keyboard=keyboards.open_tariffs(),
+    )
+
+
+async def _term_over(deps: Deps, subscription: Subscription, user: User) -> None:
+    """Срок карточной подписки, которая не продлится, кончился (сессия 15).
+
+    Ничего не списываем — даже если списание за этот период было начато до
+    выключения: его исход доведут сверка и уведомление ЮKassa, а новая
+    попытка значила бы второе списание. Подписку закрываем, чтобы проходы
+    не возвращались к ней. Сказали о конце накануне — молчим; не сказали
+    (срок прошёл, пока ключей не было) — говорим сейчас, один раз.
+    """
+    await deps.storage.cancel_subscription(subscription.user_id, deps.now())
+    deps.logger.info(
+        "subscription_term_over",
+        user_id=int(user.id),
+        tariff=subscription.tariff.value,
+        notified=subscription.reminded_for == subscription.next_charge_at,
+    )
+    if subscription.reminded_for == subscription.next_charge_at:
+        return
+    stars = payments.renewal_stars(deps, subscription.tariff)
+    screen = texts.subscription_term_over(subscription.tariff, stars=stars)
+    await deps.messenger.send_text(
+        session_for(deps, user).chat,
+        screen.text,
+        keyboard=keyboards.renew_by_stars(subscription.tariff, stars),
     )
 
 

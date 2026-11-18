@@ -215,3 +215,32 @@ def test_the_topic_wait_after_a_mailing_is_a_day_by_default() -> None:
     assert core.mailing_topic_wait_hours == 6
     with pytest.raises(ValidationError):
         Settings.model_validate({**VALID_ENV, "mailing_topic_wait_hours": 0})
+
+
+def test_card_sales_in_telegram_are_off_by_default_and_on_in_max() -> None:
+    """Сессия 15: карта в Telegram — только по явной настройке, в MAX — всегда.
+
+    От ключей магазина настройка не зависит: в VALID_ENV ключей Telegram нет,
+    а с ключами она остаётся той же.
+    """
+    from app.core.models import MessengerKind
+    from app.main import build_core_settings
+
+    default = Settings.model_validate(VALID_ENV)
+    assert default.telegram_card_payments_enabled is False
+    assert not build_core_settings(
+        default, "bot", referral_link_host="t.me"
+    ).card_sales_enabled
+    assert build_core_settings(
+        default, "bot", referral_link_host="max.ru", messenger=MessengerKind.MAX
+    ).card_sales_enabled
+
+    keys = Settings.model_validate(
+        {**VALID_ENV, "yookassa_shop_id": "1", "yookassa_secret_key": "k"}
+    )
+    assert not build_core_settings(
+        keys, "bot", referral_link_host="t.me"
+    ).card_sales_enabled
+
+    on = Settings.model_validate({**VALID_ENV, "telegram_card_payments_enabled": True})
+    assert build_core_settings(on, "bot", referral_link_host="t.me").card_sales_enabled

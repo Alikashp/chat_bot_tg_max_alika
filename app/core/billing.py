@@ -62,6 +62,9 @@ class Billing:
         """Один полный проход. Сбой на одной подписке не роняет остальные."""
         await self.cancel_replaced()
         await self.check_prices()
+        # До напоминаний: у пробной карточной подписки в Telegram окно то же,
+        # и сказать ей надо «сам не продлится», а не «спишем 299 ₽».
+        await self.notify_ending()
         await self.remind()
         await self.charge()
 
@@ -108,6 +111,26 @@ class Billing:
         )
         for subscription in due:
             await self._each(subscription, subscriptions.remind, "remind")
+
+    async def notify_ending(self) -> None:
+        """За сутки до конца — о карточных подписках, которые не продлятся.
+
+        Только в мессенджерах, где карту больше не продаём (Telegram,
+        сессия 15): там с карт не списывается ничего, и человек должен
+        узнать о конце тарифа до него, а не после.
+        """
+        now = self.deps.now()
+        for messenger, deps in self.by_messenger.items():
+            if deps.settings.card_sales_enabled:
+                continue
+            due = await deps.storage.subscriptions_ending(
+                now,
+                now + timedelta(hours=deps.settings.reminder_hours),
+                messenger=messenger,
+                limit=self.batch,
+            )
+            for subscription in due:
+                await self._each(subscription, subscriptions.notify_ending, "ending")
 
     async def charge(self) -> None:
         """Списывает по тем подпискам, у которых наступил срок."""

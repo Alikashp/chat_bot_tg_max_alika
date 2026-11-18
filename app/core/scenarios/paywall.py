@@ -91,13 +91,15 @@ async def _offer_lite(deps: Deps, session: Session, kind: LimitKind) -> None:
     """
     trial = TRIAL if await payments.trial_offered(deps, session) else None
     lite = tariff_of(TariffId.LITE)
-    screen = texts.paywall_free(kind, lite=lite, trial=trial)
+    # Где продаём только за звёзды (Telegram, сессия 15), цена — в звёздах.
+    stars = payments.shown_stars(deps, TariffId.LITE)
+    screen = texts.paywall_free(kind, lite=lite, trial=trial, stars=stars)
     action = Action.PAYWALL_TRIAL if trial is not None else buy_action(lite.id.value)
     await deps.messenger.send_text(
         session.chat,
         screen.text,
         keyboard=keyboards.paywall_free(
-            texts.button_continue(lite=lite, trial=trial),
+            texts.button_continue(lite=lite, trial=trial, stars=stars),
             action,
             _free_way(deps, kind),
         ),

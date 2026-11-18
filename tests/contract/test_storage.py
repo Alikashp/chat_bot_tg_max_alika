@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import os
 from collections.abc import AsyncIterator
+from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 
 import pytest
@@ -2254,4 +2255,68 @@ async def test_linked_orders_are_the_pending_ones_with_a_link(storage: Storage) 
             user.id, method="card", created_after=datetime.now(UTC) + timedelta(days=1)
         )
         == []
+    )
+
+
+async def test_ending_card_subscriptions_are_picked_by_messenger(
+    storage: Storage,
+) -> None:
+    """Сессия 15: карточные подписки мессенджера, где карту больше не продаём.
+
+    Берутся все карточные — и с напоминанием, и без: о конце срока надо
+    сказать каждому. Не берутся звёздные (их продлевает Telegram), чужой
+    мессенджер, отменённые, вне окна и те, кому о этом сроке уже сказали.
+    """
+    window = (MOMENT, MOMENT + timedelta(days=1))
+    soon = MOMENT + timedelta(hours=12)
+
+    plain = await _make_user(storage, "end-1")
+    await _make_subscription(
+        storage, plain, next_charge_at=soon, remind_before_charge=False
+    )
+    trial = await _make_user(storage, "end-2")
+    await _make_subscription(storage, trial, next_charge_at=soon)
+    later = await _make_user(storage, "end-3")
+    await _make_subscription(storage, later, next_charge_at=MOMENT + timedelta(days=2))
+    stopped = await _make_user(storage, "end-4")
+    await _make_subscription(storage, stopped, next_charge_at=soon, status="cancelled")
+    told = await _make_user(storage, "end-5")
+    await _make_subscription(storage, told, next_charge_at=soon)
+    await storage.mark_reminded(told.id, soon)
+    starry = await _make_user(storage, "end-6")
+    await storage.save_subscription(
+        replace(
+            await _make_subscription(storage, starry, next_charge_at=soon),
+            method="stars",
+            currency="XTR",
+            payment_method_id=None,
+            charge_id="charge-6",
+        )
+    )
+    max_user = await storage.create_user(
+        messenger=MessengerKind.MAX,
+        external_id="end-7",
+        referral_code="codeend-7",
+        support_number=support.generate_number(),
+        bonus_images=0,
+        bonus_documents=0,
+    )
+    await _make_subscription(storage, max_user, next_charge_at=soon)
+
+    telegram = await storage.subscriptions_ending(
+        *window, messenger=MessengerKind.TELEGRAM, limit=10
+    )
+    in_max = await storage.subscriptions_ending(
+        *window, messenger=MessengerKind.MAX, limit=10
+    )
+
+    assert {each.user_id for each in telegram} == {plain.id, trial.id}
+    assert [each.user_id for each in in_max] == [max_user.id]
+    assert (
+        len(
+            await storage.subscriptions_ending(
+                *window, messenger=MessengerKind.TELEGRAM, limit=1
+            )
+        )
+        == 1
     )

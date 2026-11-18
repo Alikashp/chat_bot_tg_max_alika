@@ -1190,6 +1190,35 @@ class PostgresStorage:
             rows = (await session.execute(query)).all()
         return [_to_subscription(row) for row in rows]
 
+    async def subscriptions_ending(
+        self,
+        since: datetime,
+        until: datetime,
+        *,
+        messenger: MessengerKind,
+        limit: int,
+    ) -> list[Subscription]:
+        query = (
+            select(subscriptions)
+            .join(users, users.c.id == subscriptions.c.user_id)
+            .where(
+                subscriptions.c.status == SubscriptionStatus.ACTIVE.value,
+                subscriptions.c.method == PaymentMethod.CARD.value,
+                users.c.messenger == messenger.value,
+                subscriptions.c.next_charge_at > since,
+                subscriptions.c.next_charge_at <= until,
+                or_(
+                    subscriptions.c.reminded_for.is_(None),
+                    subscriptions.c.reminded_for != subscriptions.c.next_charge_at,
+                ),
+            )
+            .order_by(subscriptions.c.next_charge_at)
+            .limit(limit)
+        )
+        async with self._session() as session:
+            rows = (await session.execute(query)).all()
+        return [_to_subscription(row) for row in rows]
+
     async def subscriptions_to_remind(
         self, since: datetime, until: datetime, *, limit: int
     ) -> list[Subscription]:

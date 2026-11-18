@@ -424,11 +424,13 @@ def build_core_settings(
     *,
     referral_link_host: str,
     show_user_number: bool = False,
+    messenger: MessengerKind = MessengerKind.TELEGRAM,
 ) -> CoreSettings:
     """Продуктовые настройки ядра из настроек приложения.
 
-    У каждого мессенджера свой экземпляр: имя бота, хост ссылки и показ
-    номера у них разные, всё остальное одинаковое.
+    У каждого мессенджера свой экземпляр: имя бота, хост ссылки, показ
+    номера и продажа картой у них разные, всё остальное одинаковое. Карта в
+    Telegram — только по явной настройке (сессия 15), в MAX — всегда.
     """
     return CoreSettings(
         bot_username=bot_username,
@@ -452,6 +454,9 @@ def build_core_settings(
         subscription_days=settings.subscription_days,
         trial_enabled=settings.trial_enabled,
         stars_enabled=settings.stars_enabled,
+        card_sales_enabled=(
+            messenger is MessengerKind.MAX or settings.telegram_card_payments_enabled
+        ),
         mailings_enabled=settings.mailings_enabled,
         mailing_r1_enabled=settings.mailing_r1_enabled,
         mailing_r2_enabled=settings.mailing_r2_enabled,
@@ -890,6 +895,7 @@ async def _build_max(
             # В MAX username есть не у всех, и без номера опознать
             # написавшего в поддержку нечем.
             show_user_number=True,
+            messenger=MessengerKind.MAX,
         ),
         cards=cards,
     )

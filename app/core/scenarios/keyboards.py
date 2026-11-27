@@ -31,7 +31,7 @@ from app.core.actions import (
     report_from_action,
 )
 from app.core.models import Button, Keyboard, TariffId
-from app.core.tariffs import PAID_TARIFFS
+from app.core.tariffs import PACKAGES, PAID_TARIFFS, tariff_of
 
 #: Постоянное меню (§2.1, фаза 10).
 #:
@@ -331,6 +331,34 @@ def renew_by_stars(tariff_id: TariffId, stars: int | None) -> Keyboard:
             text=texts.button_renew_stars(stars), action=buy_action(tariff_id.value)
         ),
         Button(text=texts.MENU_PROFILE, action=Action.MENU_PROFILE),
+    )
+
+
+def packages() -> Keyboard:
+    """Три кнопки «Купить … — N ⭐» под экраном пакетов (сессия 16).
+
+    По одной в ряд: подписи длинные, и в одном ряду цена бы обрезалась.
+    """
+    return Keyboard(
+        rows=tuple(
+            (
+                Button(
+                    text=texts.button_buy_package(tariff_id),
+                    action=buy_action(tariff_id.value),
+                ),
+            )
+            for tariff_id in PACKAGES
+        )
+    )
+
+
+def package_again(tariff_id: TariffId) -> Keyboard:
+    """Под предупреждением о конце пакета: купить тот же снова или выбрать."""
+    stars = tariff_of(tariff_id).package_stars
+    assert stars is not None
+    return Keyboard.row(
+        Button(text=texts.button_buy_again(stars), action=buy_action(tariff_id.value)),
+        Button(text=texts.MENU_TARIFFS, action=Action.OPEN_TARIFFS),
     )
 
 

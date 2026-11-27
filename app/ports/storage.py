@@ -650,6 +650,28 @@ class Storage(Protocol):
         """Подписки, по которым пора списывать."""
         ...
 
+    async def packages_ending(
+        self,
+        since: datetime,
+        until: datetime,
+        *,
+        messenger: MessengerKind,
+        limit: int,
+    ) -> list[User]:
+        """Люди мессенджера, у которых пакет кончается в окне (сессия 16).
+
+        Только пакеты — у подписок свой проход. Только те, кому о нынешнем
+        сроке ещё не говорили (``mark_package_notified``): отметка хранит
+        срок, и новый срок после покупки — новое предупреждение.
+        """
+        ...
+
+    async def mark_package_notified(
+        self, user_id: UserId, expires_at: datetime
+    ) -> None:
+        """Отмечает, что о конце пакета со сроком ``expires_at`` сказали."""
+        ...
+
     async def subscriptions_ending(
         self,
         since: datetime,

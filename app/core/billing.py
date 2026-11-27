@@ -27,7 +27,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 
 from app.core.models import MessengerKind, Subscription, User, UserId
-from app.core.scenarios import subscriptions
+from app.core.scenarios import package_end, subscriptions
 from app.core.scenarios.deps import Deps
 
 #: Шаг обхода: что сделать с одной подпиской.
@@ -65,6 +65,7 @@ class Billing:
         # До напоминаний: у пробной карточной подписки в Telegram окно то же,
         # и сказать ей надо «сам не продлится», а не «спишем 299 ₽».
         await self.notify_ending()
+        await self.notify_packages()
         await self.remind()
         await self.charge()
 
@@ -131,6 +132,33 @@ class Billing:
             )
             for subscription in due:
                 await self._each(subscription, subscriptions.notify_ending, "ending")
+
+    async def notify_packages(self) -> None:
+        """За сутки до конца пакета — предложение купить снова (сессия 16).
+
+        Только там, где пакеты продаются. Сбой на одном человеке не роняет
+        остальных — как и у подписок.
+        """
+        now = self.deps.now()
+        for messenger, deps in self.by_messenger.items():
+            if not deps.settings.packages_enabled:
+                continue
+            due = await deps.storage.packages_ending(
+                now,
+                now + timedelta(hours=deps.settings.reminder_hours),
+                messenger=messenger,
+                limit=self.batch,
+            )
+            for user in due:
+                try:
+                    await package_end.notify(deps, user)
+                except Exception as error:
+                    deps.logger.error(
+                        "billing_step_failed",
+                        step="package_end",
+                        user_id=int(user.id),
+                        error=repr(error),
+                    )
 
     async def charge(self) -> None:
         """Списывает по тем подпискам, у которых наступил срок."""

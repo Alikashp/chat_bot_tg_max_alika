@@ -92,6 +92,8 @@ users = Table(
     Column("pack_images", Integer, nullable=True),
     Column("pack_documents", Integer, nullable=True),
     Column("pack_presentations", Integer, nullable=True),
+    # О конце какого срока пакета уже сказали (сессия 16). NULL — ни о каком.
+    Column("package_notified_for", DateTime(timezone=True), nullable=True),
     # Когда человеку доставили первую презентацию (сессия 12). Ставится один
     # раз: перегенерировать бесплатно можно только её.
     Column("first_deck_at", DateTime(timezone=True), nullable=True),

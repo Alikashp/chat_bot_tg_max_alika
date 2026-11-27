@@ -2320,3 +2320,58 @@ async def test_ending_card_subscriptions_are_picked_by_messenger(
         )
         == 1
     )
+
+
+async def test_ending_packages_are_picked_once_per_end(storage: Storage) -> None:
+    """Сессия 16: пакеты мессенджера, срок которых кончается в окне.
+
+    Не берутся подписочные тарифы, бесплатные, чужой мессенджер, вне окна и
+    те, кому об этом сроке уже сказали. Новый срок — новое предупреждение.
+    """
+    window = (MOMENT, MOMENT + timedelta(days=1))
+    soon = MOMENT + timedelta(hours=12)
+
+    week = await _make_user(storage, "pack-1")
+    await storage.set_tariff(week.id, TariffId.WEEK, soon)
+    halfyear = await _make_user(storage, "pack-2")
+    await storage.set_tariff(halfyear.id, TariffId.HALFYEAR, soon)
+    later = await _make_user(storage, "pack-3")
+    await storage.set_tariff(later.id, TariffId.MONTH, MOMENT + timedelta(days=2))
+    lite = await _make_user(storage, "pack-4")
+    await storage.set_tariff(lite.id, TariffId.LITE, soon)
+    await _make_user(storage, "pack-5")
+    in_max = await storage.create_user(
+        messenger=MessengerKind.MAX,
+        external_id="pack-6",
+        referral_code="codepack-6",
+        support_number=support.generate_number(),
+        bonus_images=0,
+        bonus_documents=0,
+    )
+    await storage.set_tariff(in_max.id, TariffId.WEEK, soon)
+
+    found = await storage.packages_ending(
+        *window, messenger=MessengerKind.TELEGRAM, limit=10
+    )
+    assert {each.id for each in found} == {week.id, halfyear.id}
+    assert (
+        len(
+            await storage.packages_ending(
+                *window, messenger=MessengerKind.TELEGRAM, limit=1
+            )
+        )
+        == 1
+    )
+
+    await storage.mark_package_notified(week.id, soon)
+    again = await storage.packages_ending(
+        *window, messenger=MessengerKind.TELEGRAM, limit=10
+    )
+    assert [each.id for each in again] == [halfyear.id]
+
+    renewed = MOMENT + timedelta(hours=20)
+    await storage.set_tariff(week.id, TariffId.WEEK, renewed)
+    after = await storage.packages_ending(
+        *window, messenger=MessengerKind.TELEGRAM, limit=10
+    )
+    assert {each.id for each in after} == {week.id, halfyear.id}

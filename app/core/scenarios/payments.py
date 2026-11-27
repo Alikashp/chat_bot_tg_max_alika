@@ -208,7 +208,7 @@ async def start_trial(deps: Deps, session: Session) -> None:
         await deps.messenger.send_text(
             session.chat,
             tariffs_screen(deps).text,
-            keyboard=keyboards.tariffs(),
+            keyboard=tariffs_keyboard(deps),
             show_menu=False,
         )
         return
@@ -361,7 +361,7 @@ async def remember_email(deps: Deps, session: Session, written: str) -> bool:
         await deps.messenger.send_text(
             session.chat,
             tariffs_screen(deps).text,
-            keyboard=keyboards.tariffs(),
+            keyboard=tariffs_keyboard(deps),
         )
         return True
 
@@ -571,7 +571,7 @@ async def show_tariffs(deps: Deps, session: Session) -> None:
     await deps.messenger.send_text(
         session.chat,
         tariffs_screen(deps).text,
-        keyboard=keyboards.tariffs(),
+        keyboard=tariffs_keyboard(deps),
         show_menu=False,
     )
 
@@ -1482,13 +1482,25 @@ def renewal_stars(deps: Deps, tariff_id: TariffId) -> int | None:
 
 
 def tariffs_screen(deps: Deps) -> texts.Screen:
-    """Витрина тарифов с той ценой, по которой их здесь можно купить."""
+    """Витрина тарифов с той ценой, по которой их здесь можно купить.
+
+    Где продаются пакеты (Telegram, сессия 16), витрина — пакеты.
+    """
+    if deps.settings.packages_enabled:
+        return texts.packages_screen(with_presentations=deps.presentations_on)
     stars = (
         None
         if deps.settings.card_sales_enabled
         else {tariff_id: _stars_price(deps, tariff_id) for tariff_id in PAID_TARIFFS}
     )
     return texts.tariffs_screen(with_presentations=deps.presentations_on, stars=stars)
+
+
+def tariffs_keyboard(deps: Deps) -> Keyboard:
+    """Кнопки под витриной — те, что продаются здесь."""
+    if deps.settings.packages_enabled:
+        return keyboards.packages()
+    return keyboards.tariffs()
 
 
 def _stars_on_sale(deps: Deps) -> bool:

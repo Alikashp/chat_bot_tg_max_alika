@@ -229,3 +229,21 @@ async def test_without_the_trial_the_paywall_names_the_ruble_price(
     await paywall.show(no_trial, session, LimitKind.PRESENTATIONS)
 
     assert "Открой всё за 299 ₽ в месяц:" in messenger.last_text.text
+
+
+async def test_max_shows_no_packages_and_gets_no_package_notice(
+    max_deps: Deps, max_user: User, messenger: FakeMessenger
+) -> None:
+    """Пакетов в MAX нет: ни на витрине, ни в предупреждениях биллинга —
+    даже если тариф человека почему-то записан пакетом."""
+    await handle(max_deps, press(Action.MENU_TARIFFS))
+    shown = "\n".join(sent.text for sent in messenger.texts)
+    assert "Неделя" not in shown and "Пакет" not in shown
+    await max_deps.storage.set_tariff(
+        max_user.id, TariffId.WEEK, max_deps.now() + timedelta(hours=12)
+    )
+    before = len(messenger.texts)
+
+    await Billing(by_messenger={MessengerKind.MAX: max_deps}).run()
+
+    assert len(messenger.texts) == before

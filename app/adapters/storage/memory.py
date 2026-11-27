@@ -30,6 +30,7 @@ from app.core.models import (
     Mailing,
     MailingStatus,
     MessengerKind,
+    PackNorms,
     Payment,
     PeriodUsage,
     StarCancel,
@@ -625,6 +626,7 @@ class InMemoryStorage:
         subscription: Subscription | None,
         norm_since: datetime,
         trial: bool = False,
+        pack: PackNorms | None = None,
     ) -> GrantOutcome:
         # Ни одного await внутри: в памяти это и есть транзакция.
         payment = self._payments.get(payment_id)
@@ -647,6 +649,7 @@ class InMemoryStorage:
             tariff_expires_at=expires_at,
             norm_since=norm_since,
             trial_order_id=payment_id if trial else user.trial_order_id,
+            pack=pack,
         )
         if subscription is not None:
             self._subscriptions[subscription.user_id] = subscription

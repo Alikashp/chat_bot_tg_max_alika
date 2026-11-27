@@ -10,13 +10,13 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from enum import StrEnum
 from math import ceil
 from types import MappingProxyType
 
-from app.core.models import TariffId
+from app.core.models import TariffId, User
 from app.ports.ai import ImageQuality
 
 #: Валюты, в которых мы берём деньги.
@@ -249,3 +249,22 @@ def active_tariff(
     if expires_at is None or expires_at <= now:
         return TariffId.FREE
     return user_tariff
+
+
+def effective_tariff(user: User, now: datetime) -> Tariff:
+    """Тариф, который действует сейчас, — с нормами пакета, если они свои.
+
+    У пакета, купленного поверх другого, нормы — с остатками прежнего
+    (сессия 16), и в реестре такого числа нет: оно хранится у человека.
+    Истёкший тариф — бесплатный, и сохранённые нормы ему не принадлежат.
+    """
+    tariff = tariff_of(active_tariff(user.tariff, user.tariff_expires_at, now))
+    if tariff.is_free or user.pack is None:
+        return tariff
+    return replace(
+        tariff,
+        daily_messages=user.pack.messages,
+        monthly_images=user.pack.images,
+        monthly_documents=user.pack.documents,
+        monthly_presentations=user.pack.presentations,
+    )

@@ -22,6 +22,7 @@ from app.core.models import (
     Mailing,
     MailingStatus,
     MessengerKind,
+    PackNorms,
     Payment,
     PeriodUsage,
     StarCancel,
@@ -516,6 +517,7 @@ class Storage(Protocol):
         subscription: Subscription | None,
         norm_since: datetime,
         trial: bool = False,
+        pack: PackNorms | None = None,
     ) -> GrantOutcome:
         """Выдаёт оплаченное одной транзакцией: всё или ничего (П4).
 
@@ -535,6 +537,9 @@ class Storage(Protocol):
         становится paid, но ничего не выдаётся: TRIAL_USED. Два
         одновременных подтверждения разводит условие на тариф и срок:
         второе получит STALE, а на повторе — TRIAL_USED.
+
+        ``pack`` — нормы пакета с остатками прежнего (сессия 16). Пишутся той
+        же транзакцией; None их стирает: выдача подписки правит реестром.
 
         ``norm_since`` — с какого момента считается месячная норма. Пишется
         той же транзакцией: оплата и обновление нормы — одно событие, и

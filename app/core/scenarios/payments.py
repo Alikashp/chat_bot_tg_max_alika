@@ -33,19 +33,30 @@ from datetime import datetime, timedelta
 from app.core import pending, texts
 from app.core.actions import TRIAL_TARGET, email_action, method_action
 from app.core.emails import normalise_email
-from app.core.limits import current_day
+from app.core.limits import LimitKind, current_day, monthly_norm, norm_period
 from app.core.models import (
     Button,
     Keyboard,
+    PackNorms,
     Payment,
     Subscription,
     TariffId,
     User,
 )
+from app.core.packages import PackGrant, stack
 from app.core.receipts import Receipt, receipt_for
 from app.core.scenarios import keyboards, spending
 from app.core.scenarios.deps import Deps, Session
-from app.core.tariffs import PAID_TARIFFS, RUB, STARS, TRIAL, stars_price, tariff_of
+from app.core.tariffs import (
+    PAID_TARIFFS,
+    RUB,
+    STARS,
+    TRIAL,
+    Tariff,
+    effective_tariff,
+    stars_price,
+    tariff_of,
+)
 from app.ports.payments import (
     ChargeStatus,
     PaymentMethod,
@@ -53,6 +64,9 @@ from app.ports.payments import (
     SubscriptionStatus,
 )
 from app.ports.storage import GrantOutcome
+
+#: Официальный бот Telegram, где звёзды покупают с российской карты.
+PREMIUM_BOT_URL = "https://t.me/PremiumBot"
 
 
 async def choose_method(deps: Deps, session: Session, tariff_id: TariffId) -> None:
@@ -67,6 +81,15 @@ async def choose_method(deps: Deps, session: Session, tariff_id: TariffId) -> No
         # ни юридически, ни по-человечески.
         deps.logger.warning("payment_documents_missing", user_id=int(session.user.id))
         await _payments_not_ready(deps, session)
+        return
+
+    if tariff_of(tariff_id).is_package:
+        # Пакет — не подписка: способа оплаты у него один, звёзды, и только
+        # там, где пакеты продаются (Telegram, сессия 16).
+        if deps.settings.packages_enabled:
+            await start_package(deps, session, tariff_id)
+        else:
+            await show_tariffs(deps, session)
         return
 
     cards = _cards_on_sale(deps)
@@ -93,7 +116,11 @@ async def choose_method(deps: Deps, session: Session, tariff_id: TariffId) -> No
 
 async def start_card(deps: Deps, session: Session, tariff_id: TariffId) -> None:
     """Заводит заказ и показывает условия вместе со ссылкой на оплату."""
-    if deps.cards is None or not _cards_on_sale(deps):
+    if (
+        tariff_of(tariff_id).is_package
+        or deps.cards is None
+        or not _cards_on_sale(deps)
+    ):
         # Кнопка «💳 Картой» живёт в переписке и после того, как карту в
         # Telegram выключили (сессия 15). Платежа ЮKassa по ней нет — ведём к
         # тому способу, который продаётся сейчас.
@@ -410,6 +437,10 @@ async def start_stars(deps: Deps, session: Session, tariff_id: TariffId) -> None
     if deps.stars is None:
         await _payments_not_ready(deps, session)
         return
+    if tariff_of(tariff_id).is_package:
+        # Данные кнопки приходят снаружи: подписки на пакет не бывает.
+        await choose_method(deps, session, tariff_id)
+        return
     if not _stars_on_sale(deps):
         # Кнопка «⭐ Звёздами» из сообщения, отправленного, пока звёзды
         # продавались (сессия 11). Нового звёздного заказа нет — ведём к
@@ -467,6 +498,81 @@ async def start_stars(deps: Deps, session: Session, tariff_id: TariffId) -> None
         currency=STARS,
         url=link,
         recurring=True,
+    )
+
+
+async def start_package(deps: Deps, session: Session, tariff_id: TariffId) -> None:
+    """Заводит заказ на пакет и показывает условия с разовым счётом (сессия 16).
+
+    Счёт без периода подписки: Telegram спишет один раз и сам ничего не
+    продлит. Одна живая ссылка на одну покупку — как у подписок (сессия 14).
+    Под кнопкой оплаты — где купить звёзды: без них счёт не оплатить.
+    """
+    if deps.stars is None or not _stars_on_sale(deps):
+        await _payments_not_ready(deps, session)
+        return
+    tariff = tariff_of(tariff_id)
+    assert tariff.package_stars is not None
+    found = await _order_with_link(
+        deps,
+        session,
+        tariff_id,
+        method=PaymentMethod.STARS,
+        amount=tariff.package_stars,
+        currency=STARS,
+    )
+    if found is None:
+        return
+    order, created = found
+    if created:
+        title, description = texts.package_invoice(tariff_id)
+        try:
+            link = await deps.stars.invoice_link(
+                title=title,
+                description=description,
+                order_id=order.id,
+                stars=order.amount,
+            )
+        except Exception as error:
+            deps.logger.warning(
+                "payment_start_failed",
+                user_id=int(session.user.id),
+                method=PaymentMethod.STARS.value,
+                error=repr(error),
+            )
+            await deps.storage.mark_canceled(order.id)
+            await _say(deps, session, texts.payment_failed().text)
+            return
+        await deps.storage.remember_link(order.id, url=link, receipt_email=None)
+    else:
+        assert order.confirmation_url is not None
+        link = order.confirmation_url
+
+    screen = texts.package_order(tariff_id, adds_up=not session.tariff.is_free)
+    await deps.messenger.send_text(
+        session.chat,
+        screen.text,
+        keyboard=Keyboard(
+            rows=(
+                (Button(text=texts.BUTTON_PAY_OPEN_STARS, url=link),),
+                (Button(text=texts.BUTTON_BUY_STARS, url=PREMIUM_BOT_URL),),
+                (
+                    Button(text=texts.BUTTON_OFFER, url=deps.settings.offer_url),
+                    Button(text=texts.BUTTON_PRIVACY, url=deps.settings.privacy_url),
+                ),
+            )
+        ),
+        show_menu=False,
+    )
+
+
+async def show_tariffs(deps: Deps, session: Session) -> None:
+    """Витрина: тарифы — или пакеты, где продаются они (сессия 16)."""
+    await deps.messenger.send_text(
+        session.chat,
+        tariffs_screen(deps).text,
+        keyboard=keyboards.tariffs(),
+        show_menu=False,
     )
 
 
@@ -655,19 +761,24 @@ async def confirm(
         if user is None:
             deps.logger.error("payment_user_missing", user_id=int(order.user_id))
             return None
-        expires_at = (
-            deps.now() + timedelta(days=TRIAL.days)
-            if order.trial
-            else _new_expiry(
+        granted = order.tariff
+        pack: PackNorms | None = None
+        if tariff_of(order.tariff).is_package:
+            grant = await _package_grant(deps, user, tariff_of(order.tariff))
+            granted, expires_at, pack = grant.tariff, grant.expires_at, grant.norms
+        elif order.trial:
+            expires_at = deps.now() + timedelta(days=TRIAL.days)
+        else:
+            expires_at = _new_expiry(
                 deps,
                 current=user.tariff_expires_at,
                 bought=order.tariff,
                 current_tariff=user.tariff,
             )
-        )
         outcome = await deps.storage.complete_payment(
             order.id,
-            tariff=order.tariff,
+            tariff=granted,
+            pack=pack,
             expires_at=expires_at,
             seen_tariff=user.tariff,
             seen_expiry=user.tariff_expires_at,
@@ -804,7 +915,11 @@ async def announce(
     subscription = await deps.storage.get_subscription(order.user_id)
     renewing = spending.will_renew(deps, subscription)
 
-    if order.trial and not deps.settings.card_sales_enabled:
+    if tariff_of(order.tariff).is_package:
+        # Пакет поверх другого может называться тем, что кончается позже:
+        # имя — купленного, дата — общая (П3).
+        screen = texts.package_done(order.tariff, until=texts.format_date(day))
+    elif order.trial and not deps.settings.card_sales_enabled:
         # Заказ на 1 ₽ из тех, что созданы до выключения карты, оплачен
         # позже (сессия 15). Списания 299 ₽ после него не будет.
         screen = texts.trial_started_not_renewing(until=texts.format_date(day))
@@ -1048,6 +1163,9 @@ async def _subscription_for(
     самое, потому что оба места спрашивают об одном — умеет ли выбранный
     способ списывать сам.
     """
+    if tariff_of(order.tariff).is_package:
+        # Пакет не продлевается сам (сессия 16): подписки у него нет.
+        return None
     current = await deps.storage.get_subscription(order.user_id)
     method_id = (
         current.payment_method_id
@@ -1102,6 +1220,37 @@ async def _subscription_for(
         price_checked_for=None,
         failed_since=None,
         cancelled_at=None,
+    )
+
+
+async def _package_grant(deps: Deps, user: User, bought: Tariff) -> PackGrant:
+    """Что даст пакет поверх нынешнего: остатки, срок и дневная норма (П3).
+
+    Остаток считается по тому же периоду, по которому человек тратит, —
+    иначе сложилось бы не то, что он видит в профиле.
+    """
+    now = deps.now()
+    current = effective_tariff(user, now)
+    period = norm_period(
+        user,
+        now,
+        free_days=deps.settings.free_period_days,
+        paid_days=deps.settings.subscription_days,
+    )
+    used = await deps.storage.get_period_usage(user.id, period.start)
+    left = {
+        LimitKind.IMAGES: monthly_norm(current, LimitKind.IMAGES) - used.images_used,
+        LimitKind.DOCUMENTS: monthly_norm(current, LimitKind.DOCUMENTS)
+        - used.documents_used,
+        LimitKind.PRESENTATIONS: monthly_norm(current, LimitKind.PRESENTATIONS)
+        - used.presentations_used,
+    }
+    return stack(
+        bought,
+        now=now,
+        current=current,
+        current_expires_at=user.tariff_expires_at,
+        left=left,
     )
 
 

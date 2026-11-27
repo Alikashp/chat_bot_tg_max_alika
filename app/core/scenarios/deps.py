@@ -15,7 +15,7 @@ from app.core.decks import Draft
 from app.core.limits import current_day
 from app.core.models import Chat, Photo, User
 from app.core.settings import CoreSettings
-from app.core.tariffs import ModelTier, Tariff, active_tariff, tariff_of
+from app.core.tariffs import ModelTier, Tariff, effective_tariff
 from app.ports.ai import ImageProvider, LLMProvider
 from app.ports.channel import Channel
 from app.ports.concurrency import Concurrency
@@ -105,9 +105,7 @@ class Session:
         а не в каждом сценарии, потому что забыть её — значит раздать
         подписки навсегда.
         """
-        return tariff_of(
-            active_tariff(self.user.tariff, self.user.tariff_expires_at, self.now)
-        )
+        return effective_tariff(self.user, self.now)
 
     def model(self, settings: CoreSettings) -> str:
         """Модель под тариф пользователя.

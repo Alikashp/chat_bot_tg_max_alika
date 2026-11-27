@@ -212,6 +212,10 @@ TARIFF_TITLES: dict[TariffId, str] = {
     TariffId.LITE: "Лайт",
     TariffId.PRO: "Про",
     TariffId.MAX: "Макс",
+    # Разовые пакеты Telegram (сессия 16).
+    TariffId.WEEK: "Неделя",
+    TariffId.MONTH: "Месяц",
+    TariffId.HALFYEAR: "Полгода",
 }
 
 #: Значок в заголовке карточки тарифа (фаза 11). Только на экране тарифов:
@@ -1637,6 +1641,66 @@ def invoice(tariff_id: TariffId, *, days: int) -> tuple[str, str]:
     )
 
 
+# --- Разовые пакеты Telegram (сессия 16) ---------------------------------
+
+#: Под счётом за пакет: где взять звёзды. Ссылка — на официальный бот.
+BUTTON_BUY_STARS = "Приобрести звёзды 💳"
+#: Строка про звёзды — одна на счёт, экран заказа и экран пакетов: человек,
+#: у которого звёзд нет, должен узнать, где их взять, там же, где платит.
+STARS_WHERE = "Звёзды можно купить с российской карты в официальном боте @PremiumBot."
+
+
+def package_invoice(tariff_id: TariffId) -> tuple[str, str]:
+    """Заголовок и описание разового счёта за пакет (поля Telegram).
+
+    Описание счёта Telegram ограничивает 255 символами — сюда влезают
+    сообщения, картинки, срок и где купить звёзды.
+    """
+    tariff = TARIFFS[tariff_id]
+    assert tariff.package_days is not None
+    return (
+        f"Пакет «{TARIFF_TITLES[tariff_id]}»",
+        f"{_messages(tariff.daily_messages)} в день и "
+        f"{_images(tariff.monthly_images)} на {_days(tariff.package_days)}, "
+        "без автопродления. Оплата звёздами Telegram. "
+        f"{STARS_WHERE}",
+    )
+
+
+def package_order(tariff_id: TariffId, *, adds_up: bool) -> Screen:
+    """Экран заказа пакета: цена, срок, «без автопродления» и где взять звёзды.
+
+    ``adds_up`` — у человека действует оплаченное: тогда сказано, что
+    остатки не пропадут, а сложатся с новым пакетом.
+    """
+    tariff = TARIFFS[tariff_id]
+    assert tariff.package_days is not None and tariff.package_stars is not None
+    lines = [
+        f"Пакет «{TARIFF_TITLES[tariff_id]}» — {tariff.package_stars} ⭐ "
+        f"на {_days(tariff.package_days)}, без автопродления.",
+    ]
+    if adds_up:
+        lines.append("Остатки нынешнего пакета сложатся с новым.")
+    lines += [f"Оплата звёздами Telegram. {STARS_WHERE}", CONSENT]
+    return Screen(
+        text="\n".join(lines),
+        buttons=(BUTTON_PAY_OPEN_STARS, BUTTON_BUY_STARS, BUTTON_OFFER, BUTTON_PRIVACY),
+        formal_address=True,
+    )
+
+
+def package_done(tariff_id: TariffId, *, until: str) -> Screen:
+    """Пакет оплачен. Срок — общий, с остатками прежнего (П3)."""
+    return Screen(
+        text=(
+            f"Готово! Пакет «{TARIFF_TITLES[tariff_id]}» оплачен — "
+            f"всё доступно до {until}.\n"
+            "Остатки — в профиле, а пока пиши 👇"
+        ),
+        buttons=_menu_buttons(),
+    )
+
+
 # --- Управление подпиской (§4.14 оферты) ---------------------------------
 
 
@@ -2117,6 +2181,9 @@ def _all_screens() -> tuple[Screen, ...]:
         subscription_cancelled(TariffId.PRO, until="30 сентября"),
         subscription_cancel_failed(),
         subscription_other_method(by_stars=True),
+        package_order(TariffId.WEEK, adds_up=False),
+        package_order(TariffId.HALFYEAR, adds_up=True),
+        package_done(TariffId.MONTH, until="4 декабря"),
         subscription_not_renewing(TariffId.LITE, until="31 августа", stars=262),
         subscription_not_renewing(TariffId.LITE, until="31 августа", stars=None),
         subscription_ends_tomorrow(TariffId.LITE, on="31 августа", stars=262),

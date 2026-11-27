@@ -562,7 +562,9 @@ class SentInvoice:
     title: str
     order_id: str
     stars: int
-    period_days: int
+    #: None — разовый счёт без периода подписки (пакет, сессия 16).
+    period_days: int | None
+    description: str = ""
 
 
 class FakeStars:
@@ -591,7 +593,17 @@ class FakeStars:
     ) -> str:
         if self.error is not None:
             raise self.error
-        self.invoices.append(SentInvoice(title, order_id, stars, period_days))
+        self.invoices.append(
+            SentInvoice(title, order_id, stars, period_days, description)
+        )
+        return f"https://t.me/invoice/{order_id}"
+
+    async def invoice_link(
+        self, *, title: str, description: str, order_id: str, stars: int
+    ) -> str:
+        if self.error is not None:
+            raise self.error
+        self.invoices.append(SentInvoice(title, order_id, stars, None, description))
         return f"https://t.me/invoice/{order_id}"
 
     async def cancel(self, *, user_id: str, charge_id: str) -> None:

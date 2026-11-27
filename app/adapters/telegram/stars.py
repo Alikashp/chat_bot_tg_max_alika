@@ -73,6 +73,27 @@ class TelegramStars:
             subscription_period=period,
         )
 
+    async def invoice_link(
+        self,
+        *,
+        title: str,
+        description: str,
+        order_id: str,
+        stars: int,
+    ) -> str:
+        """Разовый счёт на звёзды (сессия 16): без ``subscription_period``.
+
+        Без периода Telegram списывает один раз и сам ничего не продлевает —
+        это и есть пакет без автопродления.
+        """
+        return await self._bot.create_invoice_link(
+            title=title,
+            description=description,
+            payload=order_id,
+            currency=STARS_CURRENCY,
+            prices=[LabeledPrice(label=title, amount=stars)],
+        )
+
     async def cancel(self, *, user_id: str, charge_id: str) -> None:
         """Отменяет подписку на стороне Telegram.
 

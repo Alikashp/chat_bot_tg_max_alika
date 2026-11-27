@@ -457,6 +457,7 @@ def build_core_settings(
         card_sales_enabled=(
             messenger is MessengerKind.MAX or settings.telegram_card_payments_enabled
         ),
+        packages_enabled=messenger is MessengerKind.TELEGRAM,
         mailings_enabled=settings.mailings_enabled,
         mailing_r1_enabled=settings.mailing_r1_enabled,
         mailing_r2_enabled=settings.mailing_r2_enabled,

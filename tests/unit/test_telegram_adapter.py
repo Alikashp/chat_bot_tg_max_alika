@@ -743,3 +743,24 @@ async def test_the_star_ledger_keeps_only_payments_for_our_invoices() -> None:
     assert [
         (p.charge_id, p.user_id, p.order_id, p.paid_at) for p in found.payments
     ] == [("charge-1", "555", "order-1", when)]
+
+
+async def test_a_package_invoice_has_no_subscription_period() -> None:
+    """Сессия 16: разовый счёт — без периода, иначе Telegram продлевал бы сам."""
+    from aiogram.methods import CreateInvoiceLink
+
+    from app.adapters.telegram.stars import TelegramStars
+
+    session = _LedgerSession("https://t.me/$invoice")
+    stars = TelegramStars(Bot(token="42:TEST", session=session))
+
+    link = await stars.invoice_link(
+        title="Пакет «Неделя»", description="Оплата", order_id="order-1", stars=149
+    )
+
+    (asked,) = session.asked
+    assert isinstance(asked, CreateInvoiceLink)
+    assert link == "https://t.me/$invoice"
+    assert asked.subscription_period is None
+    assert asked.currency == "XTR" and asked.payload == "order-1"
+    assert [price.amount for price in asked.prices] == [149]

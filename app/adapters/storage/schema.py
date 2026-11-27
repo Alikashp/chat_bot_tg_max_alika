@@ -85,6 +85,13 @@ users = Table(
     # Заказ, по которому выдан пробный период (фаза 11, часть 3). NULL —
     # пробного периода не было. Отметка — та же, что «один раз на человека».
     Column("trial_order_id", String(36), nullable=True),
+    # Нормы текущего пакета (сессия 16): с остатками прежнего, сложенными
+    # при покупке поверх него. NULL — нормы из реестра тарифов. Четыре
+    # колонки заполняются и очищаются вместе.
+    Column("pack_messages", Integer, nullable=True),
+    Column("pack_images", Integer, nullable=True),
+    Column("pack_documents", Integer, nullable=True),
+    Column("pack_presentations", Integer, nullable=True),
     # Когда человеку доставили первую презентацию (сессия 12). Ставится один
     # раз: перегенерировать бесплатно можно только её.
     Column("first_deck_at", DateTime(timezone=True), nullable=True),
@@ -126,6 +133,12 @@ users = Table(
     CheckConstraint("bonus_images >= 0", name="ck_users_bonus_images"),
     CheckConstraint("bonus_documents >= 0", name="ck_users_bonus_documents"),
     CheckConstraint("bonus_presentations >= 0", name="ck_users_bonus_presentations"),
+    CheckConstraint(
+        "(pack_messages IS NULL) = (pack_images IS NULL) "
+        "AND (pack_images IS NULL) = (pack_documents IS NULL) "
+        "AND (pack_documents IS NULL) = (pack_presentations IS NULL)",
+        name="ck_users_pack_all_or_none",
+    ),
 )
 
 usage = Table(

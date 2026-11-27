@@ -83,6 +83,12 @@ async def choose_method(deps: Deps, session: Session, tariff_id: TariffId) -> No
         await _payments_not_ready(deps, session)
         return
 
+    if deps.settings.packages_enabled and not tariff_of(tariff_id).is_package:
+        # Telegram с пакетами (сессия 16): новых подписок Лайт, Про, Макс
+        # нет. Кнопка такого тарифа из старой переписки ведёт к пакетам.
+        await show_tariffs(deps, session)
+        return
+
     if tariff_of(tariff_id).is_package:
         # Пакет — не подписка: способа оплаты у него один, звёзды, и только
         # там, где пакеты продаются (Telegram, сессия 16).
@@ -437,8 +443,9 @@ async def start_stars(deps: Deps, session: Session, tariff_id: TariffId) -> None
     if deps.stars is None:
         await _payments_not_ready(deps, session)
         return
-    if tariff_of(tariff_id).is_package:
-        # Данные кнопки приходят снаружи: подписки на пакет не бывает.
+    if tariff_of(tariff_id).is_package or deps.settings.packages_enabled:
+        # Данные кнопки приходят снаружи: подписки на пакет не бывает, а где
+        # продаются пакеты, новых звёздных подписок нет вовсе (сессия 16).
         await choose_method(deps, session, tariff_id)
         return
     if not _stars_on_sale(deps):
@@ -612,7 +619,16 @@ async def approve(
             # Новый звёздный заказ — только пока звёзды продаются (сессия
             # 11): счёт, выставленный раньше, при выключенных звёздах не
             # оплачивается.
-            (order.status == PaymentStatus.PENDING.value and _stars_on_sale(deps))
+            (
+                order.status == PaymentStatus.PENDING.value
+                and _stars_on_sale(deps)
+                # Где продаются пакеты, неоплаченный счёт на подписку,
+                # выданный раньше, новой подписки не заводит (сессия 16).
+                and (
+                    not deps.settings.packages_enabled
+                    or tariff_of(order.tariff).is_package
+                )
+            )
             or (
                 order.status == PaymentStatus.PAID.value
                 and await _renews_by_stars(deps, order)
@@ -1477,8 +1493,14 @@ def shown_stars(deps: Deps, tariff_id: TariffId) -> int | None:
 
 
 def renewal_stars(deps: Deps, tariff_id: TariffId) -> int | None:
-    """Цена продления звёздами — только когда звёзды правда продаются."""
-    return _stars_price(deps, tariff_id) if _stars_on_sale(deps) else None
+    """Цена продления звёздами — только когда этот тариф правда продаётся.
+
+    Где продаются пакеты (сессия 16), Лайт, Про и Макс не продаются ни за
+    что: продлить их нельзя, и экраны ведут к пакетам.
+    """
+    if not _stars_on_sale(deps) or deps.settings.packages_enabled:
+        return None
+    return _stars_price(deps, tariff_id)
 
 
 def tariffs_screen(deps: Deps) -> texts.Screen:

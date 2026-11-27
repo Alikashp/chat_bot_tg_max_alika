@@ -1837,25 +1837,42 @@ def subscription_failing(tariff_id: TariffId, *, amount: int, currency: str) -> 
     )
 
 
-def subscription_stopped(tariff_id: TariffId, *, until: str) -> Screen:
-    """Продление отключено, оплаченный срок дорабатывает (§4.15 оферты)."""
+#: Вместо «вернуть подписку» там, где подписок больше не продаём (Telegram,
+#: сессия 16): дальше — пакеты.
+_NEXT_PACKAGES = "Дальше — пакеты без подписки, по кнопке 👇"
+
+
+def subscription_stopped(
+    tariff_id: TariffId, *, until: str, comeback: bool = True
+) -> Screen:
+    """Продление отключено, оплаченный срок дорабатывает (§4.15 оферты).
+
+    ``comeback`` — подписку можно оформить снова; где её не продаём
+    (Telegram с пакетами), вторая строка ведёт к пакетам.
+    """
     return Screen(
         text=(
             f"Продление отключено. Тариф «{TARIFF_TITLES[tariff_id]}» "
             f"работает до {until}.\n"
-            "Вернуть можно в любой момент 👇"
+            + ("Вернуть можно в любой момент 👇" if comeback else _NEXT_PACKAGES)
         ),
         buttons=(MENU_TARIFFS, MENU_PROFILE),
     )
 
 
-def subscription_cancelled(tariff_id: TariffId, *, until: str) -> Screen:
+def subscription_cancelled(
+    tariff_id: TariffId, *, until: str, comeback: bool = True
+) -> Screen:
     """Ответ сразу после отмены. Главное здесь — что оплаченное не пропало."""
     return Screen(
         text=(
             f"Готово, больше не спишем 👌 Тариф «{TARIFF_TITLES[tariff_id]}» "
             f"работает до {until}.\n"
-            "Вернуть подписку можно в любой момент 👇"
+            + (
+                "Вернуть подписку можно в любой момент 👇"
+                if comeback
+                else _NEXT_PACKAGES
+            )
         ),
         buttons=(MENU_TARIFFS, MENU_PROFILE),
     )
@@ -2286,6 +2303,8 @@ def _all_screens() -> tuple[Screen, ...]:
         packages_screen(with_presentations=True),
         packages_screen(with_presentations=False),
         package_ending(TariffId.WEEK, on="4 декабря"),
+        subscription_stopped(TariffId.LITE, until="31 августа", comeback=False),
+        subscription_cancelled(TariffId.PRO, until="31 августа", comeback=False),
         paywall_free(
             LimitKind.IMAGES,
             lite=TARIFFS[TariffId.WEEK],

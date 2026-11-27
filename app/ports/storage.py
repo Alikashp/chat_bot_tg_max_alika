@@ -22,6 +22,7 @@ from app.core.models import (
     Mailing,
     MailingStatus,
     MessengerKind,
+    PackNorms,
     Payment,
     PeriodUsage,
     StarCancel,
@@ -516,6 +517,7 @@ class Storage(Protocol):
         subscription: Subscription | None,
         norm_since: datetime,
         trial: bool = False,
+        pack: PackNorms | None = None,
     ) -> GrantOutcome:
         """Выдаёт оплаченное одной транзакцией: всё или ничего (П4).
 
@@ -535,6 +537,9 @@ class Storage(Protocol):
         становится paid, но ничего не выдаётся: TRIAL_USED. Два
         одновременных подтверждения разводит условие на тариф и срок:
         второе получит STALE, а на повторе — TRIAL_USED.
+
+        ``pack`` — нормы пакета с остатками прежнего (сессия 16). Пишутся той
+        же транзакцией; None их стирает: выдача подписки правит реестром.
 
         ``norm_since`` — с какого момента считается месячная норма. Пишется
         той же транзакцией: оплата и обновление нормы — одно событие, и
@@ -643,6 +648,28 @@ class Storage(Protocol):
         self, now: datetime, *, limit: int
     ) -> list[Subscription]:
         """Подписки, по которым пора списывать."""
+        ...
+
+    async def packages_ending(
+        self,
+        since: datetime,
+        until: datetime,
+        *,
+        messenger: MessengerKind,
+        limit: int,
+    ) -> list[User]:
+        """Люди мессенджера, у которых пакет кончается в окне (сессия 16).
+
+        Только пакеты — у подписок свой проход. Только те, кому о нынешнем
+        сроке ещё не говорили (``mark_package_notified``): отметка хранит
+        срок, и новый срок после покупки — новое предупреждение.
+        """
+        ...
+
+    async def mark_package_notified(
+        self, user_id: UserId, expires_at: datetime
+    ) -> None:
+        """Отмечает, что о конце пакета со сроком ``expires_at`` сказали."""
         ...
 
     async def subscriptions_ending(

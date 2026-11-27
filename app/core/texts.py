@@ -17,7 +17,16 @@ from datetime import date
 
 from app.core.limits import LimitKind
 from app.core.models import TariffId
-from app.core.tariffs import PAID_TARIFFS, RUB, STARS, TARIFFS, TRIAL, Tariff, Trial
+from app.core.tariffs import (
+    PACKAGES,
+    PAID_TARIFFS,
+    RUB,
+    STARS,
+    TARIFFS,
+    TRIAL,
+    Tariff,
+    Trial,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -212,6 +221,10 @@ TARIFF_TITLES: dict[TariffId, str] = {
     TariffId.LITE: "Лайт",
     TariffId.PRO: "Про",
     TariffId.MAX: "Макс",
+    # Разовые пакеты Telegram (сессия 16).
+    TariffId.WEEK: "Неделя",
+    TariffId.MONTH: "Месяц",
+    TariffId.HALFYEAR: "Полгода",
 }
 
 #: Значок в заголовке карточки тарифа (фаза 11). Только на экране тарифов:
@@ -220,6 +233,16 @@ TARIFF_ICONS: dict[TariffId, str] = {
     TariffId.LITE: "⚡️",
     TariffId.PRO: "🚀",
     TariffId.MAX: "💥",
+    TariffId.WEEK: "⚡️",
+    TariffId.MONTH: "🚀",
+    TariffId.HALFYEAR: "💥",
+}
+
+#: Название пакета в кнопке «Купить …» (винительный падеж).
+PACKAGE_TO_BUY: dict[TariffId, str] = {
+    TariffId.WEEK: "Неделю",
+    TariffId.MONTH: "Месяц",
+    TariffId.HALFYEAR: "Полгода",
 }
 
 
@@ -996,7 +1019,12 @@ _FREE_SPENT = {
 
 
 def paywall_free(
-    kind: LimitKind, *, lite: Tariff, trial: Trial | None, stars: int | None = None
+    kind: LimitKind,
+    *,
+    lite: Tariff,
+    trial: Trial | None,
+    stars: int | None = None,
+    days: int | None = None,
 ) -> Screen:
     """Пейволл бесплатного тарифа: предложение Лайта (сессия 11).
 
@@ -1006,14 +1034,17 @@ def paywall_free(
     положен человеку: тогда «на 3 дня за 1 ₽», иначе цена Лайта в месяц.
     ``stars`` — цена Лайта в звёздах там, где продаём только за звёзды
     (Telegram, сессия 15): рублёвой цены покупки там быть не должно.
+    ``days`` — предлагается не Лайт, а пакет на столько дней (Telegram,
+    сессия 16): тогда ``lite`` — этот пакет, и «в месяц» неправда.
     Все числа — из реестра тарифов: поменяли тариф — поменялся и экран.
     """
     ask = "Нужна ещё?" if kind is LimitKind.PRESENTATIONS else "Нужно ещё?"
-    offer = (
-        f"Открой всё на {_days(trial.days)} за {_price(trial.price_rub, RUB)}:"
-        if trial is not None
-        else f"Открой всё за {_lite_price(lite, stars)} в месяц:"
-    )
+    if trial is not None:
+        offer = f"Открой всё на {_days(trial.days)} за {_price(trial.price_rub, RUB)}:"
+    elif days is not None:
+        offer = f"Открой всё на {_days(days)} за {_lite_price(lite, stars)}:"
+    else:
+        offer = f"Открой всё за {_lite_price(lite, stars)} в месяц:"
     per_day = f"{_messages(lite.daily_messages)} в день"
     gives = {
         LimitKind.PRESENTATIONS: (
@@ -1131,7 +1162,8 @@ def profile(
     человека видно по @username, а в MAX username есть не у всех, и без
     номера опознать написавшего нечем.
     """
-    title = f"Твой тариф: {TARIFF_TITLES[tariff_id]}"
+    package = TARIFFS[tariff_id].is_package
+    title = f"Твой {'пакет' if package else 'тариф'}: {TARIFF_TITLES[tariff_id]}"
     if period_ends is not None:
         if tariff_id is TariffId.FREE:
             title = f"{title} · новые картинки {period_ends}"
@@ -1637,6 +1669,137 @@ def invoice(tariff_id: TariffId, *, days: int) -> tuple[str, str]:
     )
 
 
+# --- Разовые пакеты Telegram (сессия 16) ---------------------------------
+
+#: Под счётом за пакет: где взять звёзды. Ссылка — на официальный бот.
+BUTTON_BUY_STARS = "Приобрести звёзды 💳"
+#: Строка про звёзды — одна на счёт, экран заказа и экран пакетов: человек,
+#: у которого звёзд нет, должен узнать, где их взять, там же, где платит.
+STARS_WHERE = "Звёзды можно купить с российской карты в официальном боте @PremiumBot."
+
+
+def package_invoice(tariff_id: TariffId) -> tuple[str, str]:
+    """Заголовок и описание разового счёта за пакет (поля Telegram).
+
+    Описание счёта Telegram ограничивает 255 символами — сюда влезают
+    сообщения, картинки, срок и где купить звёзды.
+    """
+    tariff = TARIFFS[tariff_id]
+    assert tariff.package_days is not None
+    return (
+        f"Пакет «{TARIFF_TITLES[tariff_id]}»",
+        f"{_messages(tariff.daily_messages)} в день и "
+        f"{_images(tariff.monthly_images)} на {_days(tariff.package_days)}, "
+        "без автопродления. Оплата звёздами Telegram. "
+        f"{STARS_WHERE}",
+    )
+
+
+def package_order(tariff_id: TariffId, *, adds_up: bool) -> Screen:
+    """Экран заказа пакета: цена, срок, «без автопродления» и где взять звёзды.
+
+    ``adds_up`` — у человека действует оплаченное: тогда сказано, что
+    остатки не пропадут, а сложатся с новым пакетом.
+    """
+    tariff = TARIFFS[tariff_id]
+    assert tariff.package_days is not None and tariff.package_stars is not None
+    lines = [
+        f"Пакет «{TARIFF_TITLES[tariff_id]}» — {tariff.package_stars} ⭐ "
+        f"на {_days(tariff.package_days)}, без автопродления.",
+    ]
+    if adds_up:
+        lines.append("Остатки нынешнего пакета сложатся с новым.")
+    lines += [f"Оплата звёздами Telegram. {STARS_WHERE}", CONSENT]
+    return Screen(
+        text="\n".join(lines),
+        buttons=(BUTTON_PAY_OPEN_STARS, BUTTON_BUY_STARS, BUTTON_OFFER, BUTTON_PRIVACY),
+        formal_address=True,
+    )
+
+
+#: Экран пакетов: заголовок и что есть в каждом из них.
+PACKAGES_TITLE = "💎 Пакеты — платишь один раз, без подписки"
+PACKAGES_NO_RENEWAL = "Без автопродления: срок кончился — ничего не спишется."
+
+
+def packages_screen(*, with_presentations: bool) -> Screen:
+    """Три пакета одним сообщением (сессия 16, по образцу соседнего бота).
+
+    Заголовок, что есть во всех пакетах, три пакета с ценой, сроком и
+    составом, «без автопродления» и где купить звёзды. Сравнение — смысл
+    экрана, поэтому потолок строк поднят явно, как у прежних тарифов. Без
+    ключа API презентаций о них ни слова.
+    """
+    everywhere = (
+        "Во всех пакетах: чат, картинки, приколы с фото, доклады и презентации."
+        if with_presentations
+        else "Во всех пакетах: чат, картинки, приколы с фото и доклады."
+    )
+    blocks = []
+    for tariff_id in PACKAGES:
+        tariff = TARIFFS[tariff_id]
+        assert tariff.package_days is not None
+        lines = [
+            f"{TARIFF_ICONS[tariff_id]} {TARIFF_TITLES[tariff_id]} — "
+            f"{tariff.package_stars} ⭐ на {_days(tariff.package_days)}",
+            f"· {_messages(tariff.daily_messages)} в день",
+            f"· {_images(tariff.monthly_images)}",
+        ]
+        if with_presentations:
+            lines.append(f"· {_presentations(tariff.monthly_presentations)}")
+        lines.append(f"· {_documents(tariff.monthly_documents)}")
+        blocks.append("\n".join(lines))
+    return Screen(
+        text="\n\n".join(
+            [
+                PACKAGES_TITLE,
+                everywhere,
+                *blocks,
+                f"{PACKAGES_NO_RENEWAL}\n{STARS_WHERE}",
+            ]
+        ),
+        buttons=tuple(button_buy_package(tariff_id) for tariff_id in PACKAGES),
+        max_lines=26,
+    )
+
+
+def button_buy_package(tariff_id: TariffId) -> str:
+    return f"Купить {PACKAGE_TO_BUY[tariff_id]} — {TARIFFS[tariff_id].package_stars} ⭐"
+
+
+def button_buy_again(stars: int) -> str:
+    return f"🔁 Купить снова — {stars} ⭐"
+
+
+def package_ending(tariff_id: TariffId, *, on: str) -> Screen:
+    """За сутки до конца пакета: когда кончится и как купить снова (П4).
+
+    Сам пакет не продлится — об этом и речь. Остатки при покупке до конца
+    сложатся с новым, поэтому сказано и это.
+    """
+    stars = TARIFFS[tariff_id].package_stars
+    assert stars is not None
+    return Screen(
+        text=(
+            f"Завтра, {on}, закончится пакет «{TARIFF_TITLES[tariff_id]}».\n"
+            "Возьми новый до конца — остатки сложатся с ним 👇"
+        ),
+        buttons=(button_buy_again(stars), MENU_TARIFFS),
+    )
+
+
+def package_done(tariff_id: TariffId, *, until: str) -> Screen:
+    """Пакет оплачен. Срок — общий, с остатками прежнего (П3)."""
+    return Screen(
+        text=(
+            f"Готово! Пакет «{TARIFF_TITLES[tariff_id]}» оплачен — "
+            f"всё доступно до {until}.\n"
+            "Остатки — в профиле, а пока пиши 👇"
+        ),
+        buttons=_menu_buttons(),
+    )
+
+
 # --- Управление подпиской (§4.14 оферты) ---------------------------------
 
 
@@ -1674,25 +1837,42 @@ def subscription_failing(tariff_id: TariffId, *, amount: int, currency: str) -> 
     )
 
 
-def subscription_stopped(tariff_id: TariffId, *, until: str) -> Screen:
-    """Продление отключено, оплаченный срок дорабатывает (§4.15 оферты)."""
+#: Вместо «вернуть подписку» там, где подписок больше не продаём (Telegram,
+#: сессия 16): дальше — пакеты.
+_NEXT_PACKAGES = "Дальше — пакеты без подписки, по кнопке 👇"
+
+
+def subscription_stopped(
+    tariff_id: TariffId, *, until: str, comeback: bool = True
+) -> Screen:
+    """Продление отключено, оплаченный срок дорабатывает (§4.15 оферты).
+
+    ``comeback`` — подписку можно оформить снова; где её не продаём
+    (Telegram с пакетами), вторая строка ведёт к пакетам.
+    """
     return Screen(
         text=(
             f"Продление отключено. Тариф «{TARIFF_TITLES[tariff_id]}» "
             f"работает до {until}.\n"
-            "Вернуть можно в любой момент 👇"
+            + ("Вернуть можно в любой момент 👇" if comeback else _NEXT_PACKAGES)
         ),
         buttons=(MENU_TARIFFS, MENU_PROFILE),
     )
 
 
-def subscription_cancelled(tariff_id: TariffId, *, until: str) -> Screen:
+def subscription_cancelled(
+    tariff_id: TariffId, *, until: str, comeback: bool = True
+) -> Screen:
     """Ответ сразу после отмены. Главное здесь — что оплаченное не пропало."""
     return Screen(
         text=(
             f"Готово, больше не спишем 👌 Тариф «{TARIFF_TITLES[tariff_id]}» "
             f"работает до {until}.\n"
-            "Вернуть подписку можно в любой момент 👇"
+            + (
+                "Вернуть подписку можно в любой момент 👇"
+                if comeback
+                else _NEXT_PACKAGES
+            )
         ),
         buttons=(MENU_TARIFFS, MENU_PROFILE),
     )
@@ -2117,6 +2297,32 @@ def _all_screens() -> tuple[Screen, ...]:
         subscription_cancelled(TariffId.PRO, until="30 сентября"),
         subscription_cancel_failed(),
         subscription_other_method(by_stars=True),
+        package_order(TariffId.WEEK, adds_up=False),
+        package_order(TariffId.HALFYEAR, adds_up=True),
+        package_done(TariffId.MONTH, until="4 декабря"),
+        packages_screen(with_presentations=True),
+        packages_screen(with_presentations=False),
+        package_ending(TariffId.WEEK, on="4 декабря"),
+        subscription_stopped(TariffId.LITE, until="31 августа", comeback=False),
+        subscription_cancelled(TariffId.PRO, until="31 августа", comeback=False),
+        paywall_free(
+            LimitKind.IMAGES,
+            lite=TARIFFS[TariffId.WEEK],
+            trial=None,
+            stars=149,
+            days=7,
+        ),
+        profile(
+            tariff_id=TariffId.WEEK,
+            messages_used=3,
+            messages_limit=100,
+            images_left=5,
+            documents_left=5,
+            friends=0,
+            presentations_left=3,
+            period_ends="4 декабря",
+            tariff_continues=False,
+        ),
         subscription_not_renewing(TariffId.LITE, until="31 августа", stars=262),
         subscription_not_renewing(TariffId.LITE, until="31 августа", stars=None),
         subscription_ends_tomorrow(TariffId.LITE, on="31 августа", stars=262),

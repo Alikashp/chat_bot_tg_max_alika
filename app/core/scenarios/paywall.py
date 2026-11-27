@@ -15,7 +15,7 @@ from app.core.limits import LimitKind
 from app.core.models import TariffId
 from app.core.scenarios import keyboards, payments, spending
 from app.core.scenarios.deps import Deps, Session
-from app.core.tariffs import TRIAL, tariff_of
+from app.core.tariffs import TRIAL, Tariff, Trial, tariff_of
 
 
 async def show(deps: Deps, session: Session, kind: LimitKind) -> None:
@@ -89,11 +89,38 @@ async def _offer_lite(deps: Deps, session: Session, kind: LimitKind) -> None:
     кнопка — бесплатный способ добрать этот же ресурс, если он есть: у
     докладов его нет.
     """
+    if deps.settings.packages_enabled:
+        # Telegram с пакетами (сессия 16): «Продолжить за 149 ⭐» ведёт к
+        # оплате недельного пакета.
+        week = tariff_of(TariffId.WEEK)
+        await _offer(
+            deps,
+            session,
+            kind,
+            week,
+            stars=week.package_stars,
+            days=week.package_days,
+            trial=None,
+        )
+        return
     trial = TRIAL if await payments.trial_offered(deps, session) else None
     lite = tariff_of(TariffId.LITE)
     # Где продаём только за звёзды (Telegram, сессия 15), цена — в звёздах.
     stars = payments.shown_stars(deps, TariffId.LITE)
-    screen = texts.paywall_free(kind, lite=lite, trial=trial, stars=stars)
+    await _offer(deps, session, kind, lite, stars=stars, days=None, trial=trial)
+
+
+async def _offer(
+    deps: Deps,
+    session: Session,
+    kind: LimitKind,
+    lite: Tariff,
+    *,
+    stars: int | None,
+    days: int | None,
+    trial: Trial | None,
+) -> None:
+    screen = texts.paywall_free(kind, lite=lite, trial=trial, stars=stars, days=days)
     action = Action.PAYWALL_TRIAL if trial is not None else buy_action(lite.id.value)
     await deps.messenger.send_text(
         session.chat,

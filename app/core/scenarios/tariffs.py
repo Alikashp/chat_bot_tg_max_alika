@@ -24,7 +24,7 @@ async def show(deps: Deps, session: Session) -> None:
     await deps.messenger.send_text(
         session.chat,
         screen.text,
-        keyboard=keyboards.tariffs(),
+        keyboard=payments.tariffs_keyboard(deps),
         show_menu=False,
     )
     if await payments.trial_offered(deps, session):

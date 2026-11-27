@@ -12,7 +12,7 @@ import pytest
 from app.core import texts
 from app.core.models import TariffId
 from app.core.scenarios import keyboards as scenario_keyboards
-from app.core.tariffs import RUB
+from app.core.tariffs import PACKAGES, RUB
 from app.core.texts import Screen
 from scripts.check_texts import check_presets, check_screen, collect
 
@@ -403,15 +403,23 @@ def test_only_the_tariff_and_deck_screens_raise_the_line_limit() -> None:
 
     Потолок в пять строк легко обойти, подняв max_lines «на этот раз».
     Тест делает такое обход видимым: список исключений один и лежит здесь.
-    Экран тарифов — сравнение трёх карточек; экран параметров презентации —
-    всё, что соберётся, одним взглядом (разрешено заказчиком, сессия 7).
+    Экран тарифов и экран пакетов — сравнение трёх карточек; экран
+    параметров презентации — всё, что соберётся, одним взглядом (разрешено
+    заказчиком, сессия 7).
     """
     exceptions = [screen for screen in texts.SCREENS if screen.max_lines != 5]
 
     tariffs = [s for s in exceptions if s.buttons == ("Лайт", "Про", "Макс")]
     deck = [s for s in exceptions if s.buttons[:1] == (texts.BUTTON_DECK_BUILD,)]
-    assert len(tariffs) + len(deck) == len(exceptions)
-    assert tariffs and deck
+    # Экран пакетов Telegram — то же сравнение трёх (разрешено заказчиком,
+    # сессия 16).
+    packages = [
+        s
+        for s in exceptions
+        if s.buttons == tuple(texts.button_buy_package(package) for package in PACKAGES)
+    ]
+    assert len(tariffs) + len(deck) + len(packages) == len(exceptions)
+    assert tariffs and deck and packages
     assert all(s.max_lines == 8 for s in deck)
 
 

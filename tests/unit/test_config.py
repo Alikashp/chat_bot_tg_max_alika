@@ -244,3 +244,18 @@ def test_card_sales_in_telegram_are_off_by_default_and_on_in_max() -> None:
 
     on = Settings.model_validate({**VALID_ENV, "telegram_card_payments_enabled": True})
     assert build_core_settings(on, "bot", referral_link_host="t.me").card_sales_enabled
+
+
+def test_packages_are_sold_in_telegram_only() -> None:
+    """Сессия 16: пакеты — в Telegram; в MAX карта и подписки как были."""
+    from app.core.models import MessengerKind
+    from app.main import build_core_settings
+
+    settings = Settings.model_validate(VALID_ENV)
+    telegram = build_core_settings(settings, "bot", referral_link_host="t.me")
+    in_max = build_core_settings(
+        settings, "bot", referral_link_host="max.ru", messenger=MessengerKind.MAX
+    )
+
+    assert telegram.packages_enabled and not in_max.packages_enabled
+    assert in_max.card_sales_enabled

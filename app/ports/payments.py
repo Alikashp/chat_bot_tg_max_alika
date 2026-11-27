@@ -256,6 +256,22 @@ class StarsPayments(Protocol):
         """
         ...
 
+    async def invoice_link(
+        self,
+        *,
+        title: str,
+        description: str,
+        order_id: str,
+        stars: int,
+    ) -> str:
+        """Готовит разовый счёт — без периода подписки — и возвращает ссылку.
+
+        Для пакетов Telegram (сессия 16): Telegram спишет один раз и
+        продлевать не будет. Ссылка, а не сообщение, — по той же причине, что
+        и у подписки: кнопку с ней рисует сценарий рядом с условиями.
+        """
+        ...
+
     async def cancel(self, *, user_id: str, charge_id: str) -> None:
         """Отменяет подписку на стороне мессенджера.
 

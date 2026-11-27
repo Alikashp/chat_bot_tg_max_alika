@@ -30,6 +30,7 @@ from app.core.models import (
     Mailing,
     MailingStatus,
     MessengerKind,
+    PackNorms,
     Payment,
     PeriodUsage,
     StarCancel,
@@ -39,6 +40,7 @@ from app.core.models import (
     User,
     UserId,
 )
+from app.core.tariffs import PACKAGES
 from app.ports.payments import PaymentMethod, PaymentStatus, SubscriptionStatus
 from app.ports.storage import GrantOutcome
 
@@ -64,6 +66,9 @@ class InMemoryStorage:
         self._now = clock if clock is not None else _utc_now
         self._ids = count(1)
         self._users: dict[UserId, User] = {}
+        #: О конце какого срока пакета уже сказали (сессия 16). Не в User:
+        #: сценариям это знать незачем.
+        self._package_notified: dict[UserId, datetime] = {}
         self._by_external: dict[tuple[MessengerKind, str], UserId] = {}
         self._by_referral_code: dict[str, UserId] = {}
         self._usage: dict[tuple[UserId, date], Usage] = {}
@@ -625,6 +630,7 @@ class InMemoryStorage:
         subscription: Subscription | None,
         norm_since: datetime,
         trial: bool = False,
+        pack: PackNorms | None = None,
     ) -> GrantOutcome:
         # Ни одного await внутри: в памяти это и есть транзакция.
         payment = self._payments.get(payment_id)
@@ -647,6 +653,7 @@ class InMemoryStorage:
             tariff_expires_at=expires_at,
             norm_since=norm_since,
             trial_order_id=payment_id if trial else user.trial_order_id,
+            pack=pack,
         )
         if subscription is not None:
             self._subscriptions[subscription.user_id] = subscription
@@ -778,6 +785,31 @@ class InMemoryStorage:
         ]
         due.sort(key=lambda subscription: subscription.next_charge_at)
         return due[:limit]
+
+    async def packages_ending(
+        self,
+        since: datetime,
+        until: datetime,
+        *,
+        messenger: MessengerKind,
+        limit: int,
+    ) -> list[User]:
+        due = [
+            user
+            for user in self._users.values()
+            if user.messenger is messenger
+            and user.tariff in PACKAGES
+            and user.tariff_expires_at is not None
+            and since < user.tariff_expires_at <= until
+            and self._package_notified.get(user.id) != user.tariff_expires_at
+        ]
+        due.sort(key=lambda user: user.tariff_expires_at or since)
+        return due[:limit]
+
+    async def mark_package_notified(
+        self, user_id: UserId, expires_at: datetime
+    ) -> None:
+        self._package_notified[user_id] = expires_at
 
     async def subscriptions_ending(
         self,

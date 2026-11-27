@@ -49,6 +49,7 @@ from app.core.models import (
     Mailing,
     MailingStatus,
     MessengerKind,
+    PackNorms,
     Payment,
     PeriodUsage,
     Role,
@@ -59,6 +60,7 @@ from app.core.models import (
     User,
     UserId,
 )
+from app.core.tariffs import PACKAGES
 from app.ports.payments import PaymentMethod, PaymentStatus, SubscriptionStatus
 from app.ports.storage import GrantOutcome
 
@@ -945,6 +947,7 @@ class PostgresStorage:
         subscription: Subscription | None,
         norm_since: datetime,
         trial: bool = False,
+        pack: PackNorms | None = None,
     ) -> GrantOutcome:
         """Заказ, тариф и подписка — одной транзакцией (П4).
 
@@ -983,6 +986,10 @@ class PostgresStorage:
                         tariff=tariff.value,
                         tariff_expires_at=expires_at,
                         norm_since=norm_since,
+                        pack_messages=pack.messages if pack else None,
+                        pack_images=pack.images if pack else None,
+                        pack_documents=pack.documents if pack else None,
+                        pack_presentations=pack.presentations if pack else None,
                         **({"trial_order_id": payment_id} if trial else {}),
                     )
                     .returning(users.c.id)
@@ -1189,6 +1196,42 @@ class PostgresStorage:
         async with self._session() as session:
             rows = (await session.execute(query)).all()
         return [_to_subscription(row) for row in rows]
+
+    async def packages_ending(
+        self,
+        since: datetime,
+        until: datetime,
+        *,
+        messenger: MessengerKind,
+        limit: int,
+    ) -> list[User]:
+        query = (
+            select(users)
+            .where(
+                users.c.messenger == messenger.value,
+                users.c.tariff.in_([package.value for package in PACKAGES]),
+                users.c.tariff_expires_at > since,
+                users.c.tariff_expires_at <= until,
+                users.c.package_notified_for.is_distinct_from(
+                    users.c.tariff_expires_at
+                ),
+            )
+            .order_by(users.c.tariff_expires_at)
+            .limit(limit)
+        )
+        async with self._session() as session:
+            rows = (await session.execute(query)).mappings().all()
+        return [_to_user(row) for row in rows]
+
+    async def mark_package_notified(
+        self, user_id: UserId, expires_at: datetime
+    ) -> None:
+        async with self._session() as session, session.begin():
+            await session.execute(
+                update(users)
+                .where(users.c.id == user_id)
+                .values(package_notified_for=expires_at)
+            )
 
     async def subscriptions_ending(
         self,
@@ -1508,6 +1551,16 @@ def _to_user(row: Any) -> User:
         free_regen_at=row["free_regen_at"],
         last_active_at=row["last_active_at"],
         last_marketing_at=row["last_marketing_at"],
+        pack=(
+            None
+            if row["pack_messages"] is None
+            else PackNorms(
+                messages=row["pack_messages"],
+                images=row["pack_images"],
+                documents=row["pack_documents"],
+                presentations=row["pack_presentations"],
+            )
+        ),
     )
 
 

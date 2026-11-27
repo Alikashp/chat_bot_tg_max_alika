@@ -53,7 +53,11 @@ async def show(deps: Deps, session: Session) -> None:
     until = _until(deps, session.user, subscription)
 
     if subscription.status == SubscriptionStatus.CANCELLED.value:
-        screen = texts.subscription_stopped(subscription.tariff, until=until)
+        screen = texts.subscription_stopped(
+            subscription.tariff,
+            until=until,
+            comeback=not deps.settings.packages_enabled,
+        )
         keyboard = keyboards.tariffs_or_profile()
     elif not spending.will_renew(deps, subscription):
         # Карточная подписка там, где карту больше не продаём (Telegram,
@@ -135,7 +139,9 @@ async def cancel(deps: Deps, session: Session) -> None:
         method=subscription.method,
     )
     screen = texts.subscription_cancelled(
-        subscription.tariff, until=_until(deps, session.user, subscription)
+        subscription.tariff,
+        until=_until(deps, session.user, subscription),
+        comeback=not deps.settings.packages_enabled,
     )
     await deps.messenger.send_text(
         session.chat, screen.text, keyboard=keyboards.tariffs_or_profile()

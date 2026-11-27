@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from app.core import texts
 from app.core.actions import Action, buy_action
-from app.core.limits import LimitKind
+from app.core.limits import LimitKind, current_day
 from app.core.models import TariffId
 from app.core.scenarios import keyboards, payments, spending
 from app.core.scenarios.deps import Deps, Session
@@ -33,6 +33,10 @@ async def show(deps: Deps, session: Session, kind: LimitKind) -> None:
     """
     if session.tariff.is_free:
         await _offer_lite(deps, session, kind)
+        return
+
+    if session.tariff.is_package:
+        await _package(deps, session, kind)
         return
 
     if kind is LimitKind.MESSAGES:
@@ -130,6 +134,26 @@ async def _offer(
             action,
             _free_way(deps, kind),
         ),
+    )
+
+
+async def _package(deps: Deps, session: Session, kind: LimitKind) -> None:
+    """Пейволл внутри пакета (сессия 17): до какой даты пакет и что новый
+    сложится с остатками. Второй выход — тот же «за друга», где он есть.
+
+    Дата — по снимку человека в сессии, как и сам тариф: пакет и его срок
+    читаются из одного и того же места.
+    """
+    expires_at = session.user.tariff_expires_at
+    assert expires_at is not None, "у действующего пакета есть срок"
+    screen = texts.paywall_package(
+        kind,
+        session.tariff.id,
+        until=texts.format_date(current_day(expires_at, deps.settings.timezone)),
+        invite=_free_way(deps, kind),
+    )
+    await deps.messenger.send_text(
+        session.chat, screen.text, keyboard=keyboards.paywall(_free_way(deps, kind))
     )
 
 

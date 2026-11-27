@@ -846,6 +846,42 @@ def paywall_presentations(
     )
 
 
+#: Что кончилось у человека на пакете (сессия 17). «Пакета» — затем, что
+#: у пакета нет месяца: нормы на весь срок.
+_PACKAGE_SPENT = {
+    LimitKind.PRESENTATIONS: "Презентации пакета закончились 😔",
+    LimitKind.IMAGES: "Картинки пакета закончились 😔",
+    LimitKind.DOCUMENTS: "Доклады пакета закончились 😔",
+}
+
+
+def paywall_package(
+    kind: LimitKind, tariff_id: TariffId, *, until: str, invite: str = ""
+) -> Screen:
+    """Пейволл внутри пакета (сессия 17): срок по факту и новый пакет.
+
+    Слова «месяц» здесь нет: нормы пакета — на весь срок, и «на этот месяц»
+    у Недели и Полугода было бы неправдой. Называется дата конца пакета и
+    что новый пакет сложится с остатками. Сообщения — дневные и у пакета:
+    завтра будут ещё.
+
+    ``invite`` — подпись кнопки «за друга», если за друга дают этот ресурс.
+    """
+    lasts = f"Пакет «{TARIFF_TITLES[tariff_id]}» действует до {until}"
+    if kind is LimitKind.MESSAGES:
+        text = (
+            "Сообщения на сегодня закончились 😔\n"
+            f"Завтра будут ещё: {lasts[0].lower()}{lasts[1:]}.\n"
+            "А можно не ждать — возьми новый пакет, остатки сложатся:"
+        )
+    else:
+        text = f"{_PACKAGE_SPENT[kind]}\n{lasts} — возьми новый, остатки сложатся:"
+    buttons: tuple[str, ...] = (BUTTON_OPEN_TARIFFS,)
+    if invite:
+        buttons = (*buttons, invite)
+    return Screen(text=text, buttons=buttons)
+
+
 def _monthly_paywall(what: str, renews_on: str, *, by_charge: bool) -> str:
     """Две строки пейволла месячной нормы: что кончилось и когда будет новое.
 
@@ -2303,6 +2339,10 @@ def _all_screens() -> tuple[Screen, ...]:
         packages_screen(with_presentations=True),
         packages_screen(with_presentations=False),
         package_ending(TariffId.WEEK, on="4 декабря"),
+        *(
+            paywall_package(kind, TariffId.WEEK, until="4 декабря", invite="+2 🎨")
+            for kind in LimitKind
+        ),
         subscription_stopped(TariffId.LITE, until="31 августа", comeback=False),
         subscription_cancelled(TariffId.PRO, until="31 августа", comeback=False),
         paywall_free(

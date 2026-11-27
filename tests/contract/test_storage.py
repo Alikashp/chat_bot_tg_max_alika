@@ -2375,3 +2375,28 @@ async def test_ending_packages_are_picked_once_per_end(storage: Storage) -> None
         *window, messenger=MessengerKind.TELEGRAM, limit=10
     )
     assert {each.id for each in after} == {week.id, halfyear.id}
+
+
+async def test_mailing_candidates_leave_out_a_live_package(storage: Storage) -> None:
+    """Сессия 17: пакет — платный тариф и для выборки рассылки в базе.
+
+    Действующий пакет не берётся, кончившийся — берётся, как бесплатный.
+    """
+    now = datetime.now(UTC) + timedelta(days=30)
+    live, ended = [await _make_user(storage, f"pkg-mail-{n}") for n in (1, 2)]
+    for user in (live, ended):
+        await storage.touch_active(user.id, now - timedelta(days=4))
+    await storage.set_tariff(live.id, TariffId.HALFYEAR, now + timedelta(days=90))
+    await storage.set_tariff(ended.id, TariffId.WEEK, now - timedelta(hours=1))
+
+    found = await storage.mailing_candidates(
+        messenger=MessengerKind.TELEGRAM,
+        step="R1",
+        active_after=now - timedelta(days=5),
+        active_before=now - timedelta(days=3),
+        marketing_before=now - timedelta(days=7),
+        now=now,
+        limit=10,
+    )
+
+    assert [user.id for user in found] == [ended.id]

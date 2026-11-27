@@ -62,10 +62,21 @@ class Tariff:
     #: настройках, чтобы вся таблица норм жила в одном месте (Т1).
     one_time_documents: int = 0
     one_time_presentations: int = 0
+    #: Разовый пакет (сессия 16): цена в звёздах и срок в днях. Цена задана
+    #: прямо в звёздах, а не формулой от рублей: рублёвой цены у пакета нет.
+    #: У пакета «месячные» нормы картинок, докладов и презентаций — на весь
+    #: срок, и внутри него они не обновляются (core/limits.py). None — это
+    #: подписка: Лайт, Про, Макс.
+    package_stars: int | None = None
+    package_days: int | None = None
 
     @property
     def is_free(self) -> bool:
         return self.id is TariffId.FREE
+
+    @property
+    def is_package(self) -> bool:
+        return self.package_days is not None
 
 
 #: Реестр тарифов (§2.8) — единственное место, где заданы нормы (Т1).
@@ -128,6 +139,45 @@ TARIFFS: Mapping[TariffId, Tariff] = MappingProxyType(
             model_tier=ModelTier.STANDARD,
             image_quality=ImageQuality.MEDIUM,
         ),
+        # Разовые пакеты Telegram (сессия 16). Модель — по нормам: Неделя и
+        # Месяц стоят рядом с Лайтом (Месяц и есть Лайт по числам), Полгода —
+        # рядом с Максом по сообщениям в день.
+        TariffId.WEEK: Tariff(
+            id=TariffId.WEEK,
+            price_rub=0,
+            daily_messages=100,
+            monthly_images=5,
+            monthly_documents=5,
+            monthly_presentations=3,
+            model_tier=ModelTier.ECONOMY,
+            image_quality=ImageQuality.MEDIUM,
+            package_stars=149,
+            package_days=7,
+        ),
+        TariffId.MONTH: Tariff(
+            id=TariffId.MONTH,
+            price_rub=0,
+            daily_messages=100,
+            monthly_images=20,
+            monthly_documents=15,
+            monthly_presentations=10,
+            model_tier=ModelTier.ECONOMY,
+            image_quality=ImageQuality.MEDIUM,
+            package_stars=349,
+            package_days=30,
+        ),
+        TariffId.HALFYEAR: Tariff(
+            id=TariffId.HALFYEAR,
+            price_rub=0,
+            daily_messages=200,
+            monthly_images=120,
+            monthly_documents=90,
+            monthly_presentations=60,
+            model_tier=ModelTier.STANDARD,
+            image_quality=ImageQuality.MEDIUM,
+            package_stars=1490,
+            package_days=180,
+        ),
     }
 )
 
@@ -152,6 +202,9 @@ TRIAL = Trial(tariff=TariffId.LITE, days=3, price_rub=1)
 #: Порядок показа карточек на экране тарифов (§2.8). Бесплатного тут нет:
 #: экран продаёт платные, а на бесплатном пользователь уже сидит.
 PAID_TARIFFS: tuple[TariffId, ...] = (TariffId.LITE, TariffId.PRO, TariffId.MAX)
+
+#: Порядок пакетов на экране тарифов Telegram (сессия 16).
+PACKAGES: tuple[TariffId, ...] = (TariffId.WEEK, TariffId.MONTH, TariffId.HALFYEAR)
 
 #: Какой тариф помечен как популярный (§2.8: «Про — ⭐ популярный»).
 HIGHLIGHTED_TARIFF: TariffId = TariffId.PRO

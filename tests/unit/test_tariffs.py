@@ -23,6 +23,10 @@ NORMS = {
     TariffId.LITE: (100, 20, 10, 15),
     TariffId.PRO: (100, 40, 25, 40),
     TariffId.MAX: (200, 150, 60, 100),
+    # Пакеты сессии 16: картинки, презентации и доклады — на весь срок.
+    TariffId.WEEK: (100, 5, 3, 5),
+    TariffId.MONTH: (100, 20, 10, 15),
+    TariffId.HALFYEAR: (200, 120, 60, 90),
 }
 
 

@@ -157,6 +157,11 @@ def norm_period(
     tariff = active_tariff(user.tariff, user.tariff_expires_at, now)
     if tariff is TariffId.FREE or user.tariff_expires_at is None:
         return _window(user.created_at, now, timedelta(days=free_days), until=None)
+    days = tariff_of(tariff).package_days
+    if days is not None:
+        # Пакет (сессия 16): норма на весь срок, без шагов внутри него.
+        start = user.norm_since or user.tariff_expires_at - timedelta(days=days)
+        return NormPeriod(start=start, end=user.tariff_expires_at)
     step = timedelta(days=paid_days)
     anchor = user.norm_since or user.tariff_expires_at - step
     return _window(anchor, now, step, until=user.tariff_expires_at)

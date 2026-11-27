@@ -47,6 +47,11 @@ class TariffId(StrEnum):
     LITE = "lite"
     PRO = "pro"
     MAX = "max"
+    #: Разовые пакеты Telegram (сессия 16): срок без автопродления. Значения
+    #: лежат в данных кнопок и в базе — менять их нельзя.
+    WEEK = "week"
+    MONTH = "month"
+    HALFYEAR = "halfyear"
 
 
 class Role(StrEnum):
